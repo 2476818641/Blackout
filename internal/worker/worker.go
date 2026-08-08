@@ -77,6 +77,9 @@ type Worker struct {
 	workerLocation string
 	useLocalPool   bool
 
+	// 云更新：当前二进制版本标识（启动时计算一次）
+	selfVersion string
+
 	// autoTune 状态：autoTuneFactor=当前带宽因子（1.0=满速，仅降到刚好不超 CPU 上限）；
 	// lowCPUCounter=低负载连续次数（回升时确认稳定用）
 	autoTuneFactor float64
@@ -115,6 +118,7 @@ func New(id, controllerAddr, authToken, proxySource string, maxBWMbps int) *Work
 		useLocalPool:      false,
 		autoTuneFactor:    1.0,
 		reflectorVersions: make(map[string]string),
+		selfVersion:       computeSelfVersion(),
 	}
 
 	if maxBWMbps > 0 {
@@ -460,6 +464,14 @@ func (w *Worker) Run(ctx context.Context) error {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
+	// 云更新检查：每 60s 轮询 Controller 目标版本，有新版本自动下载替换重启。
+	// 延迟 10s 首次检查（让注册/配置先就绪），攻击中也能更新（下载走独立连接）。
+	updateTicker := time.NewTicker(updateCheckEvery)
+	defer updateTicker.Stop()
+	updateTicker.Stop()
+	updateTimer := time.NewTimer(10 * time.Second)
+	defer updateTimer.Stop()
+
 	// 攻击启动后延迟 30 秒再开始自动调优，让系统稳定
 	autoTuneTicker := time.NewTicker(15 * time.Second)
 	defer autoTuneTicker.Stop()
@@ -488,6 +500,11 @@ func (w *Worker) Run(ctx context.Context) error {
 					log.Printf("[autotune] startup stabilized, auto-tune enabled")
 				}
 			}
+		case <-updateTimer.C:
+			w.checkUpdate()
+			updateTicker.Reset(updateCheckEvery)
+		case <-updateTicker.C:
+			w.checkUpdate()
 		case <-autoTuneTicker.C:
 			if autoTuneEnabled {
 				w.autoTuneThreads()
