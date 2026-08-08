@@ -248,6 +248,13 @@ WantedBy=multi-user.target
 
 		exec.Command("systemctl", "daemon-reload").Run()
 		exec.Command("systemctl", "enable", "nettool-worker").Run()
+		// 安装后立即启动：否则 worker 进程在 -install 分支直接退出，
+		// 服务处于 enabled 但 inactive 状态，节点不会上线
+		if out, err := exec.Command("systemctl", "start", "nettool-worker").CombinedOutput(); err != nil {
+			log.Printf("[install] systemctl start failed: %v (%s)", err, string(out))
+		} else {
+			log.Println("[install] systemd service started")
+		}
 		log.Println("[install] systemd service created and enabled")
 		return nil
 
@@ -260,6 +267,12 @@ WantedBy=multi-user.target
 		output, err := exec.Command("cmd", "/c", cmd).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("schtasks failed: %s: %w", string(output), err)
+		}
+		// 安装后立即启动任务，节点立刻上线（开机自启依然生效）
+		if out, err := exec.Command("cmd", "/c", `schtasks /run /tn "`+taskName+`"`).CombinedOutput(); err != nil {
+			log.Printf("[install] schtasks /run failed: %v (%s)", err, string(out))
+		} else {
+			log.Println("[install] Windows scheduled task started")
 		}
 		log.Println("[install] Windows scheduled task created")
 		return nil

@@ -1514,13 +1514,21 @@ func (c *Ctrl) handleDeployCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parts := []string{
-		"curl -fsSL " + storageURL + " -o worker",
+		"curl -fsSL \"" + storageURL + "\" -o worker",
 		"chmod +x worker",
 		workerCmd,
 	}
+	command := strings.Join(parts, " && ")
+
+	// -install 需要 root 写入 /etc/systemd 或注册 schtasks：
+	// 普通用户直接执行会因权限失败，用 sudo bash -c 包装整条命令链。
+	// 内部双引号必须转义，否则会提前终止 bash -c 的字符串。
+	if r.URL.Query().Get("install") == "1" {
+		command = "sudo bash -c \"" + strings.ReplaceAll(command, "\"", "\\\"") + "\""
+	}
 
 	writeJSON(w, map[string]interface{}{
-		"command":  strings.Join(parts, " && "),
+		"command":  command,
 		"addr":     addr,
 		"httpPort": httpPort,
 	})
