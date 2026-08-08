@@ -441,6 +441,26 @@ func (c *Ctrl) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Regis
 		baseID = "node"
 	}
 
+	// Worker 的 WAN IP 探测失败时会回退 127.0.0.1 生成 ID（如 127-0-0-1-node1），
+	// 多台机器会撞 ID 且无法识别真实节点。Controller 已从 gRPC 连接知道对端 IP，
+	// 用对端 IP 重写 ID，保证节点可辨识、ID 唯一。
+	if strings.HasPrefix(assignedID, "127-0-0-1-") || strings.HasPrefix(assignedID, "0-0-0-0-") ||
+		strings.HasPrefix(assignedID, "localhost-") {
+		if p, ok := peerFromContext(ctx); ok {
+			host, _, err := net.SplitHostPort(p)
+			if err == nil {
+				host = strings.Trim(host, "[]")
+				if net.ParseIP(host) != nil && !strings.Contains(host, ":") {
+					assignedID = strings.ReplaceAll(host, ".", "-") + "-node1"
+					baseID = strings.TrimRight(assignedID, "0123456789-")
+					if baseID == "" {
+						baseID = "node"
+					}
+				}
+			}
+		}
+	}
+
 	reused := false
 	nodeIP := ""
 	// 复用离线条目：同一 worker 断连/崩溃后重启重新注册时，若旧条目仍在
@@ -903,6 +923,17 @@ func (c *Ctrl) listNodesForBroadcast() []*NodeInfo {
 	return c.listNodesLocked()
 }
 
+// offlineTimeout 根据节点状态返回心跳超时阈值：
+// ATTACKING 节点攻击时带宽可能打满、心跳被延迟（gRPC 包排队），
+// 15s 判定太激进会把正在攻击的节点误判 OFFLINE，导致后续任务
+// 只派发给少数恢复快的节点（W=1/W=2）。攻击态放宽到 60s。
+func (c *Ctrl) offlineTimeout(status string) time.Duration {
+	if status == "ATTACKING" {
+		return 60 * time.Second
+	}
+	return 15 * time.Second
+}
+
 func (c *Ctrl) watchOfflineNodes() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -917,11 +948,11 @@ func (c *Ctrl) watchOfflineNodes() {
 				changed = true
 				continue
 			}
-			if n.Status != "OFFLINE" && time.Since(n.LastHeartbeat) > 15*time.Second {
-				n.Status = "OFFLINE"
-				log.Printf("[node] %s marked offline (last seen %v ago)", id, time.Since(n.LastHeartbeat).Round(time.Second))
-				changed = true
-			}
+		if n.Status != "OFFLINE" && time.Since(n.LastHeartbeat) > c.offlineTimeout(n.Status) {
+			n.Status = "OFFLINE"
+			log.Printf("[node] %s marked offline (last seen %v ago)", id, time.Since(n.LastHeartbeat).Round(time.Second))
+			changed = true
+		}
 		}
 		var newPending []string
 		for _, tid := range c.pendingIDs {
@@ -2814,6 +2845,23 @@ func (c *Ctrl) watchTaskTimeout() {
 		c.mu.Lock()
 		for id, task := range c.tasks {
 			switch task.Status {
+			case "pending":
+				// 保护：任务创建 30s 后仍有节点未领取（如攻击瞬间全体短暂掉线、
+				// 派发窗口被心跳节奏拉长），不再等待，已领取节点直接开打。
+				// 未领取的节点恢复上线后也不会收到该任务（running 不再派发）。
+				if time.Since(task.CreatedAt) > 30*time.Second {
+					if len(task.Workers) == 0 {
+						// 一个都没派出去（如创建瞬间所有节点掉线）：标记 failed 让用户重试
+						task.Status = "failed"
+						entry := c.buildTaskLog(task)
+						go c.logTaskComplete(entry)
+						log.Printf("[task] %s failed (no worker received dispatch within 30s)", id)
+						continue
+					}
+					task.Status = "running"
+					task.StartTime = time.Now()
+					log.Printf("[task] %s -> running (forced after 30s dispatch window, workers=%d)", id, len(task.Workers))
+				}
 			case "running":
 				timeout := time.Duration(task.Duration+120) * time.Second
 				if time.Since(task.StartTime) < timeout {
