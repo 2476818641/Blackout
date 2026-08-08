@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reflector Pool Manager</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+  :root { --bg:#0a0e14; --panel:#131820; --border:#1e2836; --text:#b0b8c4; --green:#0c6; --red:#f44; --yellow:#fa0; --cyan:#0cc; --accent:#3b82f6; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:'SF Mono','Consolas',monospace; font-size:13px; }
+  .header { background:var(--panel); border-bottom:1px solid var(--border); padding:12px 20px; display:flex; justify-content:space-between; align-items:center; }
+  .header h1 { color:var(--cyan); font-size:16px; }
+  .header a { color:var(--accent); text-decoration:none; font-size:12px; }
+  .lang-btn { background:transparent; border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:11px; font-family:inherit; }
+  .lang-btn:hover { border-color:var(--accent); color:var(--cyan); }
+  .lang-btn.active { border-color:var(--accent); color:var(--cyan); background:var(--accent); color:#fff; }
+  .container { max-width:1200px; margin:0 auto; padding:12px; }
+  .tabs { display:flex; gap:4px; border-bottom:2px solid var(--border); margin-bottom:16px; overflow-x:auto; }
+  .tab { padding:8px 16px; cursor:pointer; border:none; background:transparent; color:var(--text); font-size:12px; font-family:inherit; border-bottom:2px solid transparent; margin-bottom:-2px; white-space:nowrap; }
+  .tab:hover { color:var(--cyan); }
+  .tab.active { color:var(--cyan); border-bottom-color:var(--accent); }
+  .tab .cnt { font-size:10px; opacity:0.6; }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:16px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--border); font-size:11px; }
+  th { color:var(--text); opacity:0.7; font-weight:normal; }
+  .btn { background:var(--accent); color:#fff; border:none; padding:5px 12px; border-radius:4px; cursor:pointer; font-size:11px; font-family:inherit; }
+  .btn.sm { padding:3px 8px; font-size:10px; }
+  .btn.danger { background:var(--red); }
+  .btn.warn { background:var(--yellow); color:#000; }
+  .btn.steam { background:#1a9fff; }
+  .btn:hover { opacity:0.85; }
+  .btn:disabled { opacity:0.4; cursor:default; }
+  textarea { background:var(--bg); border:1px solid var(--border); color:var(--text); padding:8px; border-radius:4px; font-size:12px; font-family:inherit; width:100%; resize:vertical; min-height:120px; }
+  textarea:focus { outline:none; border-color:var(--accent); }
+  .status-line { font-size:11px; margin:6px 0; min-height:18px; }
+  .status-line.ok { color:var(--cyan); }
+  .status-line.err { color:var(--red); }
+  .table-wrap { max-height:400px; overflow-y:auto; }
+  .toolbar { display:flex; gap:8px; margin-bottom:10px; align-items:center; flex-wrap:wrap; }
+  .source-tag { font-size:9px; padding:1px 5px; border-radius:3px; }
+  .source-tag.steam { background:#1a9fff33; color:#1a9fff; }
+  .source-tag.manual { background:var(--accent); color:#fff; }
+  .source-tag.shodan { background:#e83e8c; color:#fff; }
+  .login-overlay { position:fixed; top:0;left:0;width:100%;height:100%;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:999; }
+  .login-box { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:30px; width:380px; text-align:center; }
+  .login-box h2 { color:var(--cyan); margin-bottom:20px; }
+  .login-box input { text-align:center; font-size:14px; padding:10px; background:var(--bg); border:1px solid var(--border); color:var(--text); border-radius:4px; width:100%; font-family:inherit; }
+  .login-box .btn { width:100%; padding:10px; font-size:14px; margin-top:8px; }
+  .modal-overlay { position:fixed; top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:1000; }
+  .modal-box { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:20px; min-width:500px; max-width:700px; max-height:80vh; overflow-y:auto; }
+  .modal-box h3 { color:var(--cyan); margin-bottom:12px; font-size:14px; }
+  .domain-presets { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+  .domain-presets .btn { font-size:10px; padding:3px 8px; }
+  .domain-presets .btn.on { background:var(--green); }
+  .domain-chk { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px; }
+  .domain-chk label { font-size:11px; display:flex; align-items:center; gap:3px; cursor:pointer; padding:2px 6px; border:1px solid var(--border); border-radius:3px; }
+  .domain-chk label:hover { border-color:var(--accent); }
+  .domain-chk label .on { color:var(--green); }
+  .test-results { margin-top:10px; }
+  .test-results table { margin-top:4px; }
+  .test-results .best-row td { color:var(--green); font-weight:bold; }
+  .test-results .bad-row td { color:var(--red); opacity:0.6; }
+  .manual-domain { display:flex; gap:6px; margin-top:6px; }
+  .manual-domain input { flex:1; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:3px; font-size:11px; font-family:inherit; }
+</style>
+</head>
+<body x-data="poolApp()" x-init="init()">
+
+<div class="login-overlay" x-show="!authed">
+  <div class="login-box">
+    <h2 x-text="t('pool_auth')"></h2>
+    <input type="password" x-model="token" :placeholder="t('admin_token')" @keyup.enter="login()">
+    <button class="btn" @click="login()" x-text="t('login_btn')"></button>
+    <div style="color:var(--red);font-size:12px;margin-top:8px" x-show="error" x-text="error"></div>
+  </div>
+</div>
+
+<template x-if="authed">
+<div>
+<div class="header">
+  <h1 x-text="t('pool_title')"></h1>
+  <div style="display:flex;gap:10px;align-items:center">
+    <button class="lang-btn" :class="{active:lang==='en'}" @click="setLang('en')">EN</button>
+    <button class="lang-btn" :class="{active:lang==='zh'}" @click="setLang('zh')">中文</button>
+    <button class="btn sm" @click="shodanSettingsOpen=!shodanSettingsOpen" x-text="'Shodan ⚙'"></button>
+    <a href="/" x-text="'← '+t('dashboard')"></a>
+  </div>
+</div>
+
+<div class="container">
+  <div class="tabs">
+    <template x-for="p in pools" :key="p.game">
+      <button class="tab" :class="{active:tab===p.game}" @click="tab=p.game; page[p.game]=1">
+        <span x-text="p.name"></span>
+        <span class="cnt" x-text="' (' + p.total + ')'"></span>
+      </button>
+    </template>
+  </div>
+
+  <div class="panel" x-show="pools.length===0" style="text-align:center;padding:40px;color:var(--yellow)" x-text="t('loading')"></div>
+
+  <template x-for="p in pools" :key="p.game">
+    <div x-show="tab===p.game">
+      <div class="toolbar">
+        <button class="btn steam" @click="poolRefresh(p.game)" :disabled="poolRefreshing===p.game"
+          x-text="poolRefreshing===p.game ? t('refreshing') : '↻ '+t('steam_refresh')"
+          x-show="p.game !== 'other' && p.game !== 'dns'"></button>
+        <button class="btn steam" @click="shodanRefreshOpen()" :disabled="shodanRefreshing"
+          x-text="shodanRefreshing ? t('refreshing') : '↻ Shodan Refresh'"
+          x-show="p.game === 'dns'"></button>
+        <button class="btn warn" @click="poolTest(p.game)" :disabled="poolTesting===p.game"
+          x-text="poolTesting===p.game ? t('testing') : t('test_clean')"></button>
+        <span style="font-size:11px;opacity:0.7">
+          <span x-text="t('steam_label')"></span>: <span x-text="p.steam_count"></span> | <span x-text="t('shodan_label')"></span>: <span x-text="p.shodan_count"></span> | <span x-text="t('manual_label')"></span>: <span x-text="p.manual_count"></span>
+        </span>
+      </div>
+      <div class="status-line" :class="poolStatusErr ? 'err' : 'ok'" x-text="poolStatus"></div>
+
+      <textarea x-model="manualTexts[p.game]" :placeholder="t('add_placeholder')"></textarea>
+      <button class="btn" @click="poolAdd(p.game)" style="margin-top:6px" x-text="t('add_scan')"></button>
+
+      <div class="table-wrap" style="margin-top:12px">
+
+        <div class="filter-row" style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap">
+          <select x-show="p.game==='dns'" x-model="getFilter(p.game).domain" @change="page[p.game]=1" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:11px;font-family:inherit;max-width:160px">
+            <option value="">-- All Domains --</option>
+            <template x-for="d in getUniqueDomains(p.game)" :key="d">
+              <option :value="d" x-text="d"></option>
+            </template>
+          </select>
+          <select x-model="getFilter(p.game).country" @change="page[p.game]=1" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:11px;font-family:inherit;max-width:120px">
+            <option value="">-- All Countries --</option>
+            <template x-for="c in getUniqueCountries(p.game)" :key="c">
+              <option :value="c" x-text="c"></option>
+            </template>
+          </select>
+          <button class="btn sm" @click="clearFilters(p.game)" style="font-size:10px" x-show="getFilter(p.game).domain || getFilter(p.game).country">Clear Filters</button>
+          <span style="font-size:10px;opacity:0.6;margin-left:auto" x-text="getFilteredEntries(p.game).length+' entries'"></span>
+        </div>
+
+        <table>
+          <thead><tr><th></th><th>IP:Port</th><th x-text="t('col_game')"></th><th x-text="t('col_resp')"></th>
+          <template x-if="p.game==='dns' || p.game==='cldap'"><th>Amp Domain</th><th>Ratio</th></template>
+          <th x-text="t('col_challenge')"></th><th x-text="t('col_score')"></th><th x-text="t('col_name')"></th><th x-text="t('col_source')"></th><th>Country</th><th></th></tr></thead>
+          <tbody>
+            <template x-for="r in getPageEntries(p.game)" :key="r.ip+':'+r.port">
+              <tr>
+                <td>
+                  <span x-show="r.source==='manual' && r.last_tested && r.last_valid" style="color:var(--green)">&#10003;</span>
+                  <span x-show="r.source==='manual' && r.last_tested && !r.last_valid" style="color:var(--red)">&#10007;</span>
+                </td>
+                <td style="color:var(--green)" x-text="r.ip+':'+r.port"></td>
+                <td x-text="r.game||'-'"></td>
+                <td x-text="r.response_size+'B'"></td>
+                <template x-if="p.game==='dns' || p.game==='cldap'">
+                  <td x-text="r.amp_domain||'-'" style="color:var(--cyan);font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></td>
+                </template>
+                <template x-if="p.game==='dns' || p.game==='cldap'">
+                  <td><span x-text="(r.amp_ratio||0).toFixed(1)+'x'"></span></td>
+                </template>
+                <td>
+                  <span x-show="r.has_challenge" style="color:var(--red);font-weight:bold">!</span>
+                  <span x-show="!r.has_challenge" style="color:var(--green)">OK</span>
+                </td>
+                <td x-text="(r.score||0).toFixed(1)"></td>
+                <td style="font-size:10px;opacity:0.7;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="r.server_name||'-'"></td>
+                <td><span class="source-tag" :class="r.source" x-text="r.source"></span></td>
+                <td x-text="r.country||'-'" style="font-size:10px;opacity:0.7"></td>
+                <td style="white-space:nowrap">
+                  <button x-show="p.game==='dns' || p.game==='cldap'" class="btn sm" @click="openTestDialog(r, p.game)" x-text="t('test_btn')" style="margin-right:4px"></button>
+                  <button x-show="r.source==='manual'" class="btn danger sm" @click="poolDelete(p.game, r)" x-text="t('del')"></button>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+
+        <div class="pagination" style="display:flex;justify-content:center;align-items:center;gap:10px;margin-top:10px;font-size:12px">
+          <button class="btn sm" @click="prevPage(p.game)" :disabled="(page[p.game]||1)<=1">← Prev</button>
+          <span>Page <span x-text="page[p.game]||1" style="color:var(--accent)"></span> / <span x-text="getTotalPages(p.game)"></span></span>
+          <button class="btn sm" @click="nextPage(p.game)" :disabled="(page[p.game]||1)>=getTotalPages(p.game)">Next →</button>
+          <select x-model="perPage" @change="page[p.game]=1" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 6px;border-radius:4px;font-size:11px;font-family:inherit;margin-left:12px">
+            <option value="30">30/page</option>
+            <option value="50">50/page</option>
+            <option value="100">100/page</option>
+            <option value="200">200/page</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </template>
+</div>
+</div>
+</template>
+
+<div class="modal-overlay" x-show="shodanSettingsOpen" @click.self="shodanSettingsOpen=false">
+  <div class="modal-box" style="min-width:420px;max-width:500px">
+    <h3>Shodan Settings</h3>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <span style="font-size:12px">Auto Refresh:</span>
+      <button class="btn sm" :class="shodanConfig.enabled?'on':''" @click="toggleShodan()"
+        x-text="shodanConfig.enabled ? 'ON' : 'OFF'"
+        :style="shodanConfig.enabled ? 'background:var(--green)' : 'background:var(--red)'"></button>
+      <span style="font-size:10px;opacity:0.6" x-show="shodanConfig.enabled">Every 7 days</span>
+    </div>
+    <div style="margin-bottom:10px">
+      <label style="font-size:12px;display:block;margin-bottom:4px">API Key</label>
+      <input type="password" x-model="shodanConfig.key" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;font-family:inherit"
+        :placeholder="shodanConfig.masked ? 'Current: '+shodanConfig.masked : 'Enter Shodan API Key'">
+    </div>
+    <button class="btn" @click="saveShodanConfig()" x-text="shodanSaving ? 'Saving...' : 'Save'"></button>
+    <span style="font-size:11px;margin-left:10px" :style="{color:shodanStatusErr?'var(--red)':'var(--cyan)'}" x-text="shodanStatusMsg"></span>
+  </div>
+</div>
+
+<div class="modal-overlay" x-show="shodanDialogOpen" @click.self="shodanDialogOpen=false">
+  <div class="modal-box" style="min-width:460px;max-width:560px">
+    <h3>Shodan Refresh</h3>
+    <div style="display:flex;gap:10px;margin-bottom:12px">
+      <button class="btn sm" :class="{on:shodanRefreshMode==='all'}" @click="shodanRefreshMode='all'">All Default (18)</button>
+      <button class="btn sm" :class="{on:shodanRefreshMode==='manual'}" @click="shodanRefreshMode='manual'">Manual Select</button>
+    </div>
+    <div class="domain-chk" x-show="shodanRefreshMode==='manual'" style="margin-bottom:10px">
+      <template x-for="c in shodanCountries" :key="c">
+        <label @click="toggleShodanCountry(c)">
+          <input type="checkbox" :checked="shodanSelectedCountries.includes(c)" style="display:none">
+          <span :class="shodanSelectedCountries.includes(c)?'on':''" x-text="shodanSelectedCountries.includes(c)?'✓ '+c:c"></span>
+        </label>
+      </template>
+    </div>
+    <div style="margin-top:10px">
+      <button class="btn" @click="shodanRefresh()" :disabled="shodanRefreshing"
+        x-text="shodanRefreshing ? t('refreshing') : 'Start Refresh'"></button>
+      <span style="font-size:11px;margin-left:10px" :style="{color:shodanStatusErr?'var(--red)':'var(--cyan)'}" x-text="shodanStatusMsg"></span>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" x-show="testDialog.open" @click.self="testDialog.open=false">
+  <div class="modal-box">
+    <h3 x-text="(testDialog.game==='cldap' ? t('test_title_cldap') : t('test_title'))+': '+testDialog.ip+':'+testDialog.port"></h3>
+    <div class="domain-presets" x-show="testDialog.game !== 'cldap'">
+      <button class="btn sm" :class="{on:testDialog.mode==='all'}" @click="testSetDomains('all')" x-text="t('all_builtin')"></button>
+      <button class="btn sm" :class="{on:testDialog.mode==='custom'}" @click="testSetDomains('custom')" x-text="t('custom_only')"></button>
+      <button class="btn sm" :class="{on:testDialog.mode==='custom+builtin'}" @click="testSetDomains('custom+builtin')" x-text="t('custom_plus_builtin')"></button>
+      <button class="btn sm" :class="{on:testDialog.mode==='manual'}" @click="testDialog.mode='manual'" x-text="t('manual_select')"></button>
+    </div>
+    <div class="domain-chk" x-show="testDialog.mode==='manual'">
+      <template x-for="d in testDialog.allDomains" :key="d">
+        <label @click="testToggleDomain(d)">
+          <input type="checkbox" :checked="testDialog.selectedDomains.includes(d)" style="display:none">
+          <span :class="testDialog.selectedDomains.includes(d)?'on':''" x-text="testDialog.selectedDomains.includes(d)?'✓ '+d:d"></span>
+        </label>
+      </template>
+    </div>
+    <div class="manual-domain" x-show="testDialog.mode==='manual'">
+      <input type="text" x-model="testDialog.manualInput" :placeholder="t('manual_domain_placeholder')" @keyup.enter="testAddManualDomain()">
+      <button class="btn sm" @click="testAddManualDomain()" x-text="t('add')"></button>
+    </div>
+    <div style="margin-top:10px">
+      <button class="btn" @click="runTest()" :disabled="testDialog.running"
+        x-text="testDialog.running ? t('test_running') : t('start_test')"></button>
+    </div>
+    <div class="test-results" x-show="testDialog.results.length>0">
+      <div style="margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:11px">
+        <div x-show="testDialog.bestRatio>0" style="color:var(--green)">
+          ✓ Best: <span x-text="testDialog.bestDomain"></span> → <span x-text="testDialog.bestRatio.toFixed(1)+'x'"></span> amplification
+        </div>
+        <div x-show="testDialog.tcCount>0" style="color:var(--red);margin-top:4px">
+          ⚠ <span x-text="testDialog.tcCount"></span> response(s) truncated (TC=1) - USELESS for spoofed UDP attacks
+        </div>
+        <div x-show="testDialog.bestRatio===0" style="color:var(--yellow)">
+          ✗ No valid amplification found (all responses have TC=1, errors, or < 500B)
+        </div>
+      </div>
+      <table>
+        <thead><tr><th x-show="testDialog.game!=='cldap'">Domain</th><th>Query</th><th>Response</th><th>Ratio</th><th x-show="testDialog.game!=='cldap'">TC</th></tr></thead>
+        <tbody>
+          <template x-for="r in testDialog.results" :key="r.domain">
+            <tr :class="(!r.error && !r.tc && r.response_size>=500 && r.ratio===testDialog.bestRatio) ? 'best-row' : (r.error||r.tc||r.response_size<500?'bad-row':'')">
+              <td x-show="testDialog.game!=='cldap'" x-text="r.domain"></td>
+              <td x-text="(r.query_size||39)+'B'"></td>
+              <td x-text="r.response_size+'B'"></td>
+              <td>
+                <span x-show="r.error" x-text="r.error"></span>
+                <span x-show="!r.error && r.tc" style="color:var(--red)" x-text="'TC=1 (USELESS)'"></span>
+                <span x-show="!r.error && !r.tc && r.response_size<500" style="color:var(--yellow)" x-text="(r.ratio||0).toFixed(1)+'x (too small)'"></span>
+                <span x-show="!r.error && !r.tc && r.response_size>=500" x-text="(r.ratio||0).toFixed(1)+'x'"></span>
+              </td>
+              <td x-show="testDialog.game!=='cldap'">
+                <span x-show="r.tc" style="color:var(--red);font-weight:bold">TC=1</span>
+                <span x-show="!r.tc&&!r.error" style="color:var(--green)">OK</span>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+function poolApp() {
+  const TR = {
+    en: {
+      pool_auth:'Pool Manager Auth', admin_token:'Admin token', login_btn:'Login',
+      pool_title:'Reflector Pool Manager', dashboard:'Dashboard',
+      loading:'Loading pools...',
+      steam_refresh:'Steam Refresh', test_clean:'Test & Clean', add_scan:'Add & Scan',
+      refreshes:'Refreshing...', testing:'Testing...',
+      steam_label:'Steam', manual_label:'Manual', shodan_label:'Shodan',
+      add_placeholder:'Add IP:Port, one per line (auto-scanned on save)',
+      showing:'Showing', of:'of', load_more:'Load 200 more',
+      col_game:'Game', col_resp:'Resp', col_challenge:'Challenge', col_score:'Score', col_name:'Name', col_source:'Source',
+      del:'Del', test_btn:'Test',
+      test_title:'DNS Amplification Test', test_title_cldap:'CLDAP Amplification Test',
+      all_builtin:'All Built-in', custom_only:'Custom Only', custom_plus_builtin:'Custom + Built-in', manual_select:'Manual Select',
+      manual_domain_placeholder:'Enter domain and press Enter...',
+      add:'Add', start_test:'Start Test', test_running:'Testing...'
+    },
+    zh: {
+      pool_auth:'反射器池认证', admin_token:'管理员令牌', login_btn:'登录',
+      pool_title:'反射器池管理', dashboard:'仪表盘',
+      loading:'加载中...',
+      steam_refresh:'Steam刷新', test_clean:'测试清理', add_scan:'添加扫描',
+      refreshes:'刷新中...', testing:'测试中...',
+      steam_label:'Steam', manual_label:'手动', shodan_label:'Shodan',
+      add_placeholder:'添加 IP:Port，每行一个 (保存时自动扫描验证)',
+      showing:'显示', of:'/共', load_more:'加载200条',
+      col_game:'游戏', col_resp:'响应', col_challenge:'挑战', col_score:'评分', col_name:'名称', col_source:'来源',
+      del:'删除', test_btn:'测试',
+      test_title:'DNS 放大测试', test_title_cldap:'CLDAP 放大测试',
+      all_builtin:'全部内置', custom_only:'仅自定义', custom_plus_builtin:'自定义+内置', manual_select:'手动选择',
+      manual_domain_placeholder:'输入域名后按回车...',
+      add:'添加', start_test:'开始测试', test_running:'测试中...'
+    }
+  };
+
+  const BUILTIN_DOMAINS_DEFAULT = ['isc.org','ripe.net','internet.org','cloudflare.com','github.com','microsoft.com','amazon.com','netflix.com','akamai.com','stackoverflow.com'];
+
+  return {
+    token:'', error:'', authed:false, lang:localStorage.getItem('lang')||'en',
+    tab:'ark', pools:[], poolData:{}, manualTexts:{},
+    poolRefreshing:'', poolTesting:'', poolStatus:'', poolStatusErr:false,
+    shodanRefreshing: false,
+    shodanRefreshMode: 'all',
+    shodanDialogOpen: false,
+    shodanCountries: [], shodanSelectedCountries: [],
+    shodanSettingsOpen: false, shodanSaving: false, shodanStatusMsg: '', shodanStatusErr: false,
+    shodanConfig: {key:'',enabled:false,masked:''},
+    page: {}, perPage: 50,
+    poolFilters: {},
+    builtinDomains: [...BUILTIN_DOMAINS_DEFAULT],
+    testDialog: {
+      open:false, ip:'', port:53, mode:'all', game:'dns',
+      allDomains:[], selectedDomains:[], manualInput:'',
+      results:[], bestRatio:0, bestDomain:'', tcCount:0, running:false
+    },
+
+    t(key) { let txt = (TR[this.lang]||TR.en)[key]; return txt === undefined ? key : txt; },
+    setLang(l) { this.lang = l; localStorage.setItem('lang', l); },
+
+    init() {
+      const t = sessionStorage.getItem('token');
+      if (t) { this.token=t; this.doLogin(); }
+    },
+
+    getAuthHeaders() {
+      return { 'Content-Type':'application/json', 'Authorization':'Bearer '+(sessionStorage.getItem('token')||'') };
+    },
+
+    async login() {
+      this.error='';
+      try {
+        const r = await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:this.token})});
+        const d = await r.json();
+        if (d.success) { sessionStorage.setItem('token',d.token); this.authed=true; this.startRefresh(); } else this.error=d.error||'Invalid token';
+      } catch(e) { this.error='Connection failed'; }
+    },
+
+    async doLogin() {
+      try {
+        const r = await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:this.token})});
+        const d = await r.json();
+        if (d.success) { sessionStorage.setItem('token',d.token); this.authed=true; this.startRefresh(); }
+      } catch(e) {}
+    },
+
+    startRefresh() { this.loadPools(); this.loadDomains(); this.loadShodanConfig(); this.loadShodanCountries(); setInterval(() => this.loadPools(), 15000); },
+
+    async loadDomains() {
+      try {
+        const r = await fetch('/api/dnsamp/domains',{headers:this.getAuthHeaders()});
+        const d = await r.json();
+        if (d.domains && d.domains.length > 0) this.builtinDomains = d.domains;
+      } catch(e) {}
+    },
+
+    async loadPools() {
+      try { const r = await fetch('/api/pools',{headers:this.getAuthHeaders()}); this.pools = await r.json();
+        if (!this.tab || !this.pools.find(p=>p.game===this.tab)) this.tab = this.pools[0]?.game; } catch(e) {}
+      for (const p of this.pools||[]) {
+        try { const r = await fetch('/api/pools/'+p.game,{headers:this.getAuthHeaders()}); this.poolData[p.game] = await r.json(); } catch(e) {}
+      }
+    },
+
+    getFilter(game) {
+      if (!this.poolFilters[game]) this.poolFilters[game] = { domain: '', country: '' };
+      return this.poolFilters[game];
+    },
+
+    getFilteredEntries(game) {
+      let entries = this.poolData[game] || [];
+      const f = this.getFilter(game);
+      if (f.domain) entries = entries.filter(e => e.amp_domain === f.domain);
+      if (f.country) entries = entries.filter(e => e.country === f.country);
+      return entries;
+    },
+
+    getTotalPages(game) {
+      const total = this.getFilteredEntries(game).length;
+      return Math.max(1, Math.ceil(total / this.perPage));
+    },
+
+    getPageEntries(game) {
+      const filtered = this.getFilteredEntries(game);
+      const p = this.page[game] || 1;
+      const start = (p - 1) * this.perPage;
+      return filtered.slice(start, start + this.perPage);
+    },
+
+    prevPage(game) { const p = this.page[game] || 1; if (p > 1) this.page[game] = p - 1; },
+    nextPage(game) { const p = this.page[game] || 1; if (p < this.getTotalPages(game)) this.page[game] = p + 1; },
+
+    getUniqueDomains(game) {
+      const entries = this.poolData[game] || [];
+      const domains = new Set();
+      entries.forEach(e => { if (e.amp_domain) domains.add(e.amp_domain); });
+      return Array.from(domains).sort();
+    },
+
+    getUniqueCountries(game) {
+      const entries = this.poolData[game] || [];
+      const countries = new Set();
+      entries.forEach(e => { if (e.country) countries.add(e.country); });
+      return Array.from(countries).sort();
+    },
+
+    clearFilters(game) {
+      this.poolFilters[game] = { domain: '', country: '' };
+      this.page[game] = 1;
+    },
+
+    async poolRefresh(game) {
+      this.poolRefreshing=game; this.poolStatus='Fetching from Steam API...'; this.poolStatusErr=false;
+      try {
+        const r = await fetch('/api/pools/'+game+'/refresh',{method:'POST',headers:this.getAuthHeaders()}); const d = await r.json();
+        if (d.error) { this.poolStatus=d.error; this.poolStatusErr=true; } else this.poolStatus='Queried '+d.queried+', added '+d.added+', total '+d.total;
+        this.loadPools();
+      } catch(e) { this.poolStatus='Error: '+e.message; this.poolStatusErr=true; }
+      this.poolRefreshing='';
+    },
+
+    async poolAdd(game) {
+      const text = this.manualTexts[game]||''; const lines = text.split('\n').map(l=>l.trim()).filter(l=>l&&l.includes(':'));
+      if (!lines.length) return;
+      this.poolStatus='Scanning '+lines.length+' entries...'; this.poolStatusErr=false;
+      try {
+        const r = await fetch('/api/pools/'+game+'/add',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify(lines)}); const d = await r.json();
+        this.poolStatus='Added '+d.added+' valid servers'; this.manualTexts[game]=''; this.loadPools();
+      } catch(e) { this.poolStatus='Error: '+e.message; this.poolStatusErr=true; }
+    },
+
+    async shodanRefreshOpen() {
+      this.shodanDialogOpen = true;
+      this.shodanRefreshMode = 'all';
+      this.shodanStatusMsg = '';
+    },
+
+    async loadShodanCountries() {
+      try {
+        const r = await fetch('/api/shodan/countries',{headers:this.getAuthHeaders()});
+        const d = await r.json();
+        if (d.countries) this.shodanCountries = d.countries;
+      } catch(e) {}
+    },
+
+    toggleShodanCountry(c) {
+      const idx = this.shodanSelectedCountries.indexOf(c);
+      if (idx >= 0) this.shodanSelectedCountries.splice(idx, 1);
+      else this.shodanSelectedCountries.push(c);
+    },
+
+    async shodanRefresh() {
+      const countries = this.shodanRefreshMode === 'manual' ? this.shodanSelectedCountries : null;
+      if (this.shodanRefreshMode === 'manual' && (!countries || countries.length === 0)) {
+        this.shodanStatusMsg = 'Select at least one country'; this.shodanStatusErr = true; return;
+      }
+      this.shodanRefreshing = true; this.poolStatus = 'Shodan refresh...'; this.poolStatusErr = false;
+      this.shodanStatusMsg = 'Refreshing...'; this.shodanStatusErr = false;
+      try {
+        const body = countries ? JSON.stringify({countries}) : '{}';
+        const r = await fetch('/api/shodan/refresh',{method:'POST',headers:this.getAuthHeaders(),body});
+        const d = await r.json();
+        if (d.error) { this.poolStatus = d.error; this.poolStatusErr = true; this.shodanStatusMsg = d.error; this.shodanStatusErr = true; }
+        else { this.poolStatus = 'Shodan done, total '+d.total; this.shodanStatusMsg = 'Done, total '+d.total; this.loadPools(); }
+      } catch(e) { this.poolStatus = 'Error: '+e.message; this.poolStatusErr = true; this.shodanStatusMsg = e.message; this.shodanStatusErr = true; }
+      this.shodanRefreshing = false;
+    },
+
+    async loadShodanConfig() {
+      try {
+        const r = await fetch('/api/shodan',{headers:this.getAuthHeaders()});
+        const d = await r.json();
+        this.shodanConfig = d;
+      } catch(e) {}
+    },
+
+    toggleShodan() {
+      this.shodanConfig.enabled = !this.shodanConfig.enabled;
+    },
+
+    async saveShodanConfig() {
+      this.shodanSaving = true; this.shodanStatusMsg = ''; this.shodanStatusErr = false;
+      try {
+        const r = await fetch('/api/shodan',{
+          method:'POST', headers:this.getAuthHeaders(),
+          body:JSON.stringify({key:this.shodanConfig.key, enabled:this.shodanConfig.enabled})
+        });
+        const d = await r.json();
+        if (d.error) { this.shodanStatusMsg = d.error; this.shodanStatusErr = true; }
+        else { this.shodanStatusMsg = 'Saved'; await this.loadShodanConfig(); }
+      } catch(e) { this.shodanStatusMsg = e.message; this.shodanStatusErr = true; }
+      this.shodanSaving = false;
+    },
+
+    async poolTest(game) {
+      this.poolTesting=game; this.poolStatus='Testing manual entries...'; this.poolStatusErr=false;
+      try { await fetch('/api/pools/'+game+'/test',{method:'POST',headers:this.getAuthHeaders()}); this.poolStatus='Test done'; this.loadPools(); }
+      catch(e) { this.poolStatus='Error: '+e.message; this.poolStatusErr=true; }
+      this.poolTesting='';
+    },
+
+    async poolDelete(game, r) {
+      await fetch('/api/pools/'+game+'?ip='+encodeURIComponent(r.ip)+'&port='+r.port,{method:'DELETE',headers:this.getAuthHeaders()});
+      this.loadPools();
+    },
+
+    async openTestDialog(r, game) {
+      const td = this.testDialog;
+      td.open = true; td.ip = r.ip; td.port = r.port; td.game = game;
+      td.results = []; td.bestRatio = 0; td.bestDomain = ''; td.tcCount = 0; td.running = false;
+      td.manualInput = '';
+      if (game === 'cldap') {
+        td.mode = 'cldap';
+      } else {
+        td.allDomains = [...this.builtinDomains];
+        if (r.amp_domain && !this.builtinDomains.includes(r.amp_domain)) {
+          td.allDomains.unshift(r.amp_domain);
+        }
+        this.testSetDomains('all');
+      }
+    },
+
+    testSetDomains(mode) {
+      const td = this.testDialog;
+      td.mode = mode;
+      switch (mode) {
+        case 'all':
+          td.selectedDomains = [...this.builtinDomains]; break;
+        case 'custom':
+          td.selectedDomains = td.allDomains.filter(d => !this.builtinDomains.includes(d)); break;
+        case 'custom+builtin':
+          td.selectedDomains = [...td.allDomains]; break;
+      }
+    },
+
+    testToggleDomain(d) {
+      const idx = this.testDialog.selectedDomains.indexOf(d);
+      if (idx >= 0) { this.testDialog.selectedDomains.splice(idx, 1); }
+      else { this.testDialog.selectedDomains.push(d); }
+    },
+
+    testAddManualDomain() {
+      const d = this.testDialog.manualInput.trim();
+      if (!d) return;
+      if (!this.testDialog.selectedDomains.includes(d)) {
+        this.testDialog.selectedDomains.push(d);
+      }
+      if (!this.testDialog.allDomains.includes(d)) {
+        this.testDialog.allDomains.push(d);
+      }
+      this.testDialog.manualInput = '';
+    },
+
+    async runTest() {
+      const td = this.testDialog;
+      const domains = td.mode === 'manual' ? td.selectedDomains : (() => {
+        switch (td.mode) {
+          case 'all': return ['all'];
+          case 'custom': return ['custom'];
+          case 'custom+builtin': return ['custom','all'];
+          default: return ['all'];
+        }
+      })();
+      if (!domains.length) return;
+
+      td.running = true; td.results = []; td.bestRatio = 0; td.bestDomain = ''; td.tcCount = 0;
+      try {
+        if (td.game === 'cldap') {
+          const r = await fetch('/api/pools/cldap/test-single', {
+            method:'POST', headers:this.getAuthHeaders(),
+            body:JSON.stringify({ip:td.ip, port:td.port})
+          });
+          const data = await r.json();
+          if (data.result && !data.result.error) {
+            td.results = [{domain:'CLDAP', response_size:data.result.response_size, ratio:data.result.ratio, query_size:data.result.query_size}];
+            td.bestRatio = data.result.ratio;
+            td.bestDomain = 'CLDAP';
+          } else {
+            td.results = [{domain:'CLDAP', error:data.result?.error||'No response'}];
+          }
+        } else {
+          const r = await fetch('/api/pools/dns/test-single', {
+            method:'POST', headers:this.getAuthHeaders(),
+            body:JSON.stringify({ip:td.ip, port:td.port, domains:domains})
+          });
+          const data = await r.json();
+          td.results = (data.results||[]).sort((a,b) => (b.ratio||0) - (a.ratio||0));
+          if (data.best) {
+            td.bestRatio = data.best.ratio;
+            td.bestDomain = data.best.domain;
+          }
+          // 计算 TC=1 的数量
+          td.tcCount = td.results.filter(r => r.tc).length;
+        }
+      } catch(e) { td.results = [{domain:'Error', error:e.message}]; }
+      td.running = false;
+    },
+
+    logout() { sessionStorage.removeItem('token'); location.reload(); }
+  }
+}
+</script>
+</body>
+</html>

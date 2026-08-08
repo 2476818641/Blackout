@@ -1,0 +1,20 @@
+# 编译产物
+/dist/
+
+# 运行时数据（令牌、证书、数据库、日志）
+/data/
+*.log
+*.pid
+
+# Python 手动测试脚本
+vse_amp_test.py
+dns_amp_test.py
+cldap_amp_test.py
+
+# 通用
+*.exe
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+Thumbs.db
