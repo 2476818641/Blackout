@@ -134,6 +134,10 @@ type Ctrl struct {
 	deployFile       string
 	deployStorageURL string
 	deployMu         sync.RWMutex
+	// 公网 IP 缓存：快速上线自动探测，TTL 1 小时，避免每次请求都打外部 API
+	publicIP      string
+	publicIPAt    time.Time
+	publicIPCache sync.RWMutex
 }
 
 type AttackTemplate struct {
@@ -1422,9 +1426,10 @@ func (c *Ctrl) handleDeployConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleDeployCommand GET /api/deploy/command?addr=<ip:9090>&http_port=<8080>&proxy=1&install=1&daemon=1
-// 只负责拼接：Controller 地址 + worker token + 可选参数（-proxy / -install / -daemon）。
-// 下载用 curl（任何发行版自带），文件名固定 worker。
+// handleDeployCommand GET /api/deploy/command?proxy=1&install=1&daemon=1
+// 全自动拼接：公网 IP 自动探测 + gRPC/HTTP 端口从监听地址推导 + token 从
+// data/auth/worker.token 读取（New 时 loadOrGenerate）。可选覆盖：
+// addr（手动指定 controller 地址）、grpc_port、http_port。
 func (c *Ctrl) handleDeployCommand(w http.ResponseWriter, r *http.Request) {
 	c.deployMu.RLock()
 	storageURL := c.deployStorageURL
@@ -1435,31 +1440,56 @@ func (c *Ctrl) handleDeployCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// addr 必须是合法的 host:port，防止特殊字符注入生成的 shell 命令
-	addr := strings.TrimSpace(r.URL.Query().Get("addr"))
-	if addr == "" {
-		addr = "localhost:9090"
+	// gRPC 端口：优先查询参数，否则从监听地址推导
+	grpcPort := strings.TrimSpace(r.URL.Query().Get("grpc_port"))
+	if grpcPort == "" {
+		_, p, err := net.SplitHostPort(c.grpcAddr)
+		if err == nil && p != "" {
+			grpcPort = p
+		} else {
+			grpcPort = "9090"
+		}
 	}
-	host, portStr, err := net.SplitHostPort(addr)
-	if err != nil || host == "" {
-		writeJSON(w, map[string]interface{}{"error": "invalid addr, must be host:port"})
-		return
-	}
-	if n, err := strconv.Atoi(portStr); err != nil || n < 1 || n > 65535 {
-		writeJSON(w, map[string]interface{}{"error": "invalid addr port"})
+	if n, err := strconv.Atoi(grpcPort); err != nil || n < 1 || n > 65535 {
+		writeJSON(w, map[string]interface{}{"error": "invalid grpc_port"})
 		return
 	}
 
 	// http_port 用于 Worker 的 HTTP 回连端口（dashboard/API）：
 	// 非默认 8080 时必须传给 worker，否则代理/DNS/反射器拉取连错端口。
-	// 只在非默认时拼入，保持命令简洁。
 	httpPort := strings.TrimSpace(r.URL.Query().Get("http_port"))
 	if httpPort == "" {
-		httpPort = "8080"
+		_, p, err := net.SplitHostPort(c.httpAddr)
+		if err == nil && p != "" {
+			httpPort = p
+		} else {
+			httpPort = "8080"
+		}
 	}
 	if n, err := strconv.Atoi(httpPort); err != nil || n < 1 || n > 65535 {
 		writeJSON(w, map[string]interface{}{"error": "invalid http_port"})
 		return
+	}
+
+	// addr：手动指定优先；否则自动探测公网 IP 拼接 gRPC 端口。
+	// 探测失败时回退 localhost（Worker 与 Controller 同机部署仍可用）。
+	addr := strings.TrimSpace(r.URL.Query().Get("addr"))
+	if addr != "" {
+		host, portStr, err := net.SplitHostPort(addr)
+		if err != nil || host == "" {
+			writeJSON(w, map[string]interface{}{"error": "invalid addr, must be host:port"})
+			return
+		}
+		if n, err := strconv.Atoi(portStr); err != nil || n < 1 || n > 65535 {
+			writeJSON(w, map[string]interface{}{"error": "invalid addr port"})
+			return
+		}
+	} else {
+		if pub := c.getPublicIP(); pub != "" {
+			addr = net.JoinHostPort(pub, grpcPort)
+		} else {
+			addr = "localhost:" + grpcPort
+		}
 	}
 
 	// -install 与 -daemon 互斥（worker main.go 中 install 优先，daemon 会被静默忽略）
@@ -1468,6 +1498,7 @@ func (c *Ctrl) handleDeployCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// token 来自 data/auth/worker.token（New 时 loadOrGenerate 读取）
 	workerCmd := "./worker -c " + addr + " -token " + c.workerToken
 	if httpPort != "8080" {
 		workerCmd += " -http-port " + httpPort
@@ -1489,9 +1520,58 @@ func (c *Ctrl) handleDeployCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]interface{}{
-		"command": strings.Join(parts, " && "),
-		"addr":    addr,
+		"command":  strings.Join(parts, " && "),
+		"addr":     addr,
+		"httpPort": httpPort,
 	})
+}
+
+// getPublicIP 探测 Controller 公网 IP（缓存 1 小时）。
+// 兼容纯文本 IP（iplark.com / ipify）与 JSON 格式（api.ip.cc）。
+func (c *Ctrl) getPublicIP() string {
+	c.publicIPCache.RLock()
+	if c.publicIP != "" && time.Since(c.publicIPAt) < time.Hour {
+		ip := c.publicIP
+		c.publicIPCache.RUnlock()
+		return ip
+	}
+	c.publicIPCache.RUnlock()
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	var jsonResp struct {
+		IP string `json:"ip"`
+	}
+	for _, u := range []string{"https://iplark.com", "https://api.ipify.org", "https://api.ip.cc/"} {
+		req, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		resp.Body.Close()
+		raw := strings.TrimSpace(string(body))
+		if raw == "" {
+			continue
+		}
+		var ip string
+		if net.ParseIP(raw) != nil {
+			ip = raw
+		} else if json.Unmarshal(body, &jsonResp) == nil && net.ParseIP(jsonResp.IP) != nil {
+			ip = jsonResp.IP
+		}
+		if ip != "" {
+			c.publicIPCache.Lock()
+			c.publicIP = ip
+			c.publicIPAt = time.Now()
+			c.publicIPCache.Unlock()
+			return ip
+		}
+	}
+	return ""
 }
 
 func (c *Ctrl) handleDNSAmp(w http.ResponseWriter, r *http.Request) {

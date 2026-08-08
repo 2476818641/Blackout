@@ -384,7 +384,7 @@
           </div>
           <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center;font-size:11px">
             <span style="opacity:0.7" x-text="t('deploy_grpc_port')"></span>
-            <input x-model="deployGrpcPort" @input="deployGrpcPortInput()" placeholder="9090" style="width:70px;margin-bottom:0">
+            <input x-model="deployGrpcPort" @input="deployGrpcPortInput()" placeholder="auto" style="width:70px;margin-bottom:0">
             <span style="opacity:0.5" x-text="t('deploy_grpc_port_hint')"></span>
           </div>
           <div style="display:flex;flex-direction:column;gap:6px;font-size:11px;margin-bottom:8px">
@@ -530,7 +530,7 @@ function app() {
       save:'Save',
       quick_deploy:'Quick Deploy', deploy_storage_ph:'Cloud storage URL (worker binary)', deploy_cmd_empty:'Set storage URL then Save to generate command',
       deploy_proxy:'Fetch L7 proxies (-proxy)', deploy_install:'Install auto-start service (-install)', deploy_daemon:'Run in background (-daemon)',
-      deploy_grpc_port:'gRPC port:', deploy_grpc_port_hint:'(default 9090)',
+      deploy_grpc_port:'gRPC port:', deploy_grpc_port_hint:'(auto, leave empty)',
       deploy_tip:'Command auto-concatenates controller address + worker token.\nNon-root users: -daemon runs in background without nohup (log: data/worker.log).\n-install and -daemon are mutually exclusive.',
       attack_logs:'Attack Logs', all_methods:'All Methods', export_csv:'Export CSV',
       col_id:'ID', col_ip:'IP', col_os:'OS', col_cpu:'CPU', col_mem:'Memory', col_location:'Location', col_status:'Status',
@@ -568,7 +568,7 @@ function app() {
       save:'保存',
       quick_deploy:'快速上线', deploy_storage_ph:'云存储 URL (worker 二进制直链)', deploy_cmd_empty:'先设置存储 URL 并保存以生成命令',
       deploy_proxy:'拉取 L7 代理 (-proxy)', deploy_install:'安装自启动服务 (-install)', deploy_daemon:'后台运行 (-daemon)',
-      deploy_grpc_port:'gRPC 端口:', deploy_grpc_port_hint:'(默认 9090)',
+      deploy_grpc_port:'gRPC 端口:', deploy_grpc_port_hint:'(自动，留空)',
       deploy_tip:'命令自动拼接控制器地址 + worker 令牌。\n非 root 用户: -daemon 免 nohup 后台运行 (日志: data/worker.log)。\n-install 与 -daemon 互斥。',
       attack_logs:'攻击日志', all_methods:'所有方法', export_csv:'导出CSV',
       col_id:'ID', col_ip:'IP', col_os:'系统', col_cpu:'CPU', col_mem:'内存', col_location:'位置', col_status:'状态',
@@ -765,12 +765,11 @@ function app() {
     deployGrpcPortInput() { localStorage.setItem('deployGrpcPort', this.deployGrpcPort||'9090'); this.buildDeployCmd(); },
     toggleInstall() { if (this.deployInstall) this.deployDaemon = false; this.buildDeployCmd(); },
     async buildDeployCmd() {
-      // 默认端口：gRPC 9090、HTTP 与页面一致（location.port 即为 Controller HTTP 端口）。
-      // 非默认 gRPC 端口通过 deployGrpcPort 输入框覆盖。
-      const grpcPort = this.deployGrpcPort || '9090';
-      const httpPort = location.port || (location.protocol==='https:'?'443':'80');
-      const addr = (location.hostname||'localhost')+':'+grpcPort;
-      const params = new URLSearchParams({addr:addr, http_port:httpPort});
+      // Controller 全自动：公网 IP 自动探测 + gRPC/HTTP 端口从监听地址推导
+      // + token 从 data/auth/worker.token 读取。gRPC 端口仅需在非默认时覆盖。
+      const params = new URLSearchParams();
+      const grpcPort = this.deployGrpcPort || '';
+      if (grpcPort && grpcPort !== '9090') params.set('grpc_port', grpcPort);
       if (this.deployProxy) params.set('proxy','1');
       if (this.deployInstall) params.set('install','1');
       if (this.deployDaemon) params.set('daemon','1');
