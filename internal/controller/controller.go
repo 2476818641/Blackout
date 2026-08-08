@@ -351,7 +351,22 @@ func (c *Ctrl) Start() error {
 
 	log.Printf("HTTP server listening on %s", c.httpAddr)
 	if tlsConfig != nil {
-		return http.ListenAndServeTLS(c.httpAddr, CertFile, KeyFile, corsMiddleware(mux))
+		// TLS 模式下仍接受明文请求并 301 重定向到 https：
+		// 用户误用 http:// 访问或扫描器探测时不再触发 TLS 握手失败日志刷屏。
+		// 重定向 handler 基于 r.TLS 判断（明文连接 r.TLS == nil）。
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.TLS == nil {
+				host := r.Host
+				if host == "" {
+					host = r.URL.Host
+				}
+				target := "https://" + host + r.URL.RequestURI()
+				http.Redirect(w, r, target, http.StatusMovedPermanently)
+				return
+			}
+			corsMiddleware(mux).ServeHTTP(w, r)
+		})
+		return serveAutoTLS(c.httpAddr, tlsConfig, handler)
 	}
 	return http.ListenAndServe(c.httpAddr, corsMiddleware(mux))
 }
