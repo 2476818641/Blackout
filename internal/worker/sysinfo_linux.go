@@ -9,8 +9,8 @@ import (
 )
 
 type sysStats struct {
-	CPUPercent  int32
-	MemoryMB    int64
+	CPUPercent int32
+	MemoryMB   int64
 }
 
 var prevIdle, prevTotal uint64

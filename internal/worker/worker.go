@@ -73,7 +73,7 @@ type Worker struct {
 	activeThreads  int32
 
 	// 本地反射器池
-	localPool     *LocalReflectorPool
+	localPool      *LocalReflectorPool
 	workerLocation string
 	useLocalPool   bool
 
@@ -101,19 +101,19 @@ const (
 
 func New(id, controllerAddr, authToken, proxySource string, maxBWMbps int) *Worker {
 	w := &Worker{
-		id:               id,
-		controller:       controllerAddr,
-		httpPort:         "8080",
-		authToken:        authToken,
-		proxySource:      proxySource,
-		maxBWMbps:        maxBWMbps,
-		activeTasks:      make(map[string]*attack.AttackSession),
-		activeComboTasks: make(map[string]*attack.ComboSession),
-		isWindows:        runtime.GOOS == "windows",
-		canSpoofIP:       false,
-		statsIntervalMs:  500,
-		useLocalPool:     false,
-		autoTuneFactor:   1.0,
+		id:                id,
+		controller:        controllerAddr,
+		httpPort:          "8080",
+		authToken:         authToken,
+		proxySource:       proxySource,
+		maxBWMbps:         maxBWMbps,
+		activeTasks:       make(map[string]*attack.AttackSession),
+		activeComboTasks:  make(map[string]*attack.ComboSession),
+		isWindows:         runtime.GOOS == "windows",
+		canSpoofIP:        false,
+		statsIntervalMs:   500,
+		useLocalPool:      false,
+		autoTuneFactor:    1.0,
 		reflectorVersions: make(map[string]string),
 	}
 
@@ -576,7 +576,8 @@ func (w *Worker) applyRecoveryBandwidth() {
 	}
 }
 
-func (w *Worker) handleHeartbeatFailure(fails int) {	switch fails {
+func (w *Worker) handleHeartbeatFailure(fails int) {
+	switch fails {
 	case 1:
 		log.Printf("[worker] heartbeat failure — monitoring")
 	case 2:

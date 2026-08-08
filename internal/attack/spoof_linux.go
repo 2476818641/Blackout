@@ -281,10 +281,10 @@ func SendSpoofedSYN(srcIP string, dstIP string, dstPort int, srcPort int) error 
 
 func tcpChecksumFast(src, dst net.IP, tcpHdr, payload []byte) uint16 {
 	sum := uint32(0)
-	sum += uint32(uint16(src[0])<<8|uint16(src[1]))
-	sum += uint32(uint16(src[2])<<8|uint16(src[3]))
-	sum += uint32(uint16(dst[0])<<8|uint16(dst[1]))
-	sum += uint32(uint16(dst[2])<<8|uint16(dst[3]))
+	sum += uint32(uint16(src[0])<<8 | uint16(src[1]))
+	sum += uint32(uint16(src[2])<<8 | uint16(src[3]))
+	sum += uint32(uint16(dst[0])<<8 | uint16(dst[1]))
+	sum += uint32(uint16(dst[2])<<8 | uint16(dst[3]))
 	sum += 6
 	sum += uint32(uint16(len(tcpHdr) + len(payload)))
 	sum = checksumWords(sum, tcpHdr)
@@ -297,10 +297,10 @@ func tcpChecksumFast(src, dst net.IP, tcpHdr, payload []byte) uint16 {
 
 func udpChecksumFast(src, dst net.IP, udpHdr, payload []byte) uint16 {
 	sum := uint32(0)
-	sum += uint32(uint16(src[0])<<8|uint16(src[1]))
-	sum += uint32(uint16(src[2])<<8|uint16(src[3]))
-	sum += uint32(uint16(dst[0])<<8|uint16(dst[1]))
-	sum += uint32(uint16(dst[2])<<8|uint16(dst[3]))
+	sum += uint32(uint16(src[0])<<8 | uint16(src[1]))
+	sum += uint32(uint16(src[2])<<8 | uint16(src[3]))
+	sum += uint32(uint16(dst[0])<<8 | uint16(dst[1]))
+	sum += uint32(uint16(dst[2])<<8 | uint16(dst[3]))
 	sum += 17
 	sum += uint32(uint16(len(udpHdr) + len(payload)))
 	sum = checksumWords(sum, udpHdr)
@@ -335,10 +335,10 @@ var checksumFunc = checksumWords
 
 func tcpChecksumInternal(src, dst net.IP, tcpHdr, payload []byte) uint16 {
 	sum := uint32(0)
-	sum += uint32(uint16(src[0])<<8|uint16(src[1]))
-	sum += uint32(uint16(src[2])<<8|uint16(src[3]))
-	sum += uint32(uint16(dst[0])<<8|uint16(dst[1]))
-	sum += uint32(uint16(dst[2])<<8|uint16(dst[3]))
+	sum += uint32(uint16(src[0])<<8 | uint16(src[1]))
+	sum += uint32(uint16(src[2])<<8 | uint16(src[3]))
+	sum += uint32(uint16(dst[0])<<8 | uint16(dst[1]))
+	sum += uint32(uint16(dst[2])<<8 | uint16(dst[3]))
 	sum += 6
 	sum += uint32(uint16(len(tcpHdr) + len(payload)))
 	sum = checksumFunc(sum, tcpHdr)
@@ -359,10 +359,10 @@ func checksumInternal(data []byte) uint16 {
 
 func udpChecksumInternal(src, dst net.IP, udpHdr, payload []byte) uint16 {
 	sum := uint32(0)
-	sum += uint32(uint16(src[0])<<8|uint16(src[1]))
-	sum += uint32(uint16(src[2])<<8|uint16(src[3]))
-	sum += uint32(uint16(dst[0])<<8|uint16(dst[1]))
-	sum += uint32(uint16(dst[2])<<8|uint16(dst[3]))
+	sum += uint32(uint16(src[0])<<8 | uint16(src[1]))
+	sum += uint32(uint16(src[2])<<8 | uint16(src[3]))
+	sum += uint32(uint16(dst[0])<<8 | uint16(dst[1]))
+	sum += uint32(uint16(dst[2])<<8 | uint16(dst[3]))
 	sum += 17
 	sum += uint32(uint16(len(udpHdr) + len(payload)))
 	sum = checksumFunc(sum, udpHdr)

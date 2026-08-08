@@ -103,9 +103,9 @@ type WSClient struct {
 
 type Ctrl struct {
 	pb.UnimplementedNodeServiceServer
-	mu    sync.RWMutex
-	regMu sync.Mutex // 注册互斥体：串行化 Register/Deregister，防止同一 worker 并发注册导致反复上线
-	nodes map[string]*NodeInfo
+	mu                sync.RWMutex
+	regMu             sync.Mutex // 注册互斥体：串行化 Register/Deregister，防止同一 worker 并发注册导致反复上线
+	nodes             map[string]*NodeInfo
 	tasks             map[string]*TaskInfo
 	templates         map[string]AttackTemplate
 	pendingIDs        []string
@@ -968,19 +968,19 @@ func (c *Ctrl) handleNodes(w http.ResponseWriter, r *http.Request) {
 func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		var req struct {
-			Target        string          `json:"target"`
-			Targets       []string        `json:"targets"`
-			Method        string          `json:"method"`
-			Duration      int32           `json:"duration"`
-			Threads       int32           `json:"threads"`
-			PacketSize    int32           `json:"packet_size"`
-			Mix           bool            `json:"mix"`
-			Game          string          `json:"game"`
-			RateLimitPPS  int64           `json:"rate_limit_pps"`
-			RateLimitBPS  int64           `json:"rate_limit_bps"`
-			BurstMode     bool            `json:"burst_mode"`
-			JitterMs      int32           `json:"jitter_ms"`
-			SpoofIP       bool            `json:"spoof_ip"`
+			Target       string   `json:"target"`
+			Targets      []string `json:"targets"`
+			Method       string   `json:"method"`
+			Duration     int32    `json:"duration"`
+			Threads      int32    `json:"threads"`
+			PacketSize   int32    `json:"packet_size"`
+			Mix          bool     `json:"mix"`
+			Game         string   `json:"game"`
+			RateLimitPPS int64    `json:"rate_limit_pps"`
+			RateLimitBPS int64    `json:"rate_limit_bps"`
+			BurstMode    bool     `json:"burst_mode"`
+			JitterMs     int32    `json:"jitter_ms"`
+			SpoofIP      bool     `json:"spoof_ip"`
 			// *bool：nil（请求未传）→ 默认开启。反射器攻击在不支持伪造的
 			// worker 上无法到达目标，默认降级可避免 4/5 的节点做无效攻击。
 			FallbackToUDP *bool           `json:"fallback_to_udp"`
@@ -1224,41 +1224,41 @@ func (c *Ctrl) handleTaskComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	task.Workers[req.WorkerID] = &TaskStats{
-			WorkerID:    req.WorkerID,
-			PacketsSent: req.Packets,
-			BytesSent:   req.Bytes,
-			Errors:      req.Errors,
-			CurrentPPS:  req.PPS,
-			CurrentBPS:  req.BPS,
-			Elapsed:     req.Elapsed,
-			Finished:    true,
+		WorkerID:    req.WorkerID,
+		PacketsSent: req.Packets,
+		BytesSent:   req.Bytes,
+		Errors:      req.Errors,
+		CurrentPPS:  req.PPS,
+		CurrentBPS:  req.BPS,
+		Elapsed:     req.Elapsed,
+		Finished:    true,
+	}
+	if task.Status == "cancelling" {
+		// 与 ReportStats 一致：取消中的任务以确认方式收尾，
+		// 超时重试的取消才能转 pending 重新派发
+		if task.CancelAcks == nil {
+			task.CancelAcks = make(map[string]bool)
 		}
-		if task.Status == "cancelling" {
-			// 与 ReportStats 一致：取消中的任务以确认方式收尾，
-			// 超时重试的取消才能转 pending 重新派发
-			if task.CancelAcks == nil {
-				task.CancelAcks = make(map[string]bool)
-			}
-			task.CancelAcks[req.WorkerID] = true
-			if c.taskFullyCancelled(task) {
-				c.finishCancellingTask(task)
-			}
-		} else if task.Status == "running" {
-			allDone := true
-			for _, w := range task.Workers {
-				if !w.Finished {
-					allDone = false
-					break
-				}
-			}
-			if allDone {
-				task.Status = "completed"
-				entry := c.buildTaskLog(task)
-				go c.logTaskComplete(entry)
-				wids := taskWorkerIDs(task)
-				c.resetNodeStatusesLocked(wids...)
+		task.CancelAcks[req.WorkerID] = true
+		if c.taskFullyCancelled(task) {
+			c.finishCancellingTask(task)
+		}
+	} else if task.Status == "running" {
+		allDone := true
+		for _, w := range task.Workers {
+			if !w.Finished {
+				allDone = false
+				break
 			}
 		}
+		if allDone {
+			task.Status = "completed"
+			entry := c.buildTaskLog(task)
+			go c.logTaskComplete(entry)
+			wids := taskWorkerIDs(task)
+			c.resetNodeStatusesLocked(wids...)
+		}
+	}
 	c.mu.Unlock()
 
 	if ok {
@@ -1282,8 +1282,7 @@ func (c *Ctrl) handleScan(w http.ResponseWriter, r *http.Request) {
 		ScanType    string `json:"type"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(400)
-		writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
+		http.Error(w, `{"error":"invalid request: `+err.Error()+`"}`, 400)
 		return
 	}
 

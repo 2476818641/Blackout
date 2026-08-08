@@ -50,10 +50,10 @@ type TestResult struct {
 
 // LocalReflectorPool Worker 本地反射器池
 type LocalReflectorPool struct {
-	db              *sql.DB
-	workerLocation  string // "CN", "US", "JP" etc.
-	controllerURL   string
-	authToken       string
+	db             *sql.DB
+	workerLocation string // "CN", "US", "JP" etc.
+	controllerURL  string
+	authToken      string
 
 	// 测试参数
 	testConcurrency int           // 并发测试数, 默认200

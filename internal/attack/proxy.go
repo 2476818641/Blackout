@@ -16,10 +16,10 @@ import (
 )
 
 var (
-	proxies             []string
-	proxyLock           sync.RWMutex
-	sharedHTTPClient    *http.Client
-	sharedHTTPClientMu  sync.Once
+	proxies            []string
+	proxyLock          sync.RWMutex
+	sharedHTTPClient   *http.Client
+	sharedHTTPClientMu sync.Once
 )
 
 func LoadProxies(filename string) int {
@@ -100,10 +100,10 @@ func newProxyHTTPClient() *http.Client {
 		return &http.Client{
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-				MaxIdleConns:    100,
+				TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout: 5 * time.Second,
+				IdleConnTimeout:     5 * time.Second,
 			},
 		}
 	}
@@ -125,11 +125,11 @@ func buildHTTPClientFromProxy(proxyStr string) *http.Client {
 		return &http.Client{
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
-				Proxy:           http.ProxyURL(u),
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-				MaxIdleConns:    100,
+				Proxy:               http.ProxyURL(u),
+				TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout: 5 * time.Second,
+				IdleConnTimeout:     5 * time.Second,
 			},
 		}
 	case "socks5":
@@ -148,11 +148,11 @@ func buildHTTPClientFromProxy(proxyStr string) *http.Client {
 		return &http.Client{
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
-				Dial:            dialer.Dial,
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-				MaxIdleConns:    100,
+				Dial:                dialer.Dial,
+				TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout: 5 * time.Second,
+				IdleConnTimeout:     5 * time.Second,
 			},
 		}
 	default:

