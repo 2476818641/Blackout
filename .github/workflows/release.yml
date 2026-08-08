@@ -53,7 +53,11 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          go build -trimpath -ldflags="-s -w" \
+          # 注入版本（当前 tag，如 v1.0.4）与仓库地址：
+          # Controller 用它标记自身，并作为云更新的默认目标版本/GitHub 下载地址。
+          # 仅 controller 注入：worker 版本以二进制哈希自识别，无需注入。
+          go build -trimpath \
+            -ldflags="-s -w -X main.buildVersion=${GITHUB_REF_NAME} -X main.gitRepo=${GITHUB_REPOSITORY}" \
             -o dist/controller-${{ matrix.os }}-${{ matrix.goarch }}${{ matrix.ext }} \
             ./cmd/controller/
 

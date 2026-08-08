@@ -68,8 +68,13 @@ var updateClient = &http.Client{
 }
 
 // fetchTargetVersion 从 Controller 拉取目标版本与下载 URL。
+// 携带 worker_id：Controller 未配置自定义 URL 时，按 Worker 平台
+// （Linux/Windows）返回对应的 GitHub Release 二进制地址。
 func (w *Worker) fetchTargetVersion() (version, url string, err error) {
 	apiURL := w.ctrlBaseURL() + "/api/deploy/version"
+	if w.assignedID != "" {
+		apiURL += "?worker_id=" + w.assignedID
+	}
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return "", "", err

@@ -143,6 +143,28 @@ type Ctrl struct {
 	updateVersion string
 	updateURL     string
 	updateMu      sync.RWMutex
+	// 编译信息：Version 标记 Controller 自身（与 Worker 版本对齐），
+	// GitRepo 用于云更新默认 GitHub Release 下载地址拼接
+	build BuildInfo
+}
+
+// BuildInfo 编译时注入的构建信息
+type BuildInfo struct {
+	Version string // 发布标签（如 v1.0.4）；本地手动编译为 "dev"
+	GitRepo string // GitHub 仓库（如 2476818641/newtool）；空 = 未启用默认仓库地址
+}
+
+// defaultUpdateURL 拼接 GitHub Release 的默认下载地址。
+// 自定义 URL 时不用它；未配置仓库或版本时返回空（由调用方决定是否回退）。
+func (c *Ctrl) defaultUpdateURL(version string, isWindows bool) string {
+	if c.build.GitRepo == "" || version == "" {
+		return ""
+	}
+	bin := "worker-linux-amd64"
+	if isWindows {
+		bin = "worker-windows-amd64.exe"
+	}
+	return fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", c.build.GitRepo, version, bin)
 }
 
 type AttackTemplate struct {
@@ -159,7 +181,7 @@ type AttackTemplate struct {
 	JitterMs   int32    `json:"jitter_ms"`
 }
 
-func New(grpcAddr, httpAddr string) *Ctrl {
+func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 	os.MkdirAll("data/auth", 0700)
 
 	adminToken := loadOrGenerate("data/auth/admin.token", 32)
@@ -239,6 +261,7 @@ func New(grpcAddr, httpAddr string) *Ctrl {
 		updateFile:        "data/deploy_update.json",
 		updateVersion:     updateVersion,
 		updateURL:         updateURL,
+		build:             build,
 	}
 
 	// 加载 data/auth/workers/ 下的所有 token
@@ -1606,49 +1629,78 @@ func (c *Ctrl) handleDeployCommand(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeployUpdate PUT /api/deploy/update
-// 配置云更新目标：version（任意标识，如 v1.0.4）+ url（worker 二进制直链）。
+// 配置云更新目标。语义：
+//   - {"version":"","url":""}（或省略字段）→ 默认目标：version=Controller 构建版本，
+//     url=GitHub Release 默认地址（gitRepo + 版本 + Worker 平台二进制）
+//   - {"version":"v1.0.5","url":""} → 指定版本 + 默认 GitHub 地址
+//   - {"version":"v9.9.9","url":"https://..."} → 自定义版本 + 自定义直链
+//   - {"clear":true} → 显式清除更新配置
 // 持久化到 data/deploy_update.json，所有 Worker 在 60s 内轮询到并自动更新重启。
-// 清空配置：body {"version":"","url":""}
 func (c *Ctrl) handleDeployUpdate(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "PUT", "POST":
 		var req struct {
-			Version string `json:"version"`
-			URL     string `json:"url"`
+			Version *string `json:"version"`
+			URL     *string `json:"url"`
+			Clear   bool    `json:"clear"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, `{"error":"invalid json"}`, 400)
 			return
 		}
-		req.Version = strings.TrimSpace(req.Version)
-		req.URL = strings.TrimSpace(req.URL)
-		if req.Version != "" && !strings.HasPrefix(req.URL, "http://") && !strings.HasPrefix(req.URL, "https://") {
-			writeJSON(w, map[string]interface{}{"error": "url must start with http:// or https://"})
+
+		// 显式清除
+		if req.Clear {
+			c.updateMu.Lock()
+			c.updateVersion = ""
+			c.updateURL = ""
+			c.updateMu.Unlock()
+			payload, _ := json.Marshal(map[string]string{"version": "", "url": ""})
+			os.WriteFile(c.updateFile, payload, 0644)
+			log.Printf("[update] update config cleared")
+			writeJSON(w, map[string]interface{}{"ok": true, "version": "", "cleared": true})
 			return
 		}
-		if (req.Version == "") != (req.URL == "") {
-			writeJSON(w, map[string]interface{}{"error": "version and url must be set together (or both empty to clear)"})
+
+		// 留空 = 默认跟随 Controller 构建版本（与 Worker 版本对齐）
+		version := c.build.Version
+		if req.Version != nil {
+			version = strings.TrimSpace(*req.Version)
+		}
+		url := ""
+		if req.URL != nil {
+			url = strings.TrimSpace(*req.URL)
+		}
+
+		if version == "" {
+			writeJSON(w, map[string]interface{}{"error": "version is required (Controller build version not set)"})
+			return
+		}
+		if url != "" && !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+			writeJSON(w, map[string]interface{}{"error": "url must start with http:// or https://"})
 			return
 		}
 
 		c.updateMu.Lock()
-		c.updateVersion = req.Version
-		c.updateURL = req.URL
+		c.updateVersion = version
+		c.updateURL = url
 		c.updateMu.Unlock()
 
 		// 持久化
-		payload, _ := json.Marshal(map[string]string{"version": req.Version, "url": req.URL})
+		payload, _ := json.Marshal(map[string]string{"version": version, "url": url})
 		if err := os.WriteFile(c.updateFile, payload, 0644); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
 
-		if req.Version != "" {
-			log.Printf("[update] target version %s set, all workers will update within ~60s", req.Version)
+		if url != "" {
+			log.Printf("[update] target version %s (custom url), all workers will update within ~60s", version)
+		} else if c.build.GitRepo != "" {
+			log.Printf("[update] target version %s (default github release), all workers will update within ~60s", version)
 		} else {
-			log.Printf("[update] update config cleared")
+			log.Printf("[update] target version %s set but no git repo / custom url - workers have no download source", version)
 		}
-		writeJSON(w, map[string]interface{}{"ok": true, "version": req.Version})
+		writeJSON(w, map[string]interface{}{"ok": true, "version": version})
 
 	case "GET":
 		c.updateMu.RLock()
@@ -1663,11 +1715,28 @@ func (c *Ctrl) handleDeployUpdate(w http.ResponseWriter, r *http.Request) {
 
 // handleDeployVersion GET /api/deploy/version
 // Worker 轮询端点：返回目标版本与下载 URL（worker token 可访问）。
+// URL 未配置时按请求方平台返回默认 GitHub Release 地址。
 func (c *Ctrl) handleDeployVersion(w http.ResponseWriter, r *http.Request) {
 	c.updateMu.RLock()
 	v, u := c.updateVersion, c.updateURL
 	c.updateMu.RUnlock()
-	writeJSON(w, map[string]interface{}{"version": v, "url": u})
+
+	// 自定义 URL 或未配置：直接返回
+	if u != "" || v == "" {
+		writeJSON(w, map[string]interface{}{"version": v, "url": u})
+		return
+	}
+
+	// 默认 GitHub Release：按 Worker 平台选择二进制
+	isWindows := false
+	if wid := r.URL.Query().Get("worker_id"); wid != "" {
+		c.mu.RLock()
+		if n, ok := c.nodes[wid]; ok {
+			isWindows = n.IsWindows
+		}
+		c.mu.RUnlock()
+	}
+	writeJSON(w, map[string]interface{}{"version": v, "url": c.defaultUpdateURL(v, isWindows)})
 }
 
 // getPublicIP 探测 Controller 公网 IP（缓存 1 小时）。

@@ -21,6 +21,15 @@ var (
 	httpAddr = flag.String("http", ":8080", "HTTP listen address")
 )
 
+// 编译时注入（-ldflags "-X main.buildVersion=... -X main.gitRepo=..."）：
+// buildVersion = 当前发布标签（如 v1.0.4），Controller 用它标记自身并作为
+// 云更新的默认目标版本（Worker 版本需与 Controller 一致）。
+// gitRepo = GitHub 仓库（如 2476818641/newtool），云更新默认 URL 基于它拼接。
+var (
+	buildVersion = "dev"
+	gitRepo      = ""
+)
+
 func main() {
 	flag.Parse()
 
@@ -31,6 +40,7 @@ func main() {
 	log.Printf("Controller starting...")
 	log.Printf("  gRPC: %s", grpc)
 	log.Printf("  HTTP: %s", http)
+	log.Printf("  Version: %s (repo: %s)", buildVersion, gitRepo)
 
 	scheme := "http"
 	if tlsEnabled() {
@@ -51,7 +61,7 @@ func main() {
 
 	ensureSteamKey()
 
-	ctrl := controller.New(grpc, http)
+	ctrl := controller.New(grpc, http, controller.BuildInfo{Version: buildVersion, GitRepo: gitRepo})
 	if err := ctrl.Start(); err != nil {
 		log.Fatalf("Fatal: %v", err)
 	}
