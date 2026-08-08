@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1421,7 +1422,7 @@ func (c *Ctrl) handleDeployConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleDeployCommand GET /api/deploy/command?addr=<ip:9090>&proxy=1&install=1&daemon=1
+// handleDeployCommand GET /api/deploy/command?addr=<ip:9090>&http_port=<8080>&proxy=1&install=1&daemon=1
 // 只负责拼接：Controller 地址 + worker token + 可选参数（-proxy / -install / -daemon）。
 // 下载用 curl（任何发行版自带），文件名固定 worker。
 func (c *Ctrl) handleDeployCommand(w http.ResponseWriter, r *http.Request) {
@@ -1434,12 +1435,43 @@ func (c *Ctrl) handleDeployCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// addr 必须是合法的 host:port，防止特殊字符注入生成的 shell 命令
 	addr := strings.TrimSpace(r.URL.Query().Get("addr"))
 	if addr == "" {
 		addr = "localhost:9090"
 	}
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		writeJSON(w, map[string]interface{}{"error": "invalid addr, must be host:port"})
+		return
+	}
+	if n, err := strconv.Atoi(portStr); err != nil || n < 1 || n > 65535 {
+		writeJSON(w, map[string]interface{}{"error": "invalid addr port"})
+		return
+	}
+
+	// http_port 用于 Worker 的 HTTP 回连端口（dashboard/API）：
+	// 非默认 8080 时必须传给 worker，否则代理/DNS/反射器拉取连错端口。
+	// 只在非默认时拼入，保持命令简洁。
+	httpPort := strings.TrimSpace(r.URL.Query().Get("http_port"))
+	if httpPort == "" {
+		httpPort = "8080"
+	}
+	if n, err := strconv.Atoi(httpPort); err != nil || n < 1 || n > 65535 {
+		writeJSON(w, map[string]interface{}{"error": "invalid http_port"})
+		return
+	}
+
+	// -install 与 -daemon 互斥（worker main.go 中 install 优先，daemon 会被静默忽略）
+	if r.URL.Query().Get("install") == "1" && r.URL.Query().Get("daemon") == "1" {
+		writeJSON(w, map[string]interface{}{"error": "install and daemon are mutually exclusive"})
+		return
+	}
 
 	workerCmd := "./worker -c " + addr + " -token " + c.workerToken
+	if httpPort != "8080" {
+		workerCmd += " -http-port " + httpPort
+	}
 	if r.URL.Query().Get("proxy") == "1" {
 		workerCmd += " -proxy"
 	}
