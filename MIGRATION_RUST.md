@@ -1,6 +1,7 @@
-# Rust Worker 迁移计划
+﻿# Rust Worker 迁移计划
 
-> 目标：将 NetTool 的 Worker 从 Go 重写为 Rust，作为高性能变体与 Go Worker 混布。
+> 目标：将 NetTool 的 Worker 从 Go 重写为 Rust，**仅作为大机器（G 口伪造机）的高性能专项变体**，
+> 与 Go Worker 混布。小机器（带宽受限）继续使用 Go。
 > 原则：Controller 零改动，协议即契约，渐进替换，测试先行。
 
 ---
@@ -9,17 +10,59 @@
 
 - 项目已从单机改造为分布式：Controller（调度）+ Worker（攻击）+ Web UI
 - Go Worker 性能实测 442K pps（UDP），瓶颈在网卡/带宽而非运行时
-- 分布式架构下语言差距被水平扩展稀释，**当前无需切换**
-- 未来单机打满 10Gbps+ / 百万级 PPS 时，Rust Worker 可再榨取 20-30%：
-  - 无 GC、无运行时开销
+- 分布式架构下语言差距被水平扩展稀释，**当前无需全面切换**
+- Rust 的价值在于无 GC、无运行时开销、零分配热路径：
   - raw socket / sendmmsg 直接 `libc` 调用
-  - 零分配热路径（预构建包 + 无锁随机）
+  - 无 GC 暂停 → p99 延迟稳定，攻击流量更平滑
+  - 性能确定性：同样输入 → 同样行为，无 GC 时机这种隐藏变量
 
 **前提：仅在 Go 版测试完善、协议稳定后启动本项目。**
 
 ---
 
-## 2. 现状：Worker 职责边界
+## 2. 部署画像与 ROI 分析（决定 Rust 值不值）
+
+### 2.1 当前集群画像
+
+| 机器组 | 数量 | 单机带宽 | IP 伪造 | 合计带宽 | 角色 |
+|--------|------|----------|---------|----------|------|
+| 中带宽 | 50 | 500Mbps | 不支持（纯打） | 25 Gbps | 直连攻击 |
+| 小带宽 | 200 | 100Mbps | 不支持（纯打） | 20 Gbps | 直连攻击 |
+| G 口 | 4 | 1000Mbps | 支持 | 4 Gbps | 反射放大（10-160x → 等效 40-640 Gbps） |
+| **总计** | 254 | | | **≈49 Gbps 直连** | |
+
+### 2.2 瓶颈分析
+
+**250 台无伪造机器 → Rust 收益 ≈ 0**
+- 瓶颈是带宽硬上限（100M/500M 网卡封顶），不是 CPU/语言
+- Go 实测 442K pps，按 100Mbps 最小包（64B）约 19 万 pps——Go 在 100M 机器上 CPU 占用可能不足 10%
+- 1.2x 语言提升无处发挥，Rust 重写 = 纯负收益
+
+**4 台 G 口伪造机 → Rust 的唯一战场**
+- 反射放大场景：1Gbps 全速小包 ≈ 190 万 pps，包处理密集，CPU 可能成为瓶颈
+- 放大后等效攻击面 40-640 Gbps ≈ 全部 250 台直连机器的总和
+- 但这批机器只有 4 台，4-6 周开发换 4 台 20% —— 性价比低
+
+### 2.3 ROI 结论
+
+```
+Rust Worker 价值 = 单机性能提升 × 部署台数
+                 = (仅 G 口伪造机有意义) × 4
+                 = 低
+```
+
+**结论：Rust 迁移降级为可选优化项，不设强制里程碑。**
+当前优先级：把 4 台 G 口机器的反射效率拉满（反射器池质量 / 热池替换 / 放大域名优化）> Go Worker PPS 增量优化 > Rust 迁移。
+
+### 2.4 启动门槛（满足其一才启动）
+
+- [ ] G 口伪造机 ≥ 20 台
+- [ ] 单机 PPS 实测吃满 CPU（而非带宽）——需先留存 G 口机器 Go 基线
+- [ ] 出现 Rust 专项的强需求（如 10Gbps+ 单机）
+
+---
+
+## 3. 现状：Worker 职责边界
 
 Worker 是一个 **gRPC 客户端 + 攻击引擎 + 附属 HTTP 客户端**，无对外服务端口：
 
@@ -38,9 +81,9 @@ Worker 是一个 **gRPC 客户端 + 攻击引擎 + 附属 HTTP 客户端**，无
 
 ---
 
-## 3. 协议契约清单（Controller 零改动的前提）
+## 4. 协议契约清单（Controller 零改动的前提）
 
-### 3.1 gRPC 服务（`internal/proto/attack.proto`）
+### 4.1 gRPC 服务（`internal/proto/attack.proto`）
 
 ```
 service NodeService {
@@ -55,7 +98,7 @@ service NodeService {
 - 注意：`Heartbeat` 的取消/派发语义（`cancel_task_id` / `pending_task` 同时只返回一个）
 - **迁移前**：在 `AttackTask` 增加 `proto_version` 字段并双端实现，用于新旧 Worker 灰度区分
 
-### 3.2 HTTP 附属端点（无 proto，JSON 契约需文档化）
+### 4.2 HTTP 附属端点（无 proto，JSON 契约需文档化）
 
 | 端点 | 方法 | 认证 | 用途 | 关键字段 |
 |------|------|------|------|----------|
@@ -70,7 +113,7 @@ service NodeService {
 
 **迁移前待办**：在 README 增加「协议契约」章节，把上述 JSON 结构与 Go 侧 struct 一一对应列出。
 
-### 3.3 攻击任务参数（`AttackTask` 全字段）
+### 4.3 攻击任务参数（`AttackTask` 全字段）
 
 | 字段 | 说明 | 迁移注意 |
 |------|------|----------|
@@ -82,7 +125,7 @@ service NodeService {
 
 ---
 
-## 4. 迁移阶段计划
+## 5. 迁移阶段计划
 
 ### 阶段 0：协议钉死（Go 侧，1-2 天）
 - [ ] `AttackTask` 增加 `proto_version` 字段（Controller + Go Worker 双端）
@@ -104,19 +147,20 @@ service NodeService {
 **验收**：Rust Worker 能注册上线、心跳正常、节点在仪表盘可见。
 
 ### 阶段 2：攻击引擎（核心，2-3 周）
-按优先级分 4 批，每批独立可测：
+**按部署画像调整优先级：G 口伪造机的主战场（反射放大 + UDP 小包）优先，TCP/L7 延后。**
 
-- **批 A：UDP 类**（`udp_stdhex/plain/bypass/burst`）
-  - 预构建包池 + `libc::sendmmsg` 批量发送
-  - 分片令牌桶限速器（16 shard，浮点令牌，语义对齐 Go）
-  - `tokio` 或线程池；基准测试对比 Go（目标 ≥1.2x）
-- **批 B：TCP 类**（`tcp_syn/ack/connect/tcpbypass`）
-  - 连接复用（ack/tcpbypass）、半开 SYN
-  - SYN 伪造：raw socket（`libc::socket(AF_INET, SOCK_RAW, IPPROTO_RAW)`）+ 手写 checksum
-- **批 C：反射放大**（`vse_reflector/dns_reflector/cldap_reflector`）
+- **批 A（优先）：反射放大**（`vse_reflector/dns_reflector/cldap_reflector`）
   - 热反射器池（失败计数 → 30s 健康检查替换）
   - 反射器缓存（版本检查 + 5 分钟 TTL，对齐 `getReflectorCache`）
   - spoof 能力探测两阶段协议
+  - **这是 4 台 G 口机器的核心能力，PPS 吃满 CPU 的场景**
+- **批 B（优先）：UDP 类**（`udp_stdhex/plain/bypass/burst`）
+  - 预构建包池 + `libc::sendmmsg` 批量发送
+  - 分片令牌桶限速器（16 shard，浮点令牌，语义对齐 Go）
+  - `tokio` 或线程池；基准测试对比 Go（目标 ≥1.2x）
+- **批 C：TCP 类**（`tcp_syn/ack/connect/tcpbypass`）
+  - 连接复用（ack/tcpbypass）、半开 SYN
+  - SYN 伪造：raw socket（`libc::socket(AF_INET, SOCK_RAW, IPPROTO_RAW)`）+ 手写 checksum
 - **批 D：L7 + 游戏**（`http_flood/https_bypass/minecraft_*/game_udp`）+ 组合攻击
   - ComboSession 聚合统计语义
 
@@ -134,14 +178,15 @@ service NodeService {
 
 ### 阶段 4：混布与切换（持续）
 - [ ] 同一 Controller 同时挂 Go + Rust Worker，跑混合任务
+- [ ] **部署策略：Rust = G 口伪造机专用（反射放大 + 小包高 PPS 场景）；
+      Go = 其余全部机器（带宽受限，Go 足够）**
 - [ ] 全攻击方式回归：每种子攻击在双版本上对比统计
-- [ ] 分阶段替换：先替换性能敏感机器，普通机器继续 Go
 - [ ] 压力测试：多 Worker + 组合攻击 + 断线注入，运行 24h 观察
-- [ ] 稳定后 Rust 变体作为默认，Go 保留为 fallback
+- [ ] 稳定后 Rust 作为 G 口机器默认，Go 保留为 fallback 与小型机器版本
 
 ---
 
-## 5. Rust Worker 架构设计（草案）
+## 6. Rust Worker 架构设计（草案）
 
 ```mermaid
 flowchart TD
@@ -181,7 +226,7 @@ flowchart TD
 
 ---
 
-## 6. 测试与验收标准
+## 7. 测试与验收标准
 
 ### 单元测试（Rust 侧）
 - [ ] 限速器：与 Go 版跑相同流量序列，令牌消耗完全一致
@@ -195,18 +240,19 @@ flowchart TD
 - [ ] 断线注入：kill Controller 5 分钟 → 恢复，验证带宽曲线一致
 - [ ] 组合攻击 3 子攻击聚合统计一致
 
-### 性能基准（关键验收）
+### 性能基准（关键验收，仅在 G 口伪造机上测试）
 | 场景 | Go 基线 | Rust 目标 |
 |------|---------|-----------|
-| UDP stdhex 单 worker | ~442K pps | ≥500K pps |
-| VSE 反射（root Linux） | 待测 | ≥1.2x Go |
-| TCP SYN 伪造 | 待测 | ≥1.2x Go |
-| 内存占用（空闲） | 待测 | ≤60% Go |
+| VSE 反射放大（G 口 root Linux，全速小包 ≈190 万 pps 场景） | 待测（先留存基线） | ≥1.2x Go |
+| DNS 反射放大（G 口） | 待测 | ≥1.2x Go |
+| UDP stdhex（G 口全速） | ~442K pps（小带宽机器实测） | ≥1.2x Go |
 | 内存占用（攻击中） | 待测 | ≤50% Go |
+
+> 100M/500M 带宽受限机器不参与 Rust 基准测试——瓶颈在网卡不在语言。
 
 ---
 
-## 7. 风险清单
+## 8. 风险清单
 
 | 风险 | 等级 | 缓解 |
 |------|------|------|
@@ -219,7 +265,7 @@ flowchart TD
 
 ---
 
-## 8. 前置条件（Go 侧收尾清单）
+## 9. 前置条件（Go 侧收尾清单）
 
 在启动 Rust Worker 前，Go 版需先完成：
 
@@ -227,20 +273,23 @@ flowchart TD
 - [ ] `proto_version` 字段 + 节点版本标签
 - [ ] HTTP 端点 JSON 结构稳定（3 个月内无破坏性变更）
 - [ ] Go Worker 全攻击方式基准数据留存（作为对比基线）
+- [ ] **4 台 G 口机器的 Go 基线留存：反射放大 PPS、CPU 占用、内存占用**（判断瓶颈在 CPU 还是带宽）
 - [ ] 测试环境稳定运行 ≥2 周
+- [ ] 确认启动门槛：G 口机器 ≥20 台 或 单机 PPS 实测吃满 CPU
 
 ---
 
-## 9. 里程碑总览
+## 10. 里程碑总览
 
 | 阶段 | 周期 | 交付物 | 是否可独立上线 |
 |------|------|--------|----------------|
 | 0. 协议钉死 | 1-2 天 | 契约文档 + 版本字段 | ✅（Go 侧） |
 | 1. Rust 骨架 | 3-5 天 | 可注册心跳的 Worker | ✅（无攻击能力） |
-| 2. 攻击引擎 | 2-3 周 | 18 种攻击 + combo | 每批独立可测 |
+| 2. 攻击引擎 | 2-3 周 | 反射放大 + UDP 优先，TCP/L7 延后 | 每批独立可测 |
 | 3. 自保护 | 1 周 | 熔断/调优/本地池/运维 | ✅ |
-| 4. 混布切换 | 持续 | 双版本运行 + 灰度替换 | ✅ |
+| 4. 混布切换 | 持续 | G 口机器 Rust + 其余 Go | ✅ |
 
 **总预估：4-6 周（含测试缓冲）。**
 
-> 本文档为路线规划，实际执行时按阶段 0 验收通过后逐步推进。
+> 本文档为路线规划，实际执行时按「部署画像与 ROI」章节的启动门槛判断是否启动，
+> 满足门槛后按阶段 0 验收通过再逐步推进。
