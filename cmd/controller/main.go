@@ -21,13 +21,16 @@ var (
 	httpAddr = flag.String("http", ":8080", "HTTP listen address")
 )
 
-// 编译时注入（-ldflags "-X main.buildVersion=... -X main.gitRepo=..."）：
+// 编译时注入（-ldflags "-X main.buildVersion=... -X main.gitRepo=... -X main.ghProxy=..."）：
 // buildVersion = 当前发布标签（如 v1.0.4），Controller 用它标记自身并作为
 // 云更新的默认目标版本（Worker 版本需与 Controller 一致）。
 // gitRepo = GitHub 仓库（如 2476818641/newtool），云更新默认 URL 基于它拼接。
+// ghProxy = GitHub 转发代理前缀（国内服务器直连 GitHub 下载慢/失败时的加速通道），
+// 默认内置 cf.liuass.eu.org/ghproxy/，可用 ldflags 覆盖为空串禁用。
 var (
 	buildVersion = "dev"
 	gitRepo      = ""
+	ghProxy      = "https://cf.liuass.eu.org/ghproxy/"
 )
 
 func main() {
@@ -41,6 +44,9 @@ func main() {
 	log.Printf("  gRPC: %s", grpc)
 	log.Printf("  HTTP: %s", http)
 	log.Printf("  Version: %s (repo: %s)", buildVersion, gitRepo)
+	if ghProxy != "" {
+		log.Printf("  Update proxy: %s", ghProxy)
+	}
 
 	scheme := "http"
 	if tlsEnabled() {
@@ -61,7 +67,7 @@ func main() {
 
 	ensureSteamKey()
 
-	ctrl := controller.New(grpc, http, controller.BuildInfo{Version: buildVersion, GitRepo: gitRepo})
+	ctrl := controller.New(grpc, http, controller.BuildInfo{Version: buildVersion, GitRepo: gitRepo, GhProxy: ghProxy})
 	if err := ctrl.Start(); err != nil {
 		log.Fatalf("Fatal: %v", err)
 	}

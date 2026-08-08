@@ -152,10 +152,13 @@ type Ctrl struct {
 type BuildInfo struct {
 	Version string // 发布标签（如 v1.0.4）；本地手动编译为 "dev"
 	GitRepo string // GitHub 仓库（如 2476818641/newtool）；空 = 未启用默认仓库地址
+	GhProxy string // GitHub 转发代理前缀（如 https://cf.liuass.eu.org/ghproxy/）；
+	// 国内服务器直连 GitHub 下载慢/失败时的加速通道，空 = 直连
 }
 
 // defaultUpdateURL 拼接 GitHub Release 的默认下载地址。
-// 自定义 URL 时不用它；未配置仓库或版本时返回空（由调用方决定是否回退）。
+// 配置了 GhProxy 时自动加转发前缀；自定义 URL 时不用它；
+// 未配置仓库或版本时返回空（由调用方决定是否回退）。
 func (c *Ctrl) defaultUpdateURL(version string, isWindows bool) string {
 	if c.build.GitRepo == "" || version == "" {
 		return ""
@@ -164,7 +167,11 @@ func (c *Ctrl) defaultUpdateURL(version string, isWindows bool) string {
 	if isWindows {
 		bin = "worker-windows-amd64.exe"
 	}
-	return fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", c.build.GitRepo, version, bin)
+	u := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", c.build.GitRepo, version, bin)
+	if c.build.GhProxy != "" {
+		u = strings.TrimSuffix(c.build.GhProxy, "/") + "/" + u
+	}
+	return u
 }
 
 type AttackTemplate struct {
