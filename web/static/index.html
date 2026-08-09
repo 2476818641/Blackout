@@ -58,6 +58,9 @@
   .progress-bar { height:4px; background:var(--bg); border-radius:2px; overflow:hidden; margin-top:2px; }
   .progress-fill { height:100%; background:var(--accent); transition:width 0.3s; }
   .warning { color:var(--yellow); font-size:11px; margin-top:4px; }
+  .modal-overlay { position:fixed; top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1000; }
+  .modal { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px; width:480px; max-width:92vw; max-height:80vh; display:flex; flex-direction:column; }
+  .modal h3 { color:var(--cyan); }
 </style>
 </head>
 <body x-data="app()" x-init="init()">
@@ -141,24 +144,43 @@
       </select>
     </div>
     <textarea x-model="form.target" :placeholder="t('target_placeholder')" rows="2" style="min-height:45px;margin-bottom:6px"></textarea>
-    <!-- 目标节点选择（默认全开） -->
-    <div style="border:1px solid var(--border);border-radius:4px;padding:6px;margin-bottom:6px;font-size:11px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-        <span style="color:var(--cyan)" x-text="t('target_nodes')"></span>
-        <span>
-          <a href="#" @click.prevent="selectAllNodes()" style="margin-right:8px" x-text="t('select_all')"></a>
-          <a href="#" @click.prevent="selectedNodes=[]" x-text="t('select_none')"></a>
-        </span>
-      </div>
-      <div style="max-height:70px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:4px">
-        <template x-for="n in nodes" :key="n.worker_id">
-          <label style="display:flex;align-items:center;gap:3px;cursor:pointer;font-size:10px;background:var(--border);padding:2px 6px;border-radius:3px;white-space:nowrap">
-            <input type="checkbox" :value="n.worker_id" x-model="selectedNodes" style="width:auto;margin:0">
-            <span x-text="n.worker_id"></span>
-            <span x-show="n.spoof_tested && n.can_spoof" style="color:var(--green)" x-text="'S'"></span>
-          </label>
-        </template>
-        <span x-show="nodes.length===0" style="opacity:0.5" x-text="t('no_nodes_hint')"></span>
+    <!-- 目标节点选择（默认全开，点击弹窗选择） -->
+    <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
+      <button type="button" class="btn" @click="openNodePicker()" style="flex:1;justify-content:space-between;display:flex;align-items:center">
+        <span x-text="t('target_nodes')"></span>
+        <span style="font-size:11px;opacity:0.8">
+          <span x-show="!selectedNodes.length || selectedNodes.length===nodes.length" x-text="t('all_nodes')"></span>
+          <span x-show="selectedNodes.length && selectedNodes.length!==nodes.length" x-text="selectedNodes.length + '/' + nodes.length"></span>
+        </span>      </button>
+      <button type="button" class="btn sm" @click="selectAllNodes()" x-text="t('select_all')" style="flex:0;white-space:nowrap"></button>
+    </div>
+
+    <!-- 节点选择弹窗 -->
+    <div x-show="nodePickerOpen" class="modal-overlay" @click.self="nodePickerOpen=false">
+      <div class="modal">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <h3 style="margin:0" x-text="t('target_nodes')"></h3>
+          <button type="button" class="btn sm" @click="nodePickerOpen=false" x-text="'✕'"></button>
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <input x-model="nodeSearch" :placeholder="t('node_search_ph')" style="flex:1;margin-bottom:0">
+          <button type="button" class="btn sm" @click="selectAllNodes()" x-text="t('select_all')" style="flex:0;white-space:nowrap"></button>
+          <button type="button" class="btn sm" @click="selectedNodes=[]" x-text="t('select_none')" style="flex:0;white-space:nowrap"></button>
+        </div>
+        <div style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:4px">
+          <template x-for="n in filteredNodes" :key="n.worker_id">
+            <label style="display:flex;align-items:center;gap:6px;padding:5px 8px;cursor:pointer;border-bottom:1px solid var(--border);font-size:11px">
+              <input type="checkbox" :value="n.worker_id" x-model="selectedNodes" style="width:auto;margin:0">
+              <span x-text="n.worker_id" style="color:var(--cyan);font-size:10px;flex:1"></span>
+              <span x-text="n.ip || '-'" style="opacity:0.6;font-size:10px"></span>
+              <span x-show="n.spoof_tested && n.can_spoof" style="color:var(--green);font-size:10px" x-text="t('spoof_yes')"></span>
+              <span x-show="n.spoof_tested && !n.can_spoof" style="color:#f66;font-size:10px" x-text="t('spoof_no')"></span>
+              <span x-show="!n.spoof_tested" style="color:#fa0;font-size:10px" x-text="t('spoof_pending')"></span>
+            </label>
+          </template>
+          <div x-show="filteredNodes.length===0" style="padding:12px;text-align:center;opacity:0.5;font-size:11px" x-text="t('node_no_match')"></div>
+        </div>
+        <div style="margin-top:8px;font-size:10px;opacity:0.6" x-text="t('node_picker_tip')"></div>
       </div>
     </div>
     <div class="form-row">
@@ -602,6 +624,7 @@ function app() {
       col_spoof:'Spoof', spoof_yes:'YES', spoof_no:'NO', spoof_pending:'...', kick:'Kick',
       kick_confirm:'Kick node {0}? It will stop attacks, exit and delete its binary.',
       target_nodes:'Target Nodes', select_all:'All', select_none:'None', no_nodes_hint:'no nodes connected',
+      all_nodes:'All', node_search_ph:'Search ID / IP / location...', node_no_match:'No matching nodes', node_picker_tip:'Nodes with spoof capability marked. Empty selection = all nodes.',
       force_refresh:'Force Refresh Now', test_clean:'Test All & Clean', testing:'Testing...',
       manual_add_placeholder:'1.2.3.4:27015 (one per line)',
       proxy_manager:'Proxy Manager', save_proxy:'Save Proxy File', load_proxy:'Load from Server',
@@ -654,6 +677,7 @@ function app() {
       col_spoof:'伪造', spoof_yes:'支持', spoof_no:'不支持', spoof_pending:'检测中', kick:'踢出',
       kick_confirm:'踢出节点 {0}？它将停止攻击、退出并删除自身二进制。',
       target_nodes:'目标节点', select_all:'全选', select_none:'清空', no_nodes_hint:'无节点连接',
+      all_nodes:'全部', node_search_ph:'搜索 ID / IP / 地区...', node_no_match:'无匹配节点', node_picker_tip:'支持伪造的节点已标记。清空选择 = 全部节点。',
       force_refresh:'立即刷新', test_clean:'测试清理', testing:'测试中...',
       manual_add_placeholder:'1.2.3.4:27015 (每行一个)',
       proxy_manager:'代理管理', save_proxy:'保存代理文件', load_proxy:'从服务器加载',
@@ -684,7 +708,7 @@ function app() {
   return {
     token:'', error:'', authed:false, lang:localStorage.getItem('lang')||'en',
     nodes:[], tasks:[], totalPPS:0, totalMBps:0, totalPackets:0,
-    selectedNodes:[],
+    selectedNodes:[], nodePickerOpen:false, nodeSearch:'',
     activeWorkers:0, onlineNodes:0, uptime:0, ws:null,
     deployStorage:'', deployProxy:false, deployInstall:false, deployDaemon:false, deployCmd:'', deployGrpcPort:'9090', deployTool:'curl',
     updateVersion:'', updateURL:'', updateStatus:'', updateCheckResult:null, updateChecking:false, updateApplying:false,
@@ -784,6 +808,15 @@ function app() {
     },
 
     selectAllNodes() { this.selectedNodes = this.nodes.map(n=>n.worker_id); },
+    openNodePicker() { this.nodeSearch=''; this.nodePickerOpen=true; },
+    get filteredNodes() {
+      const q = (this.nodeSearch||'').toLowerCase().trim();
+      if (!q) return this.nodes;
+      return this.nodes.filter(n =>
+        (n.worker_id||'').toLowerCase().includes(q) ||
+        (n.ip||'').toLowerCase().includes(q) ||
+        (n.location||'').toLowerCase().includes(q));
+    },
 
     async kickNode(id) {
       if (!confirm(this.t('kick_confirm').replace('{0}', id))) return;
