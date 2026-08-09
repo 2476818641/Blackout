@@ -167,6 +167,15 @@ func (w *Worker) applyUpdate(url, targetVersion string) error {
 		log.Printf("[update] version file write failed (ignored): %v", err)
 	}
 
+	// 5. 重启前注销旧节点条目：
+	// 否则 Controller 节点表里旧 ID（如 xxx-node1）仍在线（Linux exec 保持
+	// PID 或 Windows spawn 时旧进程尚未退出），新进程注册时会被分配
+	// node2/node3，出现"更新后两个节点"的僵尸条目。
+	// 先停止攻击（任务由 Controller 超时重试机制接管），再 deregister 清条目。
+	log.Printf("[update] binary replaced, deregistering old node entry...")
+	w.stopAllAttacks()
+	w.deregister()
+
 	log.Printf("[update] binary replaced, restarting...")
 	w.restartSelf(exeAbs)
 	return nil

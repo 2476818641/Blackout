@@ -550,6 +550,17 @@ func (c *Ctrl) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Regis
 
 	reused := false
 	nodeIP := ""
+	peerIP := ""
+	if p, ok := peerFromContext(ctx); ok {
+		host, _, err := net.SplitHostPort(p)
+		if err == nil {
+			peerIP = strings.Trim(host, "[]")
+		} else {
+			// peerFromContext 可能返回纯 IP（无端口）
+			peerIP = strings.Trim(p, "[]")
+		}
+	}
+
 	// 复用离线条目：同一 worker 断连/崩溃后重启重新注册时，若旧条目仍在
 	// （离线保留窗口内），直接复用原条目刷新状态，而不是生成 node2/node3…
 	// 造成同一物理节点反复上线、僵尸节点累积
@@ -564,10 +575,29 @@ func (c *Ctrl) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Regis
 		existing.Status = "READY"
 		existing.LastHeartbeat = time.Now()
 		existing.IsWindows = req.IsWindows
-		if p, ok := peerFromContext(ctx); ok {
-			existing.IP = p
+		if peerIP != "" {
+			existing.IP = peerIP
 		}
 		nodeIP = existing.IP
+		reused = true
+	} else if existing, ok := c.nodes[assignedID]; ok && peerIP != "" && existing.IP == peerIP {
+		// 同 IP 复用（保险）：云更新重启时旧条目可能仍非 OFFLINE
+		// （Linux exec 保持 PID / Windows spawn 旧进程未退出 / deregister 失败）。
+		// 对端 IP 一致说明是同一物理节点重注册，复用原 ID 而非生成 node2。
+		// 仅当 IP 完全相同才复用，避免误合并同网段的不同节点。
+		log.Printf("[node] %s re-registered from same IP %s (reusing entry, prev status=%s)", assignedID, peerIP, existing.Status)
+		existing.WorkerID = assignedID
+		existing.CPU = req.CpuCores
+		existing.CpuPercent = 0
+		existing.Memory = req.MemoryMb
+		existing.Bandwidth = req.BandwidthMbps
+		existing.Location = req.Location
+		existing.Tags = req.Tags
+		existing.Status = "READY"
+		existing.LastHeartbeat = time.Now()
+		existing.IsWindows = req.IsWindows
+		existing.IP = peerIP
+		nodeIP = peerIP
 		reused = true
 	}
 
