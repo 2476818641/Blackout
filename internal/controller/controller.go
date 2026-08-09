@@ -150,6 +150,11 @@ type Ctrl struct {
 	updateVersion string
 	updateURL     string
 	updateMu      sync.RWMutex
+	// GitHub Token（可选）：认证后 API 速率限制 5000/小时（未认证仅 60/小时），
+	// 并支持查询版本列表选择任意版本。持久化在 data/github_token.txt。
+	githubTokenFile string
+	githubTokenMu   sync.RWMutex
+	githubToken     string
 	// 编译信息：Version 标记 Controller 自身（与 Worker 版本对齐），
 	// GitRepo 用于云更新默认 GitHub Release 下载地址拼接
 	build BuildInfo
@@ -250,6 +255,15 @@ func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 		}
 	}
 
+	// GitHub Token：data/github_token.txt
+	githubToken := ""
+	if tokBytes, err := os.ReadFile("data/github_token.txt"); err == nil {
+		githubToken = strings.TrimSpace(string(tokBytes))
+		if githubToken != "" {
+			log.Printf("[update] GitHub token loaded (authenticated API: 5000 req/h)")
+		}
+	}
+
 	reflector.InitAllPools()
 	reflector.MarkStaleRunningLogs()
 
@@ -276,6 +290,8 @@ func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 		updateFile:        "data/deploy_update.json",
 		updateVersion:     updateVersion,
 		updateURL:         updateURL,
+		githubTokenFile:   "data/github_token.txt",
+		githubToken:       githubToken,
 		build:             build,
 	}
 
@@ -405,6 +421,7 @@ func (c *Ctrl) Start() error {
 	mux.HandleFunc("/api/deploy/update", c.authAdmin(c.handleDeployUpdate))
 	mux.HandleFunc("/api/deploy/version", c.authHTTP(c.handleDeployVersion))
 	mux.HandleFunc("/api/update/check", c.authHTTP(c.handleUpdateCheck))
+	mux.HandleFunc("/api/update/token", c.authAdmin(c.handleUpdateToken))
 	mux.HandleFunc("/api/update/controller", c.authAdmin(c.handleUpdateController))
 	mux.HandleFunc("/api/update/workers", c.authAdmin(c.handleUpdateWorkers))
 	mux.HandleFunc("/api/worker/spoof-probe", c.authHTTP(c.handleWorkerSpoofProbe))

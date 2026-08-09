@@ -39,23 +39,41 @@ var updateCheckClient = &http.Client{
 	},
 }
 
+// githubAuthToken 返回已配置的 GitHub Token（空 = 未认证）
+func (c *Ctrl) githubAuthToken() string {
+	c.githubTokenMu.RLock()
+	defer c.githubTokenMu.RUnlock()
+	return c.githubToken
+}
+
+// githubRequest 构造带认证的 GitHub API 请求
+func (c *Ctrl) githubRequest(method, apiPath string) (*http.Request, error) {
+	apiURL := githubAPIBase + apiPath
+	if c.build.GhProxy != "" {
+		apiURL = strings.TrimSuffix(c.build.GhProxy, "/") + "/" + apiURL
+	}
+	req, err := http.NewRequest(method, apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "NetTool-Controller/"+c.build.Version)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if tok := c.githubAuthToken(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	return req, nil
+}
+
 // fetchLatestRelease 查询 GitHub 最新 Release。未配置仓库时返回 nil。
 // 配置了 ghProxy 时经代理访问（国内服务器直连 api.github.com 慢）。
 func (c *Ctrl) fetchLatestRelease() (*ReleaseInfo, error) {
 	if c.build.GitRepo == "" {
 		return nil, fmt.Errorf("git repo not configured")
 	}
-	apiURL := fmt.Sprintf("%s/repos/%s/releases/latest", githubAPIBase, c.build.GitRepo)
-	if c.build.GhProxy != "" {
-		apiURL = strings.TrimSuffix(c.build.GhProxy, "/") + "/" + apiURL
-	}
-
-	req, err := http.NewRequest("GET", apiURL, nil)
+	req, err := c.githubRequest("GET", "/repos/"+c.build.GitRepo+"/releases/latest")
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "NetTool-Controller/"+c.build.Version)
-	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := updateCheckClient.Do(req)
 	if err != nil {
@@ -76,6 +94,65 @@ func (c *Ctrl) fetchLatestRelease() (*ReleaseInfo, error) {
 		return nil, err
 	}
 	return &rel, nil
+}
+
+// fetchReleaseByTag 查询指定 tag 的 Release；不存在返回 nil
+func (c *Ctrl) fetchReleaseByTag(tag string) (*ReleaseInfo, error) {
+	if c.build.GitRepo == "" {
+		return nil, fmt.Errorf("git repo not configured")
+	}
+	req, err := c.githubRequest("GET", "/repos/"+c.build.GitRepo+"/releases/tags/"+tag)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := updateCheckClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 404 {
+		return nil, nil
+	}
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("github api %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var rel ReleaseInfo
+	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		return nil, err
+	}
+	return &rel, nil
+}
+
+// fetchReleases 查询 Release 列表（最多 30 个，按发布时间倒序）
+func (c *Ctrl) fetchReleases() ([]ReleaseInfo, error) {
+	if c.build.GitRepo == "" {
+		return nil, fmt.Errorf("git repo not configured")
+	}
+	req, err := c.githubRequest("GET", "/repos/"+c.build.GitRepo+"/releases?per_page=30")
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := updateCheckClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("github api %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var rels []ReleaseInfo
+	if err := json.NewDecoder(resp.Body).Decode(&rels); err != nil {
+		return nil, err
+	}
+	return rels, nil
 }
 
 // versionNewer 判断 target 是否比 current 新（按 vX.Y.Z 数字比较，dev 视为最旧）
@@ -123,22 +200,68 @@ func parseVersion(v string) ([3]int, bool) {
 	return out, true
 }
 
-// handleUpdateCheck GET /api/update/check
-// 检测是否有新版本，返回版本对比 + Release 说明 + 跳转链接。不做任何更新。
+// handleUpdateCheck GET /api/update/check[?version=v1.0.5]
+// 检测是否有新版本，返回版本对比 + Release 说明 + 跳转链接 + 可用版本列表。
+// 指定 version 参数时查询该版本（用于回退到旧版本）。不做任何更新。
 func (c *Ctrl) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
-	rel, err := c.fetchLatestRelease()
-	if err != nil {
-		writeJSON(w, map[string]interface{}{
-			"current_version": c.build.Version,
-			"error":           err.Error(),
-		})
-		return
-	}
-
 	resp := map[string]interface{}{
 		"current_version": c.build.Version,
 		"repo":            c.build.GitRepo,
 		"checkable":       c.build.GitRepo != "" && c.build.Version != "dev",
+		"authenticated":   c.githubAuthToken() != "",
+	}
+
+	// 版本列表（供 UI 选择任意版本）
+	if rels, err := c.fetchReleases(); err == nil {
+		list := make([]map[string]interface{}, 0, len(rels))
+		for _, rel := range rels {
+			notes := rel.Body
+			if len(notes) > 500 {
+				notes = notes[:500] + "..."
+			}
+			list = append(list, map[string]interface{}{
+				"version":      rel.TagName,
+				"name":         rel.Name,
+				"published_at": rel.PublishedAt,
+				"notes":        notes,
+			})
+		}
+		resp["releases"] = list
+	}
+
+	// 指定版本（回退/选择旧版本）
+	if v := strings.TrimSpace(r.URL.Query().Get("version")); v != "" {
+		rel, err := c.fetchReleaseByTag(v)
+		if err != nil {
+			resp["error"] = err.Error()
+			writeJSON(w, resp)
+			return
+		}
+		if rel == nil {
+			resp["error"] = "release not found: " + v
+			writeJSON(w, resp)
+			return
+		}
+		notes := rel.Body
+		if len(notes) > 2000 {
+			notes = notes[:2000] + "..."
+		}
+		resp["latest_version"] = rel.TagName
+		resp["release_name"] = rel.Name
+		resp["release_url"] = rel.HTMLURL
+		resp["published_at"] = rel.PublishedAt
+		resp["notes"] = notes
+		resp["has_update"] = versionNewer(c.build.Version, rel.TagName) || rel.TagName != c.build.Version
+		writeJSON(w, resp)
+		return
+	}
+
+	// 默认：最新版本
+	rel, err := c.fetchLatestRelease()
+	if err != nil {
+		resp["error"] = err.Error()
+		writeJSON(w, resp)
+		return
 	}
 	if rel == nil {
 		resp["latest_version"] = ""
@@ -161,20 +284,59 @@ func (c *Ctrl) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-// handleUpdateController POST /api/update/controller
-// 手动选择后：下载最新 Controller 二进制 → 校验 → 替换 → 重启自身。
+// handleUpdateToken GET/PUT /api/update/token
+// 管理 GitHub Token：认证后 API 速率 5000/小时（未认证 60/小时），
+// 并支持拉取版本列表选择任意版本。
+func (c *Ctrl) handleUpdateToken(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		writeJSON(w, map[string]interface{}{
+			"configured": c.githubAuthToken() != "",
+			"masked":     maskToken(c.githubAuthToken()),
+		})
+	case "PUT", "POST":
+		var body struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid json"}`, 400)
+			return
+		}
+		token := strings.TrimSpace(body.Token)
+
+		c.githubTokenMu.Lock()
+		c.githubToken = token
+		c.githubTokenMu.Unlock()
+
+		if err := os.WriteFile(c.githubTokenFile, []byte(token), 0600); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		if token != "" {
+			log.Printf("[update] GitHub token saved (authenticated API)")
+		} else {
+			log.Printf("[update] GitHub token cleared (unauthenticated API)")
+		}
+		writeJSON(w, map[string]interface{}{"ok": true})
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, 405)
+	}
+}
+
+// handleUpdateController POST /api/update/controller[?version=v1.0.5]
+// 手动选择后：下载指定版本（默认最新）Controller 二进制 → 校验 → 替换 → 重启自身。
 // 立即返回 ok，替换/重启在后台 goroutine 执行（延迟 1s 让响应先发出）。
 func (c *Ctrl) handleUpdateController(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, `{"error":"POST required"}`, 405)
 		return
 	}
-	rel, err := c.fetchLatestRelease()
+	rel, err := c.resolveRelease(r)
 	if err != nil || rel == nil {
 		writeJSON(w, map[string]interface{}{"error": "no release available"})
 		return
 	}
-	if !versionNewer(c.build.Version, rel.TagName) {
+	if !versionNewer(c.build.Version, rel.TagName) && rel.TagName != c.build.Version {
 		writeJSON(w, map[string]interface{}{"error": "already up to date"})
 		return
 	}
@@ -200,20 +362,29 @@ func (c *Ctrl) handleUpdateController(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-// handleUpdateWorkers POST /api/update/workers
-// 手动选择后：把 Worker 云更新目标设为最新版本（复用 /api/deploy/update 的默认逻辑）。
+// resolveRelease 根据 query 参数 version 解析目标 Release（缺省 = 最新）
+func (c *Ctrl) resolveRelease(r *http.Request) (*ReleaseInfo, error) {
+	if v := strings.TrimSpace(r.URL.Query().Get("version")); v != "" {
+		return c.fetchReleaseByTag(v)
+	}
+	return c.fetchLatestRelease()
+}
+
+// handleUpdateWorkers POST /api/update/workers[?version=v1.0.5]
+// 手动选择后：把 Worker 云更新目标设为指定版本（默认最新），
+// 复用 /api/deploy/update 的默认逻辑。
 func (c *Ctrl) handleUpdateWorkers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, `{"error":"POST required"}`, 405)
 		return
 	}
-	rel, err := c.fetchLatestRelease()
+	rel, err := c.resolveRelease(r)
 	if err != nil || rel == nil {
 		writeJSON(w, map[string]interface{}{"error": "no release available"})
 		return
 	}
 
-	// 版本用最新 tag；URL 留空 = 各 Worker 按平台取默认 GitHub Release 地址
+	// 版本用指定 tag；URL 留空 = 各 Worker 按平台取默认 GitHub Release 地址
 	c.updateMu.Lock()
 	c.updateVersion = rel.TagName
 	c.updateURL = ""
