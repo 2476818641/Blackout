@@ -431,6 +431,7 @@
             <div x-show="updateCheckResult.notes" style="opacity:0.8;white-space:pre-wrap;max-height:80px;overflow-y:auto;margin-bottom:4px" x-text="updateCheckResult.notes"></div>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
               <a x-show="updateCheckResult.release_url" :href="updateCheckResult.release_url" target="_blank" class="btn" style="text-decoration:none" x-text="t('update_view_release')"></a>
+              <button x-show="updateCheckResult.has_update" class="btn" @click="updateAll()" :disabled="updateApplying" style="color:#ffd700;border-color:#ffd700" x-text="updateApplying ? t('updating') : t('update_all_btn')"></button>
               <button x-show="updateCheckResult.has_update" class="btn" @click="updateController()" :disabled="updateApplying" x-text="updateApplying ? t('updating') : t('update_controller_btn')"></button>
               <button x-show="updateCheckResult.has_update" class="btn" @click="updateWorkers()" :disabled="updateApplying" x-text="t('update_workers_btn')"></button>
             </div>
@@ -617,6 +618,8 @@ function app() {
       update_workers_btn:'Update Workers', updating:'Updating...', update_applying:'Update started, controller will restart in ~2s...',
       update_confirm_controller:'Update Controller to the latest version? It will download, verify, replace and restart itself.',
       update_confirm_workers:'Set all Workers to update to the latest version? They will auto-update within ~60s.',
+      update_all_btn:'Upgrade All', update_confirm_all:'Upgrade Controller + all Workers to the latest version? Workers update first (~60s), then the Controller restarts itself.',
+      update_all_started:'Upgrade started: Workers updating, Controller will restart in a few seconds.',
       gh_token_ph:'GitHub token (optional, 5000 req/h)', gh_token_saved:'GitHub token saved.', update_latest:'(latest)',
       deploy_tip:'Command auto-concatenates controller address + worker token.\nNon-root users: -daemon runs in background without nohup (log: data/worker.log).\n-install and -daemon are mutually exclusive.',
       attack_logs:'Attack Logs', all_methods:'All Methods', export_csv:'Export CSV',
@@ -667,6 +670,8 @@ function app() {
       update_workers_btn:'更新 Workers', updating:'更新中...', update_applying:'更新已开始，Controller 约 2 秒后重启...',
       update_confirm_controller:'将 Controller 更新到最新版本？将自动下载、校验、替换并重启。',
       update_confirm_workers:'将所有 Worker 更新到最新版本？它们将约 60 秒内自动更新。',
+      update_all_btn:'整体升级', update_confirm_all:'将 Controller 和所有 Worker 升级到最新版本？Worker 先更新（约 60s），随后 Controller 自动重启。',
+      update_all_started:'升级已开始：Worker 正在更新，Controller 几秒后自动重启。',
       gh_token_ph:'GitHub Token (可选, 5000次/小时)', gh_token_saved:'GitHub Token 已保存。', update_latest:'(最新)',
       deploy_tip:'命令自动拼接控制器地址 + worker 令牌。\n非 root 用户: -daemon 免 nohup 后台运行 (日志: data/worker.log)。\n-install 与 -daemon 互斥。',
       attack_logs:'攻击日志', all_methods:'所有方法', export_csv:'导出CSV',
@@ -897,6 +902,15 @@ function app() {
     async saveGithubToken() {
       try { const r = await fetch('/api/update/token',{method:'PUT',headers:this.getAuthHeaders(),body:JSON.stringify({token:this.githubToken})}); const d = await r.json(); if (d.error) { alert(d.error); return; }
         this.updateStatus = this.t('gh_token_saved'); this.checkUpdateVersion(); } catch(e) { alert(e.message); }
+    },
+    async updateAll() {
+      if (!confirm(this.t('update_confirm_all'))) return;
+      this.updateApplying = true;
+      const ver = this.updateVersionSel || '';
+      const qs = ver ? '?version='+encodeURIComponent(ver) : '';
+      try { const r = await fetch('/api/update/all'+qs,{method:'POST',headers:this.getAuthHeaders()}); const d = await r.json(); if (d.error) { alert(d.error); return; }
+        this.updateStatus = this.t('update_all_started'); } catch(e) { alert(e.message); }
+      this.updateApplying = false;
     },
     async updateController() {
       if (!confirm(this.t('update_confirm_controller'))) return;

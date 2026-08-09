@@ -349,6 +349,61 @@ func (c *Ctrl) handleUpdateWorkers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"ok": true, "version": rel.TagName})
 }
 
+// handleUpdateAll POST /api/update/all[?version=v1.0.5]
+// 整体升级：先设置 Workers 云更新目标（约 60s 内自动更新），
+// 再升级 Controller 自身（下载→校验→替换→重启）。
+// 顺序设计：先让 Worker 拿到新版本目标并开始下载，Controller 重启
+// 造成短暂断连不影响 Worker 更新流程（Worker 更新走 HTTP + 独立下载）；
+// Controller 重启后 Worker 心跳自动恢复，随后完成更新重启。
+func (c *Ctrl) handleUpdateAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, `{"error":"POST required"}`, 405)
+		return
+	}
+	rel, err := c.resolveRelease(r)
+	if err != nil || rel == nil {
+		writeJSON(w, map[string]interface{}{"error": "no release available"})
+		return
+	}
+	if rel.TagName == c.build.Version {
+		writeJSON(w, map[string]interface{}{"error": "already up to date"})
+		return
+	}
+
+	// 1. 设置 Workers 更新目标
+	c.updateMu.Lock()
+	c.updateVersion = rel.TagName
+	c.updateURL = ""
+	c.updateMu.Unlock()
+	payload, _ := json.Marshal(map[string]string{"version": rel.TagName, "url": ""})
+	if err := os.WriteFile(c.updateFile, payload, 0644); err != nil {
+		writeJSON(w, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	log.Printf("[self-update] ALL upgrade to %s: workers target set", rel.TagName)
+
+	// 2. 目标二进制名（与 Release 产物一致）
+	binName := "controller-linux-amd64"
+	if runtime.GOOS == "windows" {
+		binName = "controller-windows-amd64.exe"
+	}
+	dlURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", c.build.GitRepo, rel.TagName, binName)
+	if c.build.GhProxy != "" {
+		dlURL = strings.TrimSuffix(c.build.GhProxy, "/") + "/" + dlURL
+	}
+
+	// 3. 延迟 3s 后升级 Controller（让响应先发出，Worker 先收到目标）
+	go func() {
+		time.Sleep(3 * time.Second)
+		log.Printf("[self-update] ALL upgrade: updating controller to %s", rel.TagName)
+		if err := c.applyControllerUpdate(dlURL); err != nil {
+			log.Printf("[self-update] controller update FAILED: %v", err)
+		}
+	}()
+
+	writeJSON(w, map[string]interface{}{"ok": true, "version": rel.TagName})
+}
+
 // applyControllerUpdate 下载新 Controller → 校验 → 替换 → 重启
 func (c *Ctrl) applyControllerUpdate(dlURL string) error {
 	exe, err := os.Executable()

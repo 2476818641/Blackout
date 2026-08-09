@@ -157,6 +157,11 @@ type Ctrl struct {
 	githubTokenFile string
 	githubTokenMu   sync.RWMutex
 	githubToken     string
+	// 伪造能力缓存：IP → 是否支持伪造（探测一次后持久化，同 IP 重新上线
+	// 直接打标签，避免每次启动重复探测）。持久化在 data/spoof_cache.json。
+	spoofCacheFile string
+	spoofCacheMu   sync.RWMutex
+	spoofCache     map[string]bool
 	// 编译信息：Version 标记 Controller 自身（与 Worker 版本对齐），
 	// GitRepo 用于云更新默认 GitHub Release 下载地址拼接
 	build BuildInfo
@@ -266,6 +271,15 @@ func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 		}
 	}
 
+	// 伪造能力缓存：data/spoof_cache.json
+	spoofCache := make(map[string]bool)
+	if cacheBytes, err := os.ReadFile("data/spoof_cache.json"); err == nil {
+		json.Unmarshal(cacheBytes, &spoofCache)
+		if len(spoofCache) > 0 {
+			log.Printf("[spoof-probe] loaded %d cached spoof results", len(spoofCache))
+		}
+	}
+
 	reflector.InitAllPools()
 	reflector.MarkStaleRunningLogs()
 
@@ -294,6 +308,8 @@ func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 		updateURL:         updateURL,
 		githubTokenFile:   "data/github_token.txt",
 		githubToken:       githubToken,
+		spoofCacheFile:    "data/spoof_cache.json",
+		spoofCache:        spoofCache,
 		build:             build,
 	}
 
@@ -426,9 +442,11 @@ func (c *Ctrl) Start() error {
 	mux.HandleFunc("/api/update/token", c.authAdmin(c.handleUpdateToken))
 	mux.HandleFunc("/api/update/controller", c.authAdmin(c.handleUpdateController))
 	mux.HandleFunc("/api/update/workers", c.authAdmin(c.handleUpdateWorkers))
+	mux.HandleFunc("/api/update/all", c.authAdmin(c.handleUpdateAll))
 	mux.HandleFunc("/api/worker/spoof-probe", c.authHTTP(c.handleWorkerSpoofProbe))
 	mux.HandleFunc("/api/worker/spoof-probe/result", c.authHTTP(c.handleSpoofProbeResult))
 	mux.HandleFunc("/api/worker/spoof-status", c.authHTTP(c.handleSpoofStatus))
+	mux.HandleFunc("/api/worker/spoof-cache", c.authHTTP(c.handleSpoofCacheQuery))
 	mux.HandleFunc("/api/tasks/complete", c.authHTTP(c.handleTaskComplete))
 	mux.HandleFunc("/ws", c.handleWS)
 	mux.HandleFunc("/pool", func(w http.ResponseWriter, r *http.Request) {

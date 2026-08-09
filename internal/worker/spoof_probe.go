@@ -159,6 +159,42 @@ func (w *Worker) probeIPSpoofing() (bool, bool) {
 	}
 }
 
+// queryControllerSpoofCache 查询 Controller 的伪造能力缓存（按 IP 持久化）。
+// 同 IP 的 worker 重新上线时直接复用历史结果，跳过重复探测。
+// 返回 (结果, 是否命中)。命中时上报状态确保 Controller 节点标记同步。
+func (w *Worker) queryControllerSpoofCache() (bool, bool) {
+	url := w.ctrlBaseURL() + "/api/worker/spoof-cache?worker_id=" + w.assignedID
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return false, false
+	}
+	req.Header.Set("Authorization", "Bearer "+w.authToken)
+
+	client := &http.Client{Timeout: 5 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[spoof-probe] cache query failed: %v", err)
+		return false, false
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		Cached   bool   `json:"cached"`
+		CanSpoof bool   `json:"can_spoof"`
+		IP       string `json:"ip"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return false, false
+	}
+	if !r.Cached {
+		return false, false
+	}
+	// 命中缓存：上报状态让 Controller 节点标记同步（防 Controller 重启丢失标记）
+	w.reportSpoofStatus()
+	return r.CanSpoof, true
+}
+
 // reportSpoofStatus 把本机伪造能力探测结果上报给 Controller，
 // 使节点表的 CanSpoof/SpoofTested 反映真实能力（探测失败也会上报为 false，
 // 避免 Controller 端停留在"待检测"或乐观的默认值）。

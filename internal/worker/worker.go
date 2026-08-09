@@ -417,7 +417,12 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// 探测 IP 伪造能力（在注册之后执行：probe 上报的 worker_id 用最终
 	// assignedID，避免注册时 ID 冲突重分配导致 spoof 标签打到错误节点）
-	if w.localPool != nil {
+	// 顺序：Controller 缓存（按 IP 持久化，同 IP 重上线直接打标签）→
+	// 本地 SQLite 缓存 → 真实探测
+	if ctrlCached, found := w.queryControllerSpoofCache(); found {
+		w.canSpoofIP = ctrlCached
+		log.Printf("[spoof-probe] loaded controller cache: can_spoof=%v (IP-based, no probe needed)", ctrlCached)
+	} else if w.localPool != nil {
 		// 优先使用本地缓存（TTL: spoofCapabilityTTL）
 		cached, testedAt, err := w.loadSpoofCapability()
 		if err == nil && time.Since(testedAt) < spoofCapabilityTTL {

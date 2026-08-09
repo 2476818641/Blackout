@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -198,8 +199,34 @@ func (c *Ctrl) handleSpoofProbeResult(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// spoofCacheGet 查询伪造能力缓存（按 IP）。ok=false 表示无记录。
+func (c *Ctrl) spoofCacheGet(ip string) (bool, bool) {
+	if ip == "" {
+		return false, false
+	}
+	c.spoofCacheMu.RLock()
+	v, ok := c.spoofCache[ip]
+	c.spoofCacheMu.RUnlock()
+	return v, ok
+}
+
+// spoofCacheSet 保存伪造能力缓存（按 IP）并持久化。
+func (c *Ctrl) spoofCacheSet(ip string, canSpoof bool) {
+	if ip == "" {
+		return
+	}
+	c.spoofCacheMu.Lock()
+	c.spoofCache[ip] = canSpoof
+	data, _ := json.Marshal(c.spoofCache)
+	c.spoofCacheMu.Unlock()
+	if err := os.WriteFile(c.spoofCacheFile, data, 0644); err != nil {
+		log.Printf("[spoof-probe] cache write failed: %v", err)
+	}
+}
+
 // handleSpoofStatus POST /api/worker/spoof-status
-// Worker 上报探测结果（can_spoof），更新节点表的真实伪造能力。
+// Worker 上报探测结果（can_spoof），更新节点表的真实伪造能力并缓存到磁盘
+// （按 IP 持久化：同 IP 的 worker 重新上线时直接打标签，无需重新探测）。
 // 探测失败/平台不支持也会上报 false，避免节点停留在"待检测"。
 func (c *Ctrl) handleSpoofStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -219,6 +246,7 @@ func (c *Ctrl) handleSpoofStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var nodeIP string
 	c.mu.Lock()
 	if node, exists := c.nodes[req.WorkerID]; exists {
 		node.CanSpoof = req.CanSpoof
@@ -228,12 +256,48 @@ func (c *Ctrl) handleSpoofStatus(w http.ResponseWriter, r *http.Request) {
 		} else {
 			node.Tags = removeTag(node.Tags, "spoof")
 		}
+		nodeIP = node.IP
 	}
 	c.mu.Unlock()
+
+	// 按 IP 缓存探测结果：同 IP worker 重新上线直接复用
+	if nodeIP != "" && nodeIP != "127.0.0.1" {
+		c.spoofCacheSet(nodeIP, req.CanSpoof)
+	}
 
 	log.Printf("[spoof-probe] %s reported can_spoof=%v", req.WorkerID, req.CanSpoof)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
+// handleSpoofCacheQuery GET /api/worker/spoof-status?worker_id=xxx
+// Worker 注册后查询：该节点 IP 是否有历史伪造能力缓存。
+// 命中则返回 cached=true + can_spoof，Worker 跳过重复探测直接使用。
+func (c *Ctrl) handleSpoofCacheQuery(w http.ResponseWriter, r *http.Request) {
+	wid := r.URL.Query().Get("worker_id")
+	if wid == "" {
+		http.Error(w, `{"error":"missing worker_id"}`, 400)
+		return
+	}
+
+	var ip string
+	c.mu.RLock()
+	if n, ok := c.nodes[wid]; ok {
+		ip = n.IP
+	}
+	c.mu.RUnlock()
+
+	if ip == "" || ip == "127.0.0.1" {
+		writeJSON(w, map[string]interface{}{"cached": false})
+		return
+	}
+
+	canSpoof, ok := c.spoofCacheGet(ip)
+	if !ok {
+		writeJSON(w, map[string]interface{}{"cached": false, "ip": ip})
+		return
+	}
+	writeJSON(w, map[string]interface{}{"cached": true, "ip": ip, "can_spoof": canSpoof})
 }
 
 // removeTag 移除标签
