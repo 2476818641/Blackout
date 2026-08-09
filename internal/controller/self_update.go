@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -64,36 +65,18 @@ func (c *Ctrl) githubRequest(method, apiPath string) (*http.Request, error) {
 	return req, nil
 }
 
-// fetchLatestRelease 查询 GitHub 最新 Release。未配置仓库时返回 nil。
-// 配置了 ghProxy 时经代理访问（国内服务器直连 api.github.com 慢）。
+// fetchLatestRelease 查询 GitHub 最新 Release（按发布时间排序，不依赖
+// /releases/latest 端点——该端点按创建时间判定且可能被代理缓存返回旧版本）。
+// 未配置仓库时返回 nil。配置了 ghProxy 时经代理访问。
 func (c *Ctrl) fetchLatestRelease() (*ReleaseInfo, error) {
-	if c.build.GitRepo == "" {
-		return nil, fmt.Errorf("git repo not configured")
-	}
-	req, err := c.githubRequest("GET", "/repos/"+c.build.GitRepo+"/releases/latest")
+	rels, err := c.fetchReleases()
 	if err != nil {
 		return nil, err
 	}
-
-	resp, err := updateCheckClient.Do(req)
-	if err != nil {
-		return nil, err
+	if len(rels) == 0 {
+		return nil, nil
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 404 {
-		return nil, nil // 无 Release
-	}
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("github api %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	var rel ReleaseInfo
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return nil, err
-	}
-	return &rel, nil
+	return &rels[0], nil
 }
 
 // fetchReleaseByTag 查询指定 tag 的 Release；不存在返回 nil
@@ -127,7 +110,10 @@ func (c *Ctrl) fetchReleaseByTag(tag string) (*ReleaseInfo, error) {
 	return &rel, nil
 }
 
-// fetchReleases 查询 Release 列表（最多 30 个，按发布时间倒序）
+// fetchReleases 查询 Release 列表（最多 30 个），并按发布时间倒序排列。
+// GitHub API 默认按创建时间排序（release 创建 vs 发布时间可能不一致，
+// 且 Actions 编译完成后才发布，创建时间可能早于其他 release），
+// 因此显式按 published_at 排序保证"最新发布"排在最前。
 func (c *Ctrl) fetchReleases() ([]ReleaseInfo, error) {
 	if c.build.GitRepo == "" {
 		return nil, fmt.Errorf("git repo not configured")
@@ -152,6 +138,11 @@ func (c *Ctrl) fetchReleases() ([]ReleaseInfo, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&rels); err != nil {
 		return nil, err
 	}
+
+	// 按发布时间倒序（published_at 为 RFC3339，字符串比较即可）
+	sort.SliceStable(rels, func(i, j int) bool {
+		return rels[i].PublishedAt > rels[j].PublishedAt
+	})
 	return rels, nil
 }
 
