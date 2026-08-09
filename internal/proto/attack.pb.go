@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v3.20.3
-// source: attack.proto
+// source: internal/proto/attack.proto
 
 package proto
 
@@ -37,7 +37,7 @@ type RegisterRequest struct {
 
 func (x *RegisterRequest) Reset() {
 	*x = RegisterRequest{}
-	mi := &file_attack_proto_msgTypes[0]
+	mi := &file_internal_proto_attack_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -49,7 +49,7 @@ func (x *RegisterRequest) String() string {
 func (*RegisterRequest) ProtoMessage() {}
 
 func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_attack_proto_msgTypes[0]
+	mi := &file_internal_proto_attack_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -62,7 +62,7 @@ func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterRequest.ProtoReflect.Descriptor instead.
 func (*RegisterRequest) Descriptor() ([]byte, []int) {
-	return file_attack_proto_rawDescGZIP(), []int{0}
+	return file_internal_proto_attack_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *RegisterRequest) GetWorkerId() string {
@@ -132,7 +132,7 @@ type RegisterResponse struct {
 
 func (x *RegisterResponse) Reset() {
 	*x = RegisterResponse{}
-	mi := &file_attack_proto_msgTypes[1]
+	mi := &file_internal_proto_attack_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -144,7 +144,7 @@ func (x *RegisterResponse) String() string {
 func (*RegisterResponse) ProtoMessage() {}
 
 func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_attack_proto_msgTypes[1]
+	mi := &file_internal_proto_attack_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -157,7 +157,7 @@ func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterResponse.ProtoReflect.Descriptor instead.
 func (*RegisterResponse) Descriptor() ([]byte, []int) {
-	return file_attack_proto_rawDescGZIP(), []int{1}
+	return file_internal_proto_attack_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *RegisterResponse) GetSuccess() bool {
@@ -191,7 +191,7 @@ type DeregisterRequest struct {
 
 func (x *DeregisterRequest) Reset() {
 	*x = DeregisterRequest{}
-	mi := &file_attack_proto_msgTypes[2]
+	mi := &file_internal_proto_attack_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -203,7 +203,7 @@ func (x *DeregisterRequest) String() string {
 func (*DeregisterRequest) ProtoMessage() {}
 
 func (x *DeregisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_attack_proto_msgTypes[2]
+	mi := &file_internal_proto_attack_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -216,7 +216,7 @@ func (x *DeregisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeregisterRequest.ProtoReflect.Descriptor instead.
 func (*DeregisterRequest) Descriptor() ([]byte, []int) {
-	return file_attack_proto_rawDescGZIP(), []int{2}
+	return file_internal_proto_attack_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *DeregisterRequest) GetWorkerId() string {
@@ -242,7 +242,7 @@ type DeregisterResponse struct {
 
 func (x *DeregisterResponse) Reset() {
 	*x = DeregisterResponse{}
-	mi := &file_attack_proto_msgTypes[3]
+	mi := &file_internal_proto_attack_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -254,7 +254,7 @@ func (x *DeregisterResponse) String() string {
 func (*DeregisterResponse) ProtoMessage() {}
 
 func (x *DeregisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_attack_proto_msgTypes[3]
+	mi := &file_internal_proto_attack_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -267,7 +267,7 @@ func (x *DeregisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeregisterResponse.ProtoReflect.Descriptor instead.
 func (*DeregisterResponse) Descriptor() ([]byte, []int) {
-	return file_attack_proto_rawDescGZIP(), []int{3}
+	return file_internal_proto_attack_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *DeregisterResponse) GetOk() bool {
@@ -290,7 +290,7 @@ type HeartbeatRequest struct {
 
 func (x *HeartbeatRequest) Reset() {
 	*x = HeartbeatRequest{}
-	mi := &file_attack_proto_msgTypes[4]
+	mi := &file_internal_proto_attack_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -302,7 +302,7 @@ func (x *HeartbeatRequest) String() string {
 func (*HeartbeatRequest) ProtoMessage() {}
 
 func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_attack_proto_msgTypes[4]
+	mi := &file_internal_proto_attack_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -315,7 +315,7 @@ func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_attack_proto_rawDescGZIP(), []int{4}
+	return file_internal_proto_attack_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *HeartbeatRequest) GetWorkerId() string {
@@ -358,13 +358,14 @@ type HeartbeatResponse struct {
 	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
 	PendingTask   *AttackTask            `protobuf:"bytes,2,opt,name=pending_task,json=pendingTask,proto3" json:"pending_task,omitempty"`
 	CancelTaskId  string                 `protobuf:"bytes,3,opt,name=cancel_task_id,json=cancelTaskId,proto3" json:"cancel_task_id,omitempty"`
+	Kick          bool                   `protobuf:"varint,4,opt,name=kick,proto3" json:"kick,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_attack_proto_msgTypes[5]
+	mi := &file_internal_proto_attack_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -376,7 +377,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_attack_proto_msgTypes[5]
+	mi := &file_internal_proto_attack_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -389,7 +390,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_attack_proto_rawDescGZIP(), []int{5}
+	return file_internal_proto_attack_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *HeartbeatResponse) GetOk() bool {
@@ -413,30 +414,38 @@ func (x *HeartbeatResponse) GetCancelTaskId() string {
 	return ""
 }
 
+func (x *HeartbeatResponse) GetKick() bool {
+	if x != nil {
+		return x.Kick
+	}
+	return false
+}
+
 type AttackTask struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	Target        string                 `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
-	Method        string                 `protobuf:"bytes,3,opt,name=method,proto3" json:"method,omitempty"`
-	Duration      int32                  `protobuf:"varint,4,opt,name=duration,proto3" json:"duration,omitempty"`
-	Threads       int32                  `protobuf:"varint,5,opt,name=threads,proto3" json:"threads,omitempty"`
-	PacketSize    int32                  `protobuf:"varint,6,opt,name=packet_size,json=packetSize,proto3" json:"packet_size,omitempty"`
-	Mix           bool                   `protobuf:"varint,7,opt,name=mix,proto3" json:"mix,omitempty"`
-	Game          string                 `protobuf:"bytes,8,opt,name=game,proto3" json:"game,omitempty"`
-	RateLimitPps  int64                  `protobuf:"varint,9,opt,name=rate_limit_pps,json=rateLimitPps,proto3" json:"rate_limit_pps,omitempty"`
-	RateLimitBps  int64                  `protobuf:"varint,10,opt,name=rate_limit_bps,json=rateLimitBps,proto3" json:"rate_limit_bps,omitempty"`
-	BurstMode     bool                   `protobuf:"varint,12,opt,name=burst_mode,json=burstMode,proto3" json:"burst_mode,omitempty"`
-	JitterMs      int32                  `protobuf:"varint,13,opt,name=jitter_ms,json=jitterMs,proto3" json:"jitter_ms,omitempty"`
-	SubAttacks    []*SubAttack           `protobuf:"bytes,14,rep,name=sub_attacks,json=subAttacks,proto3" json:"sub_attacks,omitempty"`
-	SpoofIp       bool                   `protobuf:"varint,15,opt,name=spoof_ip,json=spoofIp,proto3" json:"spoof_ip,omitempty"`
-	FallbackToUdp bool                   `protobuf:"varint,16,opt,name=fallback_to_udp,json=fallbackToUdp,proto3" json:"fallback_to_udp,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	TaskId          string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Target          string                 `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
+	Method          string                 `protobuf:"bytes,3,opt,name=method,proto3" json:"method,omitempty"`
+	Duration        int32                  `protobuf:"varint,4,opt,name=duration,proto3" json:"duration,omitempty"`
+	Threads         int32                  `protobuf:"varint,5,opt,name=threads,proto3" json:"threads,omitempty"`
+	PacketSize      int32                  `protobuf:"varint,6,opt,name=packet_size,json=packetSize,proto3" json:"packet_size,omitempty"`
+	Mix             bool                   `protobuf:"varint,7,opt,name=mix,proto3" json:"mix,omitempty"`
+	Game            string                 `protobuf:"bytes,8,opt,name=game,proto3" json:"game,omitempty"`
+	RateLimitPps    int64                  `protobuf:"varint,9,opt,name=rate_limit_pps,json=rateLimitPps,proto3" json:"rate_limit_pps,omitempty"`
+	RateLimitBps    int64                  `protobuf:"varint,10,opt,name=rate_limit_bps,json=rateLimitBps,proto3" json:"rate_limit_bps,omitempty"`
+	BurstMode       bool                   `protobuf:"varint,12,opt,name=burst_mode,json=burstMode,proto3" json:"burst_mode,omitempty"`
+	JitterMs        int32                  `protobuf:"varint,13,opt,name=jitter_ms,json=jitterMs,proto3" json:"jitter_ms,omitempty"`
+	SubAttacks      []*SubAttack           `protobuf:"bytes,14,rep,name=sub_attacks,json=subAttacks,proto3" json:"sub_attacks,omitempty"`
+	SpoofIp         bool                   `protobuf:"varint,15,opt,name=spoof_ip,json=spoofIp,proto3" json:"spoof_ip,omitempty"`
+	FallbackToUdp   bool                   `protobuf:"varint,16,opt,name=fallback_to_udp,json=fallbackToUdp,proto3" json:"fallback_to_udp,omitempty"`
+	SelectedWorkers []string               `protobuf:"bytes,17,rep,name=selected_workers,json=selectedWorkers,proto3" json:"selected_workers,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *AttackTask) Reset() {
 	*x = AttackTask{}
-	mi := &file_attack_proto_msgTypes[6]
+	mi := &file_internal_proto_attack_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -448,7 +457,7 @@ func (x *AttackTask) String() string {
 func (*AttackTask) ProtoMessage() {}
 
 func (x *AttackTask) ProtoReflect() protoreflect.Message {
-	mi := &file_attack_proto_msgTypes[6]
+	mi := &file_internal_proto_attack_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -461,7 +470,7 @@ func (x *AttackTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttackTask.ProtoReflect.Descriptor instead.
 func (*AttackTask) Descriptor() ([]byte, []int) {
-	return file_attack_proto_rawDescGZIP(), []int{6}
+	return file_internal_proto_attack_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *AttackTask) GetTaskId() string {
@@ -569,6 +578,13 @@ func (x *AttackTask) GetFallbackToUdp() bool {
 	return false
 }
 
+func (x *AttackTask) GetSelectedWorkers() []string {
+	if x != nil {
+		return x.SelectedWorkers
+	}
+	return nil
+}
+
 type SubAttack struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Method        string                 `protobuf:"bytes,1,opt,name=method,proto3" json:"method,omitempty"`
@@ -585,7 +601,7 @@ type SubAttack struct {
 
 func (x *SubAttack) Reset() {
 	*x = SubAttack{}
-	mi := &file_attack_proto_msgTypes[7]
+	mi := &file_internal_proto_attack_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -597,7 +613,7 @@ func (x *SubAttack) String() string {
 func (*SubAttack) ProtoMessage() {}
 
 func (x *SubAttack) ProtoReflect() protoreflect.Message {
-	mi := &file_attack_proto_msgTypes[7]
+	mi := &file_internal_proto_attack_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -610,7 +626,7 @@ func (x *SubAttack) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubAttack.ProtoReflect.Descriptor instead.
 func (*SubAttack) Descriptor() ([]byte, []int) {
-	return file_attack_proto_rawDescGZIP(), []int{7}
+	return file_internal_proto_attack_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SubAttack) GetMethod() string {
@@ -687,7 +703,7 @@ type WorkerStatsPush struct {
 
 func (x *WorkerStatsPush) Reset() {
 	*x = WorkerStatsPush{}
-	mi := &file_attack_proto_msgTypes[8]
+	mi := &file_internal_proto_attack_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -699,7 +715,7 @@ func (x *WorkerStatsPush) String() string {
 func (*WorkerStatsPush) ProtoMessage() {}
 
 func (x *WorkerStatsPush) ProtoReflect() protoreflect.Message {
-	mi := &file_attack_proto_msgTypes[8]
+	mi := &file_internal_proto_attack_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -712,7 +728,7 @@ func (x *WorkerStatsPush) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerStatsPush.ProtoReflect.Descriptor instead.
 func (*WorkerStatsPush) Descriptor() ([]byte, []int) {
-	return file_attack_proto_rawDescGZIP(), []int{8}
+	return file_internal_proto_attack_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *WorkerStatsPush) GetTaskId() string {
@@ -794,7 +810,7 @@ type StatsAck struct {
 
 func (x *StatsAck) Reset() {
 	*x = StatsAck{}
-	mi := &file_attack_proto_msgTypes[9]
+	mi := &file_internal_proto_attack_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -806,7 +822,7 @@ func (x *StatsAck) String() string {
 func (*StatsAck) ProtoMessage() {}
 
 func (x *StatsAck) ProtoReflect() protoreflect.Message {
-	mi := &file_attack_proto_msgTypes[9]
+	mi := &file_internal_proto_attack_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -819,7 +835,7 @@ func (x *StatsAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatsAck.ProtoReflect.Descriptor instead.
 func (*StatsAck) Descriptor() ([]byte, []int) {
-	return file_attack_proto_rawDescGZIP(), []int{9}
+	return file_internal_proto_attack_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *StatsAck) GetOk() bool {
@@ -839,7 +855,7 @@ type ScanRequest struct {
 
 func (x *ScanRequest) Reset() {
 	*x = ScanRequest{}
-	mi := &file_attack_proto_msgTypes[10]
+	mi := &file_internal_proto_attack_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -851,7 +867,7 @@ func (x *ScanRequest) String() string {
 func (*ScanRequest) ProtoMessage() {}
 
 func (x *ScanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_attack_proto_msgTypes[10]
+	mi := &file_internal_proto_attack_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -864,7 +880,7 @@ func (x *ScanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScanRequest.ProtoReflect.Descriptor instead.
 func (*ScanRequest) Descriptor() ([]byte, []int) {
-	return file_attack_proto_rawDescGZIP(), []int{10}
+	return file_internal_proto_attack_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ScanRequest) GetIp() string {
@@ -894,7 +910,7 @@ type ScanResult struct {
 
 func (x *ScanResult) Reset() {
 	*x = ScanResult{}
-	mi := &file_attack_proto_msgTypes[11]
+	mi := &file_internal_proto_attack_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -906,7 +922,7 @@ func (x *ScanResult) String() string {
 func (*ScanResult) ProtoMessage() {}
 
 func (x *ScanResult) ProtoReflect() protoreflect.Message {
-	mi := &file_attack_proto_msgTypes[11]
+	mi := &file_internal_proto_attack_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -919,7 +935,7 @@ func (x *ScanResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScanResult.ProtoReflect.Descriptor instead.
 func (*ScanResult) Descriptor() ([]byte, []int) {
-	return file_attack_proto_rawDescGZIP(), []int{11}
+	return file_internal_proto_attack_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ScanResult) GetIp() string {
@@ -957,11 +973,11 @@ func (x *ScanResult) GetIsReflector() bool {
 	return false
 }
 
-var File_attack_proto protoreflect.FileDescriptor
+var File_internal_proto_attack_proto protoreflect.FileDescriptor
 
-const file_attack_proto_rawDesc = "" +
+const file_internal_proto_attack_proto_rawDesc = "" +
 	"\n" +
-	"\fattack.proto\x12\anettool\"\xfd\x01\n" +
+	"\x1binternal/proto/attack.proto\x12\anettool\"\xfd\x01\n" +
 	"\x0fRegisterRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x1d\n" +
 	"\n" +
@@ -991,11 +1007,12 @@ const file_attack_proto_rawDesc = "" +
 	"\vcpu_percent\x18\x03 \x01(\x01R\n" +
 	"cpuPercent\x12$\n" +
 	"\x0ememory_used_mb\x18\x04 \x01(\x03R\fmemoryUsedMb\x12!\n" +
-	"\fnetwork_mbps\x18\x05 \x01(\x05R\vnetworkMbps\"\x81\x01\n" +
+	"\fnetwork_mbps\x18\x05 \x01(\x05R\vnetworkMbps\"\x95\x01\n" +
 	"\x11HeartbeatResponse\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x126\n" +
 	"\fpending_task\x18\x02 \x01(\v2\x13.nettool.AttackTaskR\vpendingTask\x12$\n" +
-	"\x0ecancel_task_id\x18\x03 \x01(\tR\fcancelTaskId\"\xd2\x03\n" +
+	"\x0ecancel_task_id\x18\x03 \x01(\tR\fcancelTaskId\x12\x12\n" +
+	"\x04kick\x18\x04 \x01(\bR\x04kick\"\xfd\x03\n" +
 	"\n" +
 	"AttackTask\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x16\n" +
@@ -1016,7 +1033,8 @@ const file_attack_proto_rawDesc = "" +
 	"\vsub_attacks\x18\x0e \x03(\v2\x12.nettool.SubAttackR\n" +
 	"subAttacks\x12\x19\n" +
 	"\bspoof_ip\x18\x0f \x01(\bR\aspoofIp\x12&\n" +
-	"\x0ffallback_to_udp\x18\x10 \x01(\bR\rfallbackToUdp\"\xfa\x01\n" +
+	"\x0ffallback_to_udp\x18\x10 \x01(\bR\rfallbackToUdp\x12)\n" +
+	"\x10selected_workers\x18\x11 \x03(\tR\x0fselectedWorkers\"\xfa\x01\n" +
 	"\tSubAttack\x12\x16\n" +
 	"\x06method\x18\x01 \x01(\tR\x06method\x12\x18\n" +
 	"\athreads\x18\x02 \x01(\x05R\athreads\x12\x1f\n" +
@@ -1064,19 +1082,19 @@ const file_attack_proto_rawDesc = "" +
 	"\vReportStats\x12\x18.nettool.WorkerStatsPush\x1a\x11.nettool.StatsAck(\x01B\x18Z\x16newtool/internal/protob\x06proto3"
 
 var (
-	file_attack_proto_rawDescOnce sync.Once
-	file_attack_proto_rawDescData []byte
+	file_internal_proto_attack_proto_rawDescOnce sync.Once
+	file_internal_proto_attack_proto_rawDescData []byte
 )
 
-func file_attack_proto_rawDescGZIP() []byte {
-	file_attack_proto_rawDescOnce.Do(func() {
-		file_attack_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_attack_proto_rawDesc), len(file_attack_proto_rawDesc)))
+func file_internal_proto_attack_proto_rawDescGZIP() []byte {
+	file_internal_proto_attack_proto_rawDescOnce.Do(func() {
+		file_internal_proto_attack_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_proto_attack_proto_rawDesc), len(file_internal_proto_attack_proto_rawDesc)))
 	})
-	return file_attack_proto_rawDescData
+	return file_internal_proto_attack_proto_rawDescData
 }
 
-var file_attack_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
-var file_attack_proto_goTypes = []any{
+var file_internal_proto_attack_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_internal_proto_attack_proto_goTypes = []any{
 	(*RegisterRequest)(nil),    // 0: nettool.RegisterRequest
 	(*RegisterResponse)(nil),   // 1: nettool.RegisterResponse
 	(*DeregisterRequest)(nil),  // 2: nettool.DeregisterRequest
@@ -1090,7 +1108,7 @@ var file_attack_proto_goTypes = []any{
 	(*ScanRequest)(nil),        // 10: nettool.ScanRequest
 	(*ScanResult)(nil),         // 11: nettool.ScanResult
 }
-var file_attack_proto_depIdxs = []int32{
+var file_internal_proto_attack_proto_depIdxs = []int32{
 	6, // 0: nettool.HeartbeatResponse.pending_task:type_name -> nettool.AttackTask
 	7, // 1: nettool.AttackTask.sub_attacks:type_name -> nettool.SubAttack
 	0, // 2: nettool.NodeService.Register:input_type -> nettool.RegisterRequest
@@ -1108,26 +1126,26 @@ var file_attack_proto_depIdxs = []int32{
 	0, // [0:2] is the sub-list for field type_name
 }
 
-func init() { file_attack_proto_init() }
-func file_attack_proto_init() {
-	if File_attack_proto != nil {
+func init() { file_internal_proto_attack_proto_init() }
+func file_internal_proto_attack_proto_init() {
+	if File_internal_proto_attack_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_attack_proto_rawDesc), len(file_attack_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_proto_attack_proto_rawDesc), len(file_internal_proto_attack_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_attack_proto_goTypes,
-		DependencyIndexes: file_attack_proto_depIdxs,
-		MessageInfos:      file_attack_proto_msgTypes,
+		GoTypes:           file_internal_proto_attack_proto_goTypes,
+		DependencyIndexes: file_internal_proto_attack_proto_depIdxs,
+		MessageInfos:      file_internal_proto_attack_proto_msgTypes,
 	}.Build()
-	File_attack_proto = out.File
-	file_attack_proto_goTypes = nil
-	file_attack_proto_depIdxs = nil
+	File_internal_proto_attack_proto = out.File
+	file_internal_proto_attack_proto_goTypes = nil
+	file_internal_proto_attack_proto_depIdxs = nil
 }

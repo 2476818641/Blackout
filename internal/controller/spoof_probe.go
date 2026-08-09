@@ -154,7 +154,6 @@ func (c *Ctrl) handleSpoofProbeResult(w http.ResponseWriter, r *http.Request) {
 	spoofProbesMu.Lock()
 	probe, exists := spoofProbes[nonce]
 	resp := map[string]interface{}{}
-	verifiedWorkerID := ""
 
 	if !exists {
 		resp["can_spoof"] = false
@@ -164,7 +163,6 @@ func (c *Ctrl) handleSpoofProbeResult(w http.ResponseWriter, r *http.Request) {
 			delete(spoofProbes, nonce)
 			resp["can_spoof"] = true
 			resp["message"] = "IP spoofing verified successfully"
-			verifiedWorkerID = probe.WorkerID
 		} else if time.Now().Unix()-probe.Timestamp > int64(probeVerifyTimeout.Seconds()) {
 			// 超过验证窗口仍未到达 → 清理并判定失败
 			delete(spoofProbes, nonce)
@@ -177,17 +175,34 @@ func (c *Ctrl) handleSpoofProbeResult(w http.ResponseWriter, r *http.Request) {
 	}
 	spoofProbesMu.Unlock()
 
-	if verifiedWorkerID != "" {
-		// 验证成功 → 给节点打 spoof 标签
+	// 探测结果（成功或失败）都更新节点的真实伪造能力
+	if probe != nil && probe.WorkerID != "" {
 		c.mu.Lock()
-		if node, exists := c.nodes[verifiedWorkerID]; exists {
-			node.Tags = appendIfNotExists(node.Tags, "spoof")
+		if node, exists := c.nodes[probe.WorkerID]; exists {
+			if verified, _ := resp["can_spoof"].(bool); verified {
+				node.CanSpoof = true
+				node.Tags = appendIfNotExists(node.Tags, "spoof")
+			} else {
+				node.CanSpoof = false
+				node.Tags = removeTag(node.Tags, "spoof")
+			}
 		}
 		c.mu.Unlock()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// removeTag 移除标签
+func removeTag(slice []string, item string) []string {
+	out := slice[:0]
+	for _, s := range slice {
+		if s != item {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // appendIfNotExists 辅助函数：追加元素到切片（如果不存在）

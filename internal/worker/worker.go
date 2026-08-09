@@ -808,6 +808,12 @@ func (w *Worker) heartbeat() error {
 		return err
 	}
 
+	if resp.Kick {
+		// 被 Controller 踢出：停止所有攻击 → 注销 → 删除自身二进制 → 退出进程
+		log.Printf("[worker] KICKED by controller, exiting and removing self")
+		w.kickSelf()
+	}
+
 	if resp.CancelTaskId != "" {
 		w.safeStopTask(resp.CancelTaskId)
 	}
@@ -817,6 +823,24 @@ func (w *Worker) heartbeat() error {
 	}
 
 	return nil
+}
+
+// kickSelf 踢出处理：停止攻击 → deregister → 删除自身 → 退出
+func (w *Worker) kickSelf() {
+	w.stopAllAttacks()
+	w.deregister()
+
+	// 尝试删除自身二进制（Linux 可删除运行中的文件；失败仅记录）
+	if exe, err := os.Executable(); err == nil {
+		if err := os.Remove(exe); err != nil {
+			log.Printf("[worker] kick: failed to remove self binary: %v", err)
+		} else {
+			log.Printf("[worker] kick: self binary removed")
+		}
+	}
+
+	log.Printf("[worker] kick: bye")
+	os.Exit(0)
 }
 
 // safeStopTask/safeStartTask 包一层 recover：任务参数来自 Controller，

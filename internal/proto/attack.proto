@@ -49,6 +49,7 @@ message HeartbeatResponse {
   bool ok = 1;
   AttackTask pending_task = 2;
   string cancel_task_id = 3;
+  bool kick = 4;
 }
 
 message AttackTask {
@@ -67,6 +68,7 @@ message AttackTask {
   repeated SubAttack sub_attacks = 14;
   bool spoof_ip = 15;
   bool fallback_to_udp = 16;
+  repeated string selected_workers = 17;
 }
 
 message SubAttack {
