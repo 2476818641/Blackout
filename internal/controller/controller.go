@@ -1076,13 +1076,28 @@ func (c *Ctrl) listNodesForBroadcast() []*NodeInfo {
 	return c.listNodesLocked()
 }
 
-// offlineTimeout 根据节点状态返回心跳超时阈值：
-// ATTACKING 节点攻击时带宽可能打满、心跳被延迟（gRPC 包排队），
-// 15s 判定太激进会把正在攻击的节点误判 OFFLINE，导致后续任务
-// 只派发给少数恢复快的节点（W=1/W=2）。攻击态放宽到 60s。
-func (c *Ctrl) offlineTimeout(status string) time.Duration {
-	if status == "ATTACKING" {
-		return 60 * time.Second
+// offlineTimeout 根据节点状态与活跃任务返回心跳超时阈值：
+//   - 节点正参与 running/pending 任务：容忍到任务结束时间 + 120s 缓冲。
+//     攻击时带宽打满、心跳 TCP 包被挤掉是常态（小机器尤甚），
+//     固定 60s 会把仍在攻击的节点误判 OFFLINE，导致后续任务不再派发给它。
+//   - 空闲（READY）节点：15s 正常判定。
+//
+// 必须在持有 c.mu 时调用。
+func (c *Ctrl) offlineTimeout(n *NodeInfo) time.Duration {
+	// 节点是否参与未结束的任务
+	for _, t := range c.tasks {
+		if t.Status != "running" && t.Status != "pending" {
+			continue
+		}
+		st, ok := t.Workers[n.WorkerID]
+		if !ok || st.Finished {
+			continue
+		}
+		end := t.StartTime.Add(time.Duration(t.Duration+120) * time.Second)
+		if remaining := time.Until(end); remaining > 0 {
+			return remaining + 30*time.Second
+		}
+		return 120 * time.Second
 	}
 	return 15 * time.Second
 }
@@ -1101,7 +1116,7 @@ func (c *Ctrl) watchOfflineNodes() {
 				changed = true
 				continue
 			}
-			if n.Status != "OFFLINE" && time.Since(n.LastHeartbeat) > c.offlineTimeout(n.Status) {
+			if n.Status != "OFFLINE" && time.Since(n.LastHeartbeat) > c.offlineTimeout(n) {
 				n.Status = "OFFLINE"
 				log.Printf("[node] %s marked offline (last seen %v ago)", id, time.Since(n.LastHeartbeat).Round(time.Second))
 				changed = true

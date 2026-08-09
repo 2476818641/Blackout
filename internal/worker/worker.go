@@ -791,9 +791,14 @@ func (w *Worker) heartbeat() error {
 	atomic.StoreInt32(&w.lastCPUPercent, stats.CPUPercent)
 	atomic.StoreInt64(&w.lastMemoryMB, stats.MemoryMB)
 
-	// 10s 超时：攻击时带宽打满，gRPC 心跳包排队，5s 太紧会频繁超时，
-	// 导致 Controller 把正在攻击的节点误判 OFFLINE，后续任务不再派发给它
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// 心跳超时：空闲 10s；攻击中放宽到 30s——带宽打满时 TCP 心跳包
+	// 排队/重传可能远超 10s，短超时会让心跳持续失败。攻击中失败已
+	// 不会降带宽/停攻击，这里进一步降低误判频率。
+	hbTimeout := 10 * time.Second
+	if w.hasActiveTask() {
+		hbTimeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hbTimeout)
 	defer cancel()
 	resp, err := w.client.Heartbeat(ctx, &pb.HeartbeatRequest{
 		WorkerId:     w.assignedID,
