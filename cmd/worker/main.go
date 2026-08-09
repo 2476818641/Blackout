@@ -70,6 +70,14 @@ func main() {
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
+	// 已被 Controller 踢出：本地存在 data/kicked 标记 → 直接退出。
+	// 防止 systemd Restart=always / daemon 自动拉起导致踢出后自动复活。
+	if worker.IsKicked() {
+		log.Printf("[worker] this node was kicked by controller (data/kicked exists).")
+		log.Printf("[worker] delete data/kicked to re-enable, or re-install the worker.")
+		return
+	}
+
 	wanIP, err := worker.GetWANIP()
 	if err != nil {
 		log.Printf("[!] Failed to get WAN IP: %v, using localhost", err)

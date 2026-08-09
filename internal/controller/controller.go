@@ -528,6 +528,14 @@ func (c *Ctrl) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Regis
 		baseID = "node"
 	}
 
+	// 已被踢出的节点：拒绝注册，防止 systemd Restart=always 拉起后自动复活。
+	// （Worker 侧也有 data/kicked 标记拦截，这里是 Controller 端兜底。）
+	if c.kicked[req.WorkerId] {
+		c.mu.Unlock()
+		log.Printf("[node] %s register REJECTED (kicked)", req.WorkerId)
+		return &pb.RegisterResponse{Success: false, Message: "node kicked"}, nil
+	}
+
 	// Worker 的 WAN IP 探测失败时会回退 127.0.0.1 生成 ID（如 127-0-0-1-node1），
 	// 多台机器会撞 ID 且无法识别真实节点。Controller 已从 gRPC 连接知道对端 IP，
 	// 用对端 IP 重写 ID，保证节点可辨识、ID 唯一。

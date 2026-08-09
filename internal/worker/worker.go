@@ -808,7 +808,13 @@ func (w *Worker) heartbeat() error {
 			if regErr := w.register(); regErr == nil {
 				log.Printf("[worker] re-registered after unknown node: %s", w.assignedID)
 			} else {
+				// 注册被拒（如节点已被踢出）：不再无限重试，
+				// 立即执行踢出流程（写标记 + 停服务 + 退出），防止复活
 				log.Printf("[worker] re-register failed: %v", regErr)
+				if strings.Contains(regErr.Error(), "kicked") {
+					log.Printf("[worker] register rejected because node is kicked — self-exiting")
+					w.kickSelf()
+				}
 			}
 		}
 		return err
@@ -831,12 +837,34 @@ func (w *Worker) heartbeat() error {
 	return nil
 }
 
-// kickSelf 踢出处理：停止攻击 → deregister → 删除自身 → 退出
+// kickMarkerFile 踢出标记：存在则 worker 启动即退出（防 systemd 自动拉起复活）
+const kickMarkerFile = "data/kicked"
+
+// IsKicked 判断本机是否被踢出（存在 data/kicked 标记文件）
+func IsKicked() bool {
+	_, err := os.Stat(kickMarkerFile)
+	return err == nil
+}
+
+// kickSelf 踢出处理：写踢出标记 → 停 systemd/计划任务 → 停止攻击 →
+// deregister → 删除自身 → 退出
 func (w *Worker) kickSelf() {
+	// 1. 写踢出标记：即使 systemd 立刻重启，新进程也会检测到标记直接退出
+	os.MkdirAll("data", 0755)
+	if err := os.WriteFile(kickMarkerFile, []byte("kicked "+time.Now().Format(time.RFC3339)), 0644); err != nil {
+		log.Printf("[worker] kick: failed to write marker: %v", err)
+	} else {
+		log.Printf("[worker] kick: marker written to %s", kickMarkerFile)
+	}
+
+	// 2. 尝试停止并禁用 systemd 服务 / Windows 计划任务（防自动重启）
+	w.disableAutoRestart()
+
+	// 3. 停止所有攻击 → 注销
 	w.stopAllAttacks()
 	w.deregister()
 
-	// 尝试删除自身二进制（Linux 可删除运行中的文件；失败仅记录）
+	// 4. 尝试删除自身二进制（Linux 可删除运行中的文件；失败仅记录）
 	if exe, err := os.Executable(); err == nil {
 		if err := os.Remove(exe); err != nil {
 			log.Printf("[worker] kick: failed to remove self binary: %v", err)
@@ -847,6 +875,31 @@ func (w *Worker) kickSelf() {
 
 	log.Printf("[worker] kick: bye")
 	os.Exit(0)
+}
+
+// disableAutoRestart 停止并禁用 systemd 服务（Linux）/ Windows 计划任务，
+// 防止 worker 退出后被自动拉起而复活。
+func (w *Worker) disableAutoRestart() {
+	if runtime.GOOS == "windows" {
+		out, err := exec.Command("cmd", "/c", `schtasks /end /tn "NetToolWorker" && schtasks /delete /tn "NetToolWorker" /f`).CombinedOutput()
+		if err != nil {
+			log.Printf("[worker] kick: schtasks cleanup failed: %v (%s)", err, strings.TrimSpace(string(out)))
+		} else {
+			log.Printf("[worker] kick: scheduled task removed")
+		}
+		return
+	}
+	// Linux：stop + disable 服务，防止 Restart=always 拉起
+	if out, err := exec.Command("systemctl", "stop", "nettool-worker").CombinedOutput(); err != nil {
+		log.Printf("[worker] kick: systemctl stop failed (may not be a service): %v", err)
+	} else {
+		log.Printf("[worker] kick: systemd service stopped (%s)", strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("systemctl", "disable", "nettool-worker").CombinedOutput(); err != nil {
+		log.Printf("[worker] kick: systemctl disable failed (may not be a service): %v", err)
+	} else {
+		log.Printf("[worker] kick: systemd service disabled (%s)", strings.TrimSpace(string(out)))
+	}
 }
 
 // safeStopTask/safeStartTask 包一层 recover：任务参数来自 Controller，
