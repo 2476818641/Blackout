@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"newtool/internal/attack"
@@ -156,6 +157,36 @@ func (w *Worker) probeIPSpoofing() (bool, bool) {
 		log.Printf("[spoof-probe] result: can_spoof=%v message=%s", probeResp.CanSpoof, probeResp.Message)
 		return probeResp.CanSpoof, true
 	}
+}
+
+// reportSpoofStatus 把本机伪造能力探测结果上报给 Controller，
+// 使节点表的 CanSpoof/SpoofTested 反映真实能力（探测失败也会上报为 false，
+// 避免 Controller 端停留在"待检测"或乐观的默认值）。
+func (w *Worker) reportSpoofStatus() {
+	url := w.ctrlBaseURL() + "/api/worker/spoof-status"
+	body := fmt.Sprintf(`{"worker_id":"%s","can_spoof":%v}`,
+		w.assignedID, w.canSpoofIP)
+	req, err := http.NewRequest("POST", url, strings.NewReader(body))
+	if err != nil {
+		log.Printf("[spoof-probe] status report request create failed: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+w.authToken)
+
+	client := &http.Client{Timeout: 5 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[spoof-probe] status report failed: %v", err)
+		return
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		log.Printf("[spoof-probe] status report http %d", resp.StatusCode)
+		return
+	}
+	log.Printf("[spoof-probe] reported status to controller: can_spoof=%v", w.canSpoofIP)
 }
 
 // saveSpoofCapability 保存伪造能力到本地数据库（含探测时间戳，用于 TTL 过期）

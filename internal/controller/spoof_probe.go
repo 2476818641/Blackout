@@ -175,15 +175,19 @@ func (c *Ctrl) handleSpoofProbeResult(w http.ResponseWriter, r *http.Request) {
 	}
 	spoofProbesMu.Unlock()
 
-	// 探测结果（成功或失败）都更新节点的真实伪造能力
-	if probe != nil && probe.WorkerID != "" {
+	// 探测结果（成功或失败）都更新节点的真实伪造能力。
+	// 仅在返回明确 can_spoof 结果时更新（pending 分支没有该字段，跳过，
+	// 避免 UDP 包尚未到达时误把节点标记为不支持）。
+	if verified, hasResult := resp["can_spoof"].(bool); hasResult && probe != nil && probe.WorkerID != "" {
 		c.mu.Lock()
 		if node, exists := c.nodes[probe.WorkerID]; exists {
-			if verified, _ := resp["can_spoof"].(bool); verified {
+			if verified {
 				node.CanSpoof = true
+				node.SpoofTested = true
 				node.Tags = appendIfNotExists(node.Tags, "spoof")
 			} else {
 				node.CanSpoof = false
+				node.SpoofTested = true
 				node.Tags = removeTag(node.Tags, "spoof")
 			}
 		}
@@ -192,6 +196,44 @@ func (c *Ctrl) handleSpoofProbeResult(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// handleSpoofStatus POST /api/worker/spoof-status
+// Worker 上报探测结果（can_spoof），更新节点表的真实伪造能力。
+// 探测失败/平台不支持也会上报 false，避免节点停留在"待检测"。
+func (c *Ctrl) handleSpoofStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var req struct {
+		WorkerID string `json:"worker_id"`
+		CanSpoof bool   `json:"can_spoof"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, 400)
+		return
+	}
+	if req.WorkerID == "" {
+		http.Error(w, `{"error":"missing worker_id"}`, 400)
+		return
+	}
+
+	c.mu.Lock()
+	if node, exists := c.nodes[req.WorkerID]; exists {
+		node.CanSpoof = req.CanSpoof
+		node.SpoofTested = true
+		if req.CanSpoof {
+			node.Tags = appendIfNotExists(node.Tags, "spoof")
+		} else {
+			node.Tags = removeTag(node.Tags, "spoof")
+		}
+	}
+	c.mu.Unlock()
+
+	log.Printf("[spoof-probe] %s reported can_spoof=%v", req.WorkerID, req.CanSpoof)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 }
 
 // removeTag 移除标签

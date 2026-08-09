@@ -43,10 +43,12 @@ type NodeInfo struct {
 	Status        string    `json:"status"`
 	LastHeartbeat time.Time `json:"last_heartbeat"`
 	IsWindows     bool      `json:"is_windows"`
-	// CanSpoof 表示该节点是否支持 IP 伪造：
-	// 默认按平台标记（非 Windows + 编译支持 = true，待探测确认），
-	// spoof-probe 探测失败后置 false
-	CanSpoof bool `json:"can_spoof"`
+	// CanSpoof 表示该节点是否支持 IP 伪造（默认 false，注册后由探测确定）。
+	// SpoofTested 表示是否已完成探测：false = 待检测（UI 显示"待检测"而非"不支持"）。
+	// 平台确定不支持（Windows/非 root/编译不支持）时 SpoofTested=true 且 CanSpoof=false；
+	// 探测验证成功 → SpoofTested=true, CanSpoof=true。
+	CanSpoof    bool `json:"can_spoof"`
+	SpoofTested bool `json:"spoof_tested"`
 }
 
 type SubAttackInfo struct {
@@ -426,6 +428,7 @@ func (c *Ctrl) Start() error {
 	mux.HandleFunc("/api/update/workers", c.authAdmin(c.handleUpdateWorkers))
 	mux.HandleFunc("/api/worker/spoof-probe", c.authHTTP(c.handleWorkerSpoofProbe))
 	mux.HandleFunc("/api/worker/spoof-probe/result", c.authHTTP(c.handleSpoofProbeResult))
+	mux.HandleFunc("/api/worker/spoof-status", c.authHTTP(c.handleSpoofStatus))
 	mux.HandleFunc("/api/tasks/complete", c.authHTTP(c.handleTaskComplete))
 	mux.HandleFunc("/ws", c.handleWS)
 	mux.HandleFunc("/pool", func(w http.ResponseWriter, r *http.Request) {
@@ -575,12 +578,12 @@ func (c *Ctrl) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Regis
 			assignedID = fmt.Sprintf("%s%d", baseID, suffix)
 		}
 
-		// 默认标记 IP 伪造能力：Windows 不支持，其他平台标记为可伪造
-		// （实际能力由 spoof-probe 探测确认，失败后置 false）
-		canSpoof := !req.IsWindows
-		if attack.SupportsSpoofing() == false && !req.IsWindows {
-			canSpoof = false
-		}
+		// IP 伪造能力默认标记（保守，绝不乐观置 true）：
+		// - Windows / 编译不支持 → 确定不支持（SpoofTested=true）
+		// - Linux + 编译支持 → 待检测（SpoofTested=false），
+		//   由 spoof-probe 探测确认（非 root 由 worker 上报确定不支持）
+		canSpoof := false
+		spoofTested := req.IsWindows || !attack.SupportsSpoofing()
 
 		node := &NodeInfo{
 			WorkerID:      assignedID,
@@ -593,6 +596,7 @@ func (c *Ctrl) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Regis
 			LastHeartbeat: time.Now(),
 			IsWindows:     req.IsWindows,
 			CanSpoof:      canSpoof,
+			SpoofTested:   spoofTested,
 		}
 
 		if p, ok := peerFromContext(ctx); ok {

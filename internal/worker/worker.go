@@ -424,6 +424,8 @@ func (w *Worker) Run(ctx context.Context) error {
 			w.canSpoofIP = cached
 			log.Printf("[spoof-probe] loaded cached result: can_spoof=%v (tested %s ago)",
 				cached, time.Since(testedAt).Round(time.Minute))
+			// 缓存结果也上报（如 Controller 重启后节点状态被重置）
+			w.reportSpoofStatus()
 		} else {
 			// 无缓存、过期或读取失败，执行探测
 			log.Printf("[spoof-probe] no valid cache (err=%v), probing...", err)
@@ -435,20 +437,24 @@ func (w *Worker) Run(ctx context.Context) error {
 				if err := w.saveSpoofCapability(result); err != nil {
 					log.Printf("[spoof-probe] failed to save result: %v", err)
 				}
+				w.reportSpoofStatus()
 			} else if err == nil {
 				// 探测不可靠（网络抖动/Controller 不可达）但存在过期缓存：
 				// 保守沿用旧值，避免一次抖动永久误关 IP 伪造
 				w.canSpoofIP = cached
 				log.Printf("[spoof-probe] probe unreliable, keeping cached value: can_spoof=%v", cached)
+				w.reportSpoofStatus()
 			} else {
 				// 无任何历史数据，保守关闭
 				w.canSpoofIP = false
+				w.reportSpoofStatus()
 			}
 		}
 	} else {
 		// 未启用本地池：仅做内存探测，不落盘
 		log.Printf("[spoof-probe] no local pool, probing in-memory...")
 		w.canSpoofIP, _ = w.probeIPSpoofing()
+		w.reportSpoofStatus()
 	}
 
 	// 探测最终确认：即使平台支持（root+Linux），实际网络环境仍可能
