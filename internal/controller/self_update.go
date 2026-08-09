@@ -155,51 +155,6 @@ func (c *Ctrl) fetchReleases() ([]ReleaseInfo, error) {
 	return rels, nil
 }
 
-// versionNewer 判断 target 是否比 current 新（按 vX.Y.Z 数字比较，dev 视为最旧）
-func versionNewer(current, target string) bool {
-	cur, ok1 := parseVersion(current)
-	tgt, ok2 := parseVersion(target)
-	if !ok2 {
-		return false
-	}
-	if !ok1 {
-		return true // current 非版本号（如 dev）且 target 是版本号 → 有新版本
-	}
-	for i := 0; i < 3; i++ {
-		if tgt[i] > cur[i] {
-			return true
-		}
-		if tgt[i] < cur[i] {
-			return false
-		}
-	}
-	return false
-}
-
-// parseVersion 解析 v1.2.3 / 1.2.3 → [1,2,3]
-func parseVersion(v string) ([3]int, bool) {
-	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
-	parts := strings.Split(v, ".")
-	if len(parts) < 1 || len(parts) > 3 {
-		return [3]int{}, false
-	}
-	var out [3]int
-	for i := 0; i < 3; i++ {
-		if i >= len(parts) {
-			break
-		}
-		n := 0
-		for _, ch := range parts[i] {
-			if ch < '0' || ch > '9' {
-				return [3]int{}, false
-			}
-			n = n*10 + int(ch-'0')
-		}
-		out[i] = n
-	}
-	return out, true
-}
-
 // handleUpdateCheck GET /api/update/check[?version=v1.0.5]
 // 检测是否有新版本，返回版本对比 + Release 说明 + 跳转链接 + 可用版本列表。
 // 指定 version 参数时查询该版本（用于回退到旧版本）。不做任何更新。
@@ -251,7 +206,8 @@ func (c *Ctrl) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 		resp["release_url"] = rel.HTMLURL
 		resp["published_at"] = rel.PublishedAt
 		resp["notes"] = notes
-		resp["has_update"] = versionNewer(c.build.Version, rel.TagName) || rel.TagName != c.build.Version
+		// 指定版本时：只要不是当前版本即可更新/回退
+		resp["has_update"] = c.build.Version != rel.TagName
 		writeJSON(w, resp)
 		return
 	}
@@ -280,7 +236,10 @@ func (c *Ctrl) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 		notes = notes[:2000] + "..."
 	}
 	resp["notes"] = notes
-	resp["has_update"] = versionNewer(c.build.Version, rel.TagName)
+	// 用 tag 是否一致判断"有更新"：GitHub releases/latest 按发布时间返回，
+	// 无需数字版本比较（非标准递增标签如 v1.0.75 vs v1.0.8 会误判）。
+	// dev 视为未发布版本，永远可更新到正式版。
+	resp["has_update"] = c.build.Version != rel.TagName
 	writeJSON(w, resp)
 }
 
@@ -336,7 +295,8 @@ func (c *Ctrl) handleUpdateController(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"error": "no release available"})
 		return
 	}
-	if !versionNewer(c.build.Version, rel.TagName) && rel.TagName != c.build.Version {
+	// 目标 tag 与当前版本一致才拒绝（数字版本比较会误判非标准标签如 v1.0.75）
+	if rel.TagName == c.build.Version {
 		writeJSON(w, map[string]interface{}{"error": "already up to date"})
 		return
 	}
