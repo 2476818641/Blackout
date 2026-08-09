@@ -55,7 +55,9 @@ func (cs *ComboSession) watchCompletion() {
 			<-s.DoneChan
 		}(s)
 	}
-	wg.Wait()
+	// 超时兜底：子攻击个别卡死时不能让 combo 永不完成上报，
+	// 否则 Controller 超时后重复派发攻击
+	waitGroupTimeout(&wg, 5*time.Second)
 	cs.finish()
 	close(cs.DoneChan)
 }

