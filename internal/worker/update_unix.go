@@ -17,3 +17,9 @@ func execSyscallExec(exe string, args []string, env []string) error {
 func jsonNewDecoder(r io.Reader, v interface{}) error {
 	return json.NewDecoder(r).Decode(v)
 }
+
+// FinishWindowsUpdate 非 Windows 平台无换身流程，直接返回 false
+func FinishWindowsUpdate() bool { return false }
+
+// CleanupUpdateTemp 非 Windows 平台无 .update 临时文件
+func CleanupUpdateTemp() {}

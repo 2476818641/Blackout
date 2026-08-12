@@ -70,6 +70,14 @@ func main() {
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
+	// Windows 自更新换身：带 NETTOOL_UPDATE_PENDING 标记的进程（正从临时
+	// 路径运行）在此完成"复制到正式路径 → 拉起正式进程"的换身。
+	// 必须在任何业务逻辑（踢出检测/注册等）之前执行。
+	worker.FinishWindowsUpdate()
+
+	// 清理 Windows 换身流程遗留的 .update 临时文件
+	worker.CleanupUpdateTemp()
+
 	// 已被 Controller 踢出：本地存在 data/kicked 标记 → 直接退出。
 	// 防止 systemd Restart=always / daemon 自动拉起导致踢出后自动复活。
 	if worker.IsKicked() {

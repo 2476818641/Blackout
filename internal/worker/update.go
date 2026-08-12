@@ -148,6 +148,15 @@ func (w *Worker) applyUpdate(url, targetVersion string) error {
 		return fmt.Errorf("verify: %w", err)
 	}
 
+	// Windows 分支：运行中的 exe 被系统独占锁定，rename/覆盖必然失败
+	// （"Access is denied"）。走"临时副本换身"流程：
+	// ① 拉起 tmp 副本（带 NETTOOL_UPDATE_PENDING 标记）→ 自身退出
+	// ② tmp 副本等旧进程退出释放锁后，把自身复制到 exe 路径
+	// ③ tmp 副本拉起正式路径进程并退出，正式进程启动时清理 .update 残留
+	if runtime.GOOS == "windows" {
+		return w.applyUpdateWindows(exeAbs, tmp, targetVersion)
+	}
+
 	// 3. 原子替换：备份旧文件 → 新文件 rename 到位
 	backup := exeAbs + ".bak"
 	os.Remove(backup)
@@ -176,14 +185,20 @@ func (w *Worker) applyUpdate(url, targetVersion string) error {
 	// exec 立即替换进程镜像会杀掉一切 in-flight HTTP 请求——只有这里
 	// 预先同步上报，Controller 才不会把任务挂成 running 直到 Duration+120s
 	// 超时重试。
-	log.Printf("[update] binary replaced, reporting active tasks complete...")
-	w.reportActiveTasksComplete()
-	w.stopAllAttacks()
-	w.deregister()
+	w.preUpdateShutdown()
 
 	log.Printf("[update] binary replaced, restarting...")
 	w.restartSelf(exeAbs)
 	return nil
+}
+
+// preUpdateShutdown 更新重启前的公共收尾（Unix rename 与 Windows 换身共用）：
+// 上报进行中任务完成 → 停攻击 → 注销节点条目。
+func (w *Worker) preUpdateShutdown() {
+	log.Printf("[update] reporting active tasks complete...")
+	w.reportActiveTasksComplete()
+	w.stopAllAttacks()
+	w.deregister()
 }
 
 // downloadBinary 下载新二进制到指定路径。

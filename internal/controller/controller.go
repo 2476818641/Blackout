@@ -110,7 +110,10 @@ type TaskStats struct {
 
 type WSClient struct {
 	conn *websocket.Conn
-	mu   sync.Mutex
+	// sendCh 每个客户端独占的写缓冲：broadcast 只做非阻塞入队，
+	// 慢消费者/死连接不再阻塞心跳处理（此前同步写最多卡 2s×死连接数）。
+	// 缓冲满时直接丢弃新消息（nodes/task 类消息 3s 内会再广播，可容忍）。
+	sendCh chan []byte
 }
 
 type Ctrl struct {
@@ -165,6 +168,9 @@ type Ctrl struct {
 	spoofCacheFile string
 	spoofCacheMu   sync.RWMutex
 	spoofCache     map[string]bool
+	// 节点表持久化：data/nodes.json。Controller 重启后节点身份/IP/伪造能力
+	// 不丢失（心跳 3s 内自动恢复在线状态），避免节点反复"从零注册"。
+	nodesFile string
 	// 编译信息：Version 标记 Controller 自身（与 Worker 版本对齐），
 	// GitRepo 用于云更新默认 GitHub Release 下载地址拼接
 	build BuildInfo
@@ -283,11 +289,31 @@ func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 		}
 	}
 
+	// 节点表持久化：data/nodes.json
+	restoredNodes := make(map[string]*NodeInfo)
+	if nodeBytes, err := os.ReadFile("data/nodes.json"); err == nil {
+		var list []*NodeInfo
+		if json.Unmarshal(nodeBytes, &list) == nil {
+			for _, n := range list {
+				if n == nil || n.WorkerID == "" {
+					continue
+				}
+				// 恢复的节点一律先标记 OFFLINE：真实在线状态由首个心跳
+				// （≤3s）刷新。保留身份/IP/伪造能力等持久属性。
+				n.Status = "OFFLINE"
+				restoredNodes[n.WorkerID] = n
+			}
+			if len(restoredNodes) > 0 {
+				log.Printf("[node] restored %d nodes from %s", len(restoredNodes), "data/nodes.json")
+			}
+		}
+	}
+
 	reflector.InitAllPools()
 	reflector.MarkStaleRunningLogs()
 
 	ctrl := &Ctrl{
-		nodes:             make(map[string]*NodeInfo),
+		nodes:             restoredNodes,
 		kicked:            make(map[string]bool),
 		tasks:             make(map[string]*TaskInfo),
 		templates:         make(map[string]AttackTemplate),
@@ -313,6 +339,7 @@ func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 		githubToken:       githubToken,
 		spoofCacheFile:    "data/spoof_cache.json",
 		spoofCache:        spoofCache,
+		nodesFile:         "data/nodes.json",
 		build:             build,
 	}
 
@@ -399,6 +426,7 @@ func (c *Ctrl) Start() error {
 	}()
 
 	go c.watchOfflineNodes()
+	go c.watchNodesPersist()
 	go c.cronSteamRefresh()
 	go c.cronManualTest()
 	go c.cronShodanLoad()
@@ -674,6 +702,7 @@ func (c *Ctrl) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Regis
 		log.Printf("[node] %s registered (%s, IP:%s, Win:%v)", assignedID, req.Location, nodeIP, req.IsWindows)
 	}
 
+	c.persistNodes()
 	c.broadcastWS("nodes", c.listNodesForBroadcast())
 
 	return &pb.RegisterResponse{Success: true, Message: "registered", AssignedId: assignedID}, nil
@@ -693,6 +722,7 @@ func (c *Ctrl) Deregister(ctx context.Context, req *pb.DeregisterRequest) (*pb.D
 	log.Printf("[node] %s deregistered", req.WorkerId)
 	c.mu.Unlock()
 
+	c.persistNodes()
 	c.broadcastWS("nodes", c.listNodesForBroadcast())
 
 	return &pb.DeregisterResponse{Ok: true}, nil
@@ -1207,6 +1237,45 @@ func (c *Ctrl) watchOfflineNodes() {
 	}
 }
 
+// persistNodes 把节点表写入 data/nodes.json（原子替换：临时文件 + rename）。
+// 调用方不得持有 c.mu（内部取 RLock 做快照，锁外执行磁盘 IO）。
+// 关键事件（注册/注销/踢出）后立即调用；心跳类状态变化由 30s 定时兜底。
+func (c *Ctrl) persistNodes() {
+	c.mu.RLock()
+	list := make([]*NodeInfo, 0, len(c.nodes))
+	for _, n := range c.nodes {
+		list = append(list, n)
+	}
+	c.mu.RUnlock()
+
+	data, err := json.Marshal(list)
+	if err != nil {
+		log.Printf("[node] persist marshal error: %v", err)
+		return
+	}
+
+	tmp := c.nodesFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		log.Printf("[node] persist write error: %v", err)
+		return
+	}
+	// Windows 下 rename 不能覆盖已存在文件，先删旧文件
+	os.Remove(c.nodesFile)
+	if err := os.Rename(tmp, c.nodesFile); err != nil {
+		log.Printf("[node] persist rename error: %v", err)
+	}
+}
+
+// watchNodesPersist 每 30s 落盘一次节点表（心跳更新 LastHeartbeat/状态等
+// 高频变化不需要实时持久化，30s 粒度足够）。
+func (c *Ctrl) watchNodesPersist() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		c.persistNodes()
+	}
+}
+
 func (c *Ctrl) getTaskInfo(taskID string) *TaskInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -1273,6 +1342,7 @@ func (c *Ctrl) handleKickNode(w http.ResponseWriter, r *http.Request) {
 	c.mu.Unlock()
 
 	log.Printf("[node] %s kicked (will self-exit on next heartbeat)", id)
+	c.persistNodes()
 	c.broadcastWS("nodes", c.listNodesForBroadcast())
 	writeJSON(w, map[string]interface{}{"ok": true})
 }
@@ -2160,7 +2230,7 @@ func (c *Ctrl) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := &WSClient{conn: conn}
+	client := &WSClient{conn: conn, sendCh: make(chan []byte, 64)}
 
 	c.wsMu.Lock()
 	c.wsClients[client] = true
@@ -2169,44 +2239,65 @@ func (c *Ctrl) handleWS(w http.ResponseWriter, r *http.Request) {
 	c.mu.RLock()
 	nodes := c.listNodesLocked()
 	c.mu.RUnlock()
+	data, _ := json.Marshal(map[string]interface{}{"type": "nodes", "data": nodes})
+	client.enqueue(data)
 
-	client.send(map[string]interface{}{"type": "nodes", "data": nodes})
-
+	// 读循环：客户端断开/超时 → 移除客户端
 	go func() {
-		defer func() {
-			c.wsMu.Lock()
-			delete(c.wsClients, client)
-			c.wsMu.Unlock()
-			conn.Close()
-		}()
 		for {
 			_, _, err := conn.ReadMessage()
 			if err != nil {
+				c.removeWSClient(client)
 				return
 			}
 		}
 	}()
+
+	// 写循环：独占串行写，慢消费者不阻塞 broadcast 调用方
+	go client.writeLoop(c)
 }
 
+// removeWSClient 从客户端表移除并关闭连接（幂等）。
+// 读/写循环任一失败都会调用，map 存在性检查保证只清理一次。
+func (c *Ctrl) removeWSClient(cl *WSClient) {
+	c.wsMu.Lock()
+	if _, ok := c.wsClients[cl]; ok {
+		delete(c.wsClients, cl)
+		cl.conn.Close()
+	}
+	c.wsMu.Unlock()
+}
+
+func (cl *WSClient) writeLoop(c *Ctrl) {
+	for msg := range cl.sendCh {
+		cl.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if err := cl.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			c.removeWSClient(cl)
+			return
+		}
+	}
+}
+
+// enqueue 非阻塞入队；缓冲满时丢弃（广播类消息允许丢，绝不阻塞调用方）。
+func (cl *WSClient) enqueue(data []byte) {
+	select {
+	case cl.sendCh <- data:
+	default:
+	}
+}
+
+// broadcastWS 向所有客户端广播消息（非阻塞：只做 JSON 序列化 + 通道入队，
+// 心跳处理路径上的调用不再被慢 WS 客户端拖住）。
 func (c *Ctrl) broadcastWS(msgType string, data interface{}) {
+	msg, err := json.Marshal(map[string]interface{}{"type": msgType, "data": data})
+	if err != nil {
+		return
+	}
 	c.wsMu.RLock()
-	clients := make([]*WSClient, 0, len(c.wsClients))
 	for client := range c.wsClients {
-		clients = append(clients, client)
+		client.enqueue(msg)
 	}
 	c.wsMu.RUnlock()
-
-	msg := map[string]interface{}{"type": msgType, "data": data}
-	for _, client := range clients {
-		client.send(msg)
-	}
-}
-
-func (cl *WSClient) send(msg interface{}) {
-	cl.mu.Lock()
-	defer cl.mu.Unlock()
-	cl.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	cl.conn.WriteJSON(msg)
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
@@ -2970,14 +3061,13 @@ func (c *Ctrl) broadcastPoolUpdate(game string, version int64) {
 
 	data, _ := json.Marshal(msg)
 
+	// 非阻塞入队：持锁时间极短，不再逐客户端同步写（此前持 wsMu.RLock
+	// 期间写 IO 会阻塞新连接注册与其他广播）
 	c.wsMu.RLock()
-	defer c.wsMu.RUnlock()
-
 	for client := range c.wsClients {
-		client.mu.Lock()
-		client.conn.WriteMessage(websocket.TextMessage, data)
-		client.mu.Unlock()
+		client.enqueue(data)
 	}
+	c.wsMu.RUnlock()
 
 	log.Printf("[pool] broadcasted update: game=%s version=%d count=%d to %d clients", game, version, count, len(c.wsClients))
 }
