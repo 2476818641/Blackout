@@ -284,6 +284,29 @@ prefixed with `https://cf.liuass.eu.org/ghproxy/` for restricted networks.
   IP skips the probe and reuses the stored result.
 - **Target Nodes** — task form lets you pick which nodes participate (default: all).
   Opens a searchable modal (search by ID/IP/location); empty selection = all nodes.
+- **Node Groups (节点分组)** — save any selection of nodes as a named group (persisted in
+  `data/node_groups.json`), click a group to re-select it; task creation accepts `groups`
+  alongside `workers` (union). Groups survive controller restarts.
+
+### Environment Migration (环境迁移) — BETA
+Move an entire deployment (controller data + worker connections) from one server to another
+without touching worker machines. Tested only in staging — **do NOT rely on it for
+production yet**.
+
+1. On the OLD controller's dashboard (Deploy panel → "Migrate Environment"), fill in the
+   new controller's HTTP URL, its admin token, and its gRPC address, then click
+   **Start Migration**.
+2. The old controller packages its `data/` (reflector pools, spoof cache, node table, node
+   groups, proxies, DNS amp domains, worker tokens — **excluding** its own admin/worker
+   tokens) and pushes them to the new controller, which imports them and restarts.
+3. Heartbeats then carry the new controller address; each worker automatically stops
+   attacks, persists its config to `data/worker.conf`, updates its systemd/schtasks
+   auto-start entry, disconnects, and re-registers on the new controller.
+4. Once all nodes reappear on the new controller, the old controller can be shut down.
+
+Worker machines need **zero manual changes**; after migration the worker no longer even
+needs `-c`/`-token` flags (restored from `data/worker.conf`). "Stop" cancels migration mode
+if triggered accidentally. Backups of replaced files land in `data/migrate_bak_<ts>/`.
 
 ### Reflector Pool Manager (`/pool`)
 Separate page for managing game-specific reflector pools. Each game tab (ARK / CS2 / Rust / Other) contains:
