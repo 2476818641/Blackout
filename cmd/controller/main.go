@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -45,7 +46,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("Install failed: %v", err)
 		}
-		printManageCommands(name)
+		workDir, _ := filepath.Abs(filepath.Dir(executablePath()))
+		printManageCommands(name, workDir)
 		return
 	}
 
@@ -106,8 +108,17 @@ func main() {
 	}
 }
 
-// printManageCommands 安装完成后输出服务管理命令（启动/暂停/重启/日志/位置）
-func printManageCommands(serviceName string) {
+// executablePath 返回当前进程二进制绝对路径
+func executablePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "."
+	}
+	return exe
+}
+
+// printManageCommands 安装完成后输出服务管理命令（启动/暂停/重启/日志/位置）+ acme.sh 证书部署示例
+func printManageCommands(serviceName, workDir string) {
 	if runtime.GOOS == "windows" {
 		fmt.Println("NetTool Controller 已安装为计划任务: " + serviceName)
 		fmt.Println()
@@ -138,6 +149,19 @@ func printManageCommands(serviceName string) {
 	fmt.Println("      需要手动修改 /etc/systemd/system/" + serviceName + ".service 中的")
 	fmt.Println("      ExecStart 与 WorkingDirectory 路径，然后执行:")
 	fmt.Println("      systemctl daemon-reload && systemctl restart " + serviceName)
+	fmt.Println()
+	fmt.Println("TLS 证书快速部署 (acme.sh，自动续期 + 更新后热重载):")
+	fmt.Println("  # 安装 acme.sh（未安装时）")
+	fmt.Println("  curl https://get.acme.sh | sh -s email=you@example.com")
+	fmt.Println()
+	fmt.Println("  # 签发证书（HTTP 校验需 80 端口，或改用 --dns dns_cf 等 DNS 方式）")
+	fmt.Println("  acme.sh --issue -d your-domain.com --webroot /var/www/html")
+	fmt.Println()
+	fmt.Println("  # 安装证书到 controller 并注册热重载（证书自动续期后零中断生效）")
+	fmt.Println("  acme.sh --install-cert -d your-domain.com \\")
+	fmt.Println("    --key-file       " + workDir + "/data/cert/server.key \\")
+	fmt.Println("    --fullchain-file " + workDir + "/data/cert/server.crt \\")
+	fmt.Println("    --reloadcmd      \"systemctl reload " + serviceName + "\"")
 	fmt.Println()
 	fmt.Println("提示: 如已存在旧的 controller.service（手动创建的），请先停用避免端口冲突:")
 	fmt.Println("      systemctl disable --now controller")
