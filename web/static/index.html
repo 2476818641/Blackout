@@ -620,7 +620,7 @@ function app() {
       duration:'Duration (s)', threads:'Threads', pkt_size:'Pkt Size', size:'Size',
       pps_limit:'PPS Limit (0=off)', bps_limit:'BPS Limit (0=off)',
       burst:'Burst', mix_queries:'Mix Queries', jitter_ms:'Jitter ms',
-      start_attack:'Start Attack', templates:'Templates', save:'Save', delete:'Del',
+      start_attack:'Start Attack', attack_failed:'Attack failed:', templates:'Templates', save:'Save', delete:'Del',
       no_workers_warn:'No worker nodes connected. Attacks will stay pending until a worker joins.',
       sub_attacks:'Sub Attacks', add:'Add', no_sub_attacks:'No sub-attacks. Click + Add to configure.',
       vse_scanner:'VSE Reflector Scanner', dns_scanner:'DNS Resolver Scanner', cldap_scanner:'CLDAP Reflector Scanner',
@@ -674,7 +674,7 @@ function app() {
       duration:'持续时间 (秒)', threads:'线程数', pkt_size:'包大小', size:'大小',
       pps_limit:'PPS限制 (0=关闭)', bps_limit:'BPS限制 (0=关闭)',
       burst:'爆发', mix_queries:'混合查询', jitter_ms:'抖动(ms)',
-      start_attack:'开始攻击', templates:'模板', save:'保存', delete:'删除',
+      start_attack:'开始攻击', attack_failed:'攻击启动失败:', templates:'模板', save:'保存', delete:'删除',
       no_workers_warn:'没有工作节点连接。攻击将保持等待直到有节点加入。',
       sub_attacks:'子攻击', add:'添加', no_sub_attacks:'暂无子攻击，点击 +添加 配置。',
       vse_scanner:'VSE 反射器扫描', dns_scanner:'DNS 解析器扫描', cldap_scanner:'CLDAP 反射器扫描',
@@ -718,7 +718,7 @@ function app() {
     token:'', error:'', authed:false, lang:localStorage.getItem('lang')||'en',
     nodes:[], tasks:[], totalPPS:0, totalMBps:0, totalPackets:0,
     selectedNodes:[], nodePickerOpen:false, nodeSearch:'',
-    nodePage:1, nodePageSize:20,
+    nodePage:1, nodePageSize:20, dashboardStarted:false,
     activeWorkers:0, onlineNodes:0, uptime:0, ws:null,
     deployStorage:'', deployProxy:false, deployInstall:false, deployDaemon:false, deployCmd:'', deployGrpcPort:'9090', deployTool:'curl',
     updateVersion:'', updateURL:'', updateStatus:'', updateCheckResult:null, updateChecking:false, updateApplying:false,
@@ -768,6 +768,10 @@ function app() {
     },
 
     setupDashboard() {
+      // 防重复初始化：自动登录与手动登录可能并发触发，重复 setup 会
+      // 产生双份 setInterval + 双条 WS 连接（interval 无法清理）
+      if (this.dashboardStarted) return;
+      this.dashboardStarted = true;
       this.connectWS();
       setInterval(() => { this.uptime++; this.fetchStats(); }, 1000);
       this.fetchNodes(); this.fetchTasks(); this.loadProxy(); this.loadDNSAmp(); this.loadReflectors(); this.fetchTemplates(); this.fetchLogs(); this.loadDeploy(); this.loadUpdate();
@@ -787,10 +791,21 @@ function app() {
       this.ws = new WebSocket(proto+'//'+location.host+'/ws?token='+encodeURIComponent(token));
       this.ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
-        if (msg.type==='nodes') this.nodes = msg.data||[];
+        if (msg.type==='nodes') {
+          this.nodes = msg.data||[];
+          // 同步剪枝选中节点：被踢/离线的节点不再保留在 selectedNodes，
+          // 否则提交任务时 Controller 报 unknown worker 拒绝整单任务
+          const onlineIds = this.nodes.map(n=>n.worker_id);
+          this.selectedNodes = onlineIds.filter(id=>this.selectedNodes.includes(id));
+        }
         if (msg.type==='task_update'||msg.type==='task_created') this.fetchTasks();
       };
-      this.ws.onclose = () => setTimeout(() => this.connectWS(), 2000);
+      this.ws.onclose = () => {
+        // 仅在仍持有当前连接引用时重连，避免旧 socket 关闭后重复建连
+        if (this.ws && this.ws.readyState !== WebSocket.CONNECTING && this.ws.readyState !== WebSocket.OPEN) {
+          setTimeout(() => this.connectWS(), 2000);
+        }
+      };
     },
 
     async fetchNodes() {
@@ -817,8 +832,13 @@ function app() {
       if (this.selectedNodes && this.selectedNodes.length !== this.nodes.length) {
         payload.workers = this.selectedNodes;
       }
-      await fetch('/api/tasks',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify(payload)});
-      this.fetchTasks();
+      try {
+        const r = await fetch('/api/tasks',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify(payload)});
+        const d = await r.json();
+        if (!r.ok) { alert(d.error || ('HTTP '+r.status)); return; }
+        if (d.error) { alert(d.error); return; }
+        this.fetchTasks();
+      } catch(e) { alert(this.t('attack_failed')+' '+e.message); }
     },
 
     selectAllNodes() { this.selectedNodes = this.nodes.map(n=>n.worker_id); },
@@ -949,6 +969,8 @@ function app() {
       this.updateChecking = false;
     },
     async saveGithubToken() {
+      // 占位符 ******** 表示"未修改"：直接跳过保存，防止误把占位符写入覆盖真实 token
+      if (this.githubToken === '********') { this.updateStatus = this.t('gh_token_saved'); return; }
       try { const r = await fetch('/api/update/token',{method:'PUT',headers:this.getAuthHeaders(),body:JSON.stringify({token:this.githubToken})}); const d = await r.json(); if (d.error) { alert(d.error); return; }
         this.updateStatus = this.t('gh_token_saved'); this.checkUpdateVersion(); } catch(e) { alert(e.message); }
     },
