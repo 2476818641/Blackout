@@ -94,6 +94,9 @@ type TaskInfo struct {
 	// CancellingSince 进入 cancelling 状态的时刻：超时兜底（5 分钟无进展强制终结），
 	// 防止个别 worker 确认永远丢失导致任务永久卡在 cancelling。
 	CancellingSince time.Time `json:"-"`
+	// FinishedAt 进入终态（completed/failed）的时刻：内存任务保留 10 分钟后
+	// 由 watchTaskTimeout 清理（历史已落库 attack_logs，可安全删除）。
+	FinishedAt time.Time `json:"finished_at"`
 }
 
 type TaskStats struct {
@@ -171,6 +174,11 @@ type Ctrl struct {
 	// 节点表持久化：data/nodes.json。Controller 重启后节点身份/IP/伪造能力
 	// 不丢失（心跳 3s 内自动恢复在线状态），避免节点反复"从零注册"。
 	nodesFile string
+	// 节点分组：组名 → 节点 ID 列表。持久化在 data/node_groups.json。
+	// 分组是节点的快捷多选（派发时展开为 workers），CRUD 见 node_groups.go。
+	nodeGroupsFile string
+	nodeGroupsMu   sync.RWMutex
+	nodeGroups     map[string][]string
 	// 编译信息：Version 标记 Controller 自身（与 Worker 版本对齐），
 	// GitRepo 用于云更新默认 GitHub Release 下载地址拼接
 	build BuildInfo
@@ -340,6 +348,8 @@ func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 		spoofCacheFile:    "data/spoof_cache.json",
 		spoofCache:        spoofCache,
 		nodesFile:         "data/nodes.json",
+		nodeGroupsFile:    "data/node_groups.json",
+		nodeGroups:        loadNodeGroups("data/node_groups.json"),
 		build:             build,
 	}
 
@@ -442,6 +452,7 @@ func (c *Ctrl) Start() error {
 	mux.HandleFunc("/api/nodes", c.authHTTP(c.handleNodes))
 	mux.HandleFunc("/api/nodes/", c.authHTTP(c.handleKickNode))
 	mux.HandleFunc("/api/tasks", c.authHTTP(c.handleTasks))
+	mux.HandleFunc("/api/node-groups", c.authHTTP(c.handleNodeGroups))
 	mux.HandleFunc("/api/tasks/", c.authHTTP(c.handleTaskByID))
 	mux.HandleFunc("/api/scan", c.authHTTP(c.handleScan))
 	mux.HandleFunc("/api/stats", c.authHTTP(c.handleStats))
@@ -462,6 +473,7 @@ func (c *Ctrl) Start() error {
 	mux.HandleFunc("/api/auth", c.handleAuth)
 	mux.HandleFunc("/api/templates", c.authHTTP(c.handleTemplates))
 	mux.HandleFunc("/api/logs", c.authHTTP(c.handleLogs))
+	mux.HandleFunc("/api/logs/stats", c.authHTTP(c.handleLogStats))
 	mux.HandleFunc("/api/logs/", c.authHTTP(c.handleLogs))
 	mux.HandleFunc("/api/tokens/provision", c.authAdmin(c.handleProvisionToken))
 	mux.HandleFunc("/api/tokens/revoke", c.authAdmin(c.handleRevokeToken))
@@ -962,13 +974,14 @@ func (c *Ctrl) ReportStats(stream pb.NodeService_ReportStatsServer) error {
 							break
 						}
 					}
-					if allDone {
-						task.Status = "completed"
-						entry := c.buildTaskLog(task)
-						go c.logTaskComplete(entry)
-						wids := taskWorkerIDs(task)
-						c.resetNodeStatusesLocked(wids...)
-					}
+				if allDone {
+					task.Status = "completed"
+					task.FinishedAt = time.Now()
+					entry := c.buildTaskLog(task)
+					go c.logTaskComplete(entry)
+					wids := taskWorkerIDs(task)
+					c.resetNodeStatusesLocked(wids...)
+				}
 				}
 			}
 		}
@@ -1041,6 +1054,7 @@ func (c *Ctrl) finishCancellingTask(t *TaskInfo) {
 			// 所有节点都已自然完成（完成上报丢失触发超时）：直接置
 			// completed，否则 pending→running 循环重试死循环。
 			t.Status = "completed"
+			t.FinishedAt = time.Now()
 			entry := c.buildTaskLog(t)
 			go c.logTaskComplete(entry)
 			log.Printf("[task] %s all workers finished, marking completed (no retry)", t.TaskID)
@@ -1051,6 +1065,7 @@ func (c *Ctrl) finishCancellingTask(t *TaskInfo) {
 		log.Printf("[task] %s cancelled for retry, re-dispatching to unfinished workers (attempt %d/3)", t.TaskID, t.RetryCount)
 	} else {
 		t.Status = "completed"
+		t.FinishedAt = time.Now()
 		entry := c.buildTaskLog(t)
 		go c.logTaskComplete(entry)
 		log.Printf("[task] %s cancelled, all workers confirmed stop", t.TaskID)
@@ -1390,6 +1405,8 @@ func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 			SubAttacks    []SubAttackInfo `json:"sub_attacks"`
 			// Workers 指定参与任务的节点 ID 列表；空 = 全部在线节点
 			Workers []string `json:"workers"`
+			// Groups 指定参与任务的节点分组（快捷多选）；与 Workers 取并集
+			Groups []string `json:"groups"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
@@ -1448,6 +1465,17 @@ func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 		target := req.Target
 		if target == "" && len(req.Targets) > 0 {
 			target = strings.Join(req.Targets, "\n")
+		}
+
+		// 节点分组展开：组是节点的快捷多选，与显式 workers 取并集。
+		// 展开后再做存在性/在线性校验。
+		if len(req.Groups) > 0 {
+			var errMsg string
+			req.Workers, errMsg = c.resolveTaskGroups(req.Groups, req.Workers)
+			if errMsg != "" {
+				writeJSON(w, map[string]string{"error": errMsg})
+				return
+			}
 		}
 
 		c.mu.RLock()
@@ -1677,6 +1705,7 @@ func (c *Ctrl) handleTaskComplete(w http.ResponseWriter, r *http.Request) {
 		}
 		if allDone {
 			task.Status = "completed"
+			task.FinishedAt = time.Now()
 			entry := c.buildTaskLog(task)
 			go c.logTaskComplete(entry)
 			wids := taskWorkerIDs(task)
@@ -3294,6 +3323,14 @@ func (c *Ctrl) handleLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleLogStats GET /api/logs/stats?days=7
+// 任务历史统计：总览 + 按方法/目标/日期的聚合。
+func (c *Ctrl) handleLogStats(w http.ResponseWriter, r *http.Request) {
+	days := 7
+	fmt.Sscanf(r.URL.Query().Get("days"), "%d", &days)
+	writeJSON(w, reflector.GetLogStats(days))
+}
+
 // buildTaskLog 在调用方持有 c.mu 的前提下，把 task 及其 Workers 聚合成
 // 一个自包含的 AttackLog 值快照。必须在锁内调用：它读取 task.Workers 和
 // task 的多个字段，而 ReportStats 会并发写这些字段。
@@ -3355,6 +3392,13 @@ func (c *Ctrl) watchTaskTimeout() {
 	for range ticker.C {
 		c.mu.Lock()
 		for id, task := range c.tasks {
+			// 终态任务清理：历史已落库 attack_logs（logTaskComplete），
+			// 内存任务保留 10 分钟后删除，防止长时间运行 c.tasks 无界增长。
+			if (task.Status == "completed" || task.Status == "failed") &&
+				!task.FinishedAt.IsZero() && time.Since(task.FinishedAt) > 10*time.Minute {
+				delete(c.tasks, id)
+				continue
+			}
 			switch task.Status {
 			case "pending":
 				// 保护：任务创建 30s 后仍有节点未领取（如攻击瞬间全体短暂掉线、
@@ -3364,6 +3408,7 @@ func (c *Ctrl) watchTaskTimeout() {
 					if len(task.Workers) == 0 {
 						// 一个都没派出去（如创建瞬间所有节点掉线）：标记 failed 让用户重试
 						task.Status = "failed"
+						task.FinishedAt = time.Now()
 						entry := c.buildTaskLog(task)
 						go c.logTaskComplete(entry)
 						log.Printf("[task] %s failed (no worker received dispatch within 30s)", id)
@@ -3388,6 +3433,7 @@ func (c *Ctrl) watchTaskTimeout() {
 					log.Printf("[task] %s timed out, cancelling for retry %d/3", id, task.RetryCount)
 				} else {
 					task.Status = "failed"
+					task.FinishedAt = time.Now()
 					entry := c.buildTaskLog(task)
 					go c.logTaskComplete(entry)
 					// 复位节点状态：否则节点永久显示 ATTACKING

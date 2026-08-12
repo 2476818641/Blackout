@@ -710,6 +710,96 @@ func ExportLogsCSV() string {
 	return sb.String()
 }
 
+// LogStats 任务历史统计（按时间窗口聚合）
+type LogStats struct {
+	TotalTasks    int64 `json:"total_tasks"`
+	SuccessTasks  int64 `json:"success_tasks"`
+	FailedTasks   int64 `json:"failed_tasks"`
+	TotalPackets  int64 `json:"total_packets"`
+	TotalBytes    int64 `json:"total_bytes"`
+	TotalDuration int64 `json:"total_duration"` // 秒
+	PeakPPS       int64 `json:"peak_pps"`
+	PeakBPS       int64 `json:"peak_bps"`
+	ByMethod      []LogStatsBucket `json:"by_method"`
+	ByTarget      []LogStatsBucket `json:"by_target"`
+	Daily         []LogStatsDay   `json:"daily"`
+}
+
+type LogStatsBucket struct {
+	Key     string `json:"key"`
+	Count   int64  `json:"count"`
+	Packets int64  `json:"packets"`
+}
+
+type LogStatsDay struct {
+	Day     string `json:"day"` // 2006-01-02
+	Count   int64  `json:"count"`
+	Packets int64  `json:"packets"`
+}
+
+// GetLogStats 按最近 days 天聚合攻击日志（统计窗口默认 7 天）。
+func GetLogStats(days int) LogStats {
+	d := getDB()
+	if days <= 0 {
+		days = 7
+	}
+	since := time.Now().Add(-time.Duration(days) * 24 * time.Hour).Unix()
+
+	var s LogStats
+	d.QueryRow(`
+		SELECT COUNT(*),
+			COALESCE(SUM(CASE WHEN status IN ('completed','cancelled') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(total_packets), 0),
+			COALESCE(SUM(total_bytes), 0),
+			COALESCE(SUM(duration), 0),
+			COALESCE(MAX(peak_pps), 0),
+			COALESCE(MAX(peak_bps), 0)
+		FROM attack_logs WHERE start_time >= ?
+	`, since).Scan(&s.TotalTasks, &s.SuccessTasks, &s.FailedTasks,
+		&s.TotalPackets, &s.TotalBytes, &s.TotalDuration, &s.PeakPPS, &s.PeakBPS)
+
+	rows, err := d.Query(`
+		SELECT method, COUNT(*), COALESCE(SUM(total_packets), 0)
+		FROM attack_logs WHERE start_time >= ? GROUP BY method ORDER BY COUNT(*) DESC
+	`, since)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var b LogStatsBucket
+			rows.Scan(&b.Key, &b.Count, &b.Packets)
+			s.ByMethod = append(s.ByMethod, b)
+		}
+	}
+
+	rows, err = d.Query(`
+		SELECT target, COUNT(*), COALESCE(SUM(total_packets), 0)
+		FROM attack_logs WHERE start_time >= ? GROUP BY target ORDER BY COUNT(*) DESC LIMIT 10
+	`, since)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var b LogStatsBucket
+			rows.Scan(&b.Key, &b.Count, &b.Packets)
+			s.ByTarget = append(s.ByTarget, b)
+		}
+	}
+
+	rows, err = d.Query(`
+		SELECT date(start_time, 'unixepoch', 'localtime') AS day, COUNT(*), COALESCE(SUM(total_packets), 0)
+		FROM attack_logs WHERE start_time >= ? GROUP BY day ORDER BY day
+	`, since)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var b LogStatsDay
+			rows.Scan(&b.Day, &b.Count, &b.Packets)
+			s.Daily = append(s.Daily, b)
+		}
+	}
+	return s
+}
+
 func CleanupDB() (int, int) {
 	d := getDB()
 	staleSteam, _ := d.Exec(`
