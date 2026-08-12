@@ -4,6 +4,7 @@ package worker
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"syscall"
 )
@@ -23,3 +24,9 @@ func FinishWindowsUpdate() bool { return false }
 
 // CleanupUpdateTemp 非 Windows 平台无 .update 临时文件
 func CleanupUpdateTemp() {}
+
+// applyUpdateWindows 仅在 Windows 启用（临时副本换身流程）。
+// 非 Windows 平台走 Unix rename 流程，此函数不会被调用。
+func (w *Worker) applyUpdateWindows(exeAbs, tmp, targetVersion string) error {
+	return fmt.Errorf("applyUpdateWindows not supported on this platform")
+}
