@@ -167,12 +167,17 @@ func (w *Worker) applyUpdate(url, targetVersion string) error {
 		log.Printf("[update] version file write failed (ignored): %v", err)
 	}
 
-	// 5. 重启前注销旧节点条目：
-	// 否则 Controller 节点表里旧 ID（如 xxx-node1）仍在线（Linux exec 保持
-	// PID 或 Windows spawn 时旧进程尚未退出），新进程注册时会被分配
-	// node2/node3，出现"更新后两个节点"的僵尸条目。
-	// 先停止攻击（任务由 Controller 超时重试机制接管），再 deregister 清条目。
-	log.Printf("[update] binary replaced, deregistering old node entry...")
+	// 5. 重启前上报进行中任务的完成状态 + 注销旧节点条目：
+	// 注销旧条目是为了防止 Controller 节点表里旧 ID（如 xxx-node1）仍在线
+	// （Linux exec 保持 PID 或 Windows spawn 时旧进程尚未退出），新进程注册
+	// 时被分配 node2/node3，出现"更新后两个节点"的僵尸条目。
+	// 上报必须先于 stopAllAttacks/restartSelf 完成：stopAllAttacks 会关闭
+	// 攻击会话（流式完成推送可能因连接即将关闭而失败），而 restartSelf 用
+	// exec 立即替换进程镜像会杀掉一切 in-flight HTTP 请求——只有这里
+	// 预先同步上报，Controller 才不会把任务挂成 running 直到 Duration+120s
+	// 超时重试。
+	log.Printf("[update] binary replaced, reporting active tasks complete...")
+	w.reportActiveTasksComplete()
 	w.stopAllAttacks()
 	w.deregister()
 

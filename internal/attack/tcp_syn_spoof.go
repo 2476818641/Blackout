@@ -22,7 +22,9 @@ func StartSpoofedTCPFloodEx(cfg AttackConfig) *AttackSession {
 	}
 
 	if !cfg.CanSpoofIP {
-		close(s.DoneChan)
+		// abort 同时关闭 StopChan（让 trackRates 退出）与 DoneChan：
+		// 只关 DoneChan 会永久泄漏每秒 ticker 的 goroutine
+		s.abort()
 		return s
 	}
 
@@ -80,7 +82,9 @@ func StartSpoofedTCPFloodEx(cfg AttackConfig) *AttackSession {
 		case <-s.StopChan:
 		}
 		s.finish()
-		wg.Wait()
+		// 与其他攻击方法一致：带 5s 上限等待，个别 goroutine 卡死时
+		// 不能让 DoneChan 永不关闭（否则任务 ID 永久报废、无法重启）
+		waitGroupTimeout(&wg, 5*time.Second)
 		close(s.DoneChan)
 	}()
 

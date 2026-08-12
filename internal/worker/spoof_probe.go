@@ -175,10 +175,10 @@ type spoofProbeResult struct {
 
 // spoofProbeMaintenance 周期维护（主循环每 60s 触发，独立 goroutine 执行，
 // 不阻塞心跳）。只做网络 IO 与上报：
-// - 从未获得可靠结果：重新探测，可靠结果经 spoofResultCh 送回主循环应用
-//   （启动时探测失败导致节点永久"检测中"的根因就是没有重试）。
-// - 已有可靠结果：周期上报 spoof 状态。Controller 重启后节点表内存清零
-//   （SpoofTested 全部归零），靠周期上报在 ~60s 内自动恢复所有标签。
+//   - 从未获得可靠结果：重新探测，可靠结果经 spoofResultCh 送回主循环应用
+//     （启动时探测失败导致节点永久"检测中"的根因就是没有重试）。
+//   - 已有可靠结果：周期上报 spoof 状态。Controller 重启后节点表内存清零
+//     （SpoofTested 全部归零），靠周期上报在 ~60s 内自动恢复所有标签。
 func (w *Worker) spoofProbeMaintenance() {
 	if !w.spoofProbeRunning.CompareAndSwap(0, 1) {
 		return

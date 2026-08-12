@@ -41,18 +41,18 @@ var ctrlHTTPClient = &http.Client{
 }
 
 type Worker struct {
-	id                   string
-	assignedID           string
-	controller           string
-	httpPort             string
-	authToken            string
-	conn                 *grpc.ClientConn
-	client               pb.NodeServiceClient
-	tasksMu              sync.Mutex
-	activeTasks          map[string]*attack.AttackSession
-	activeComboTasks     map[string]*attack.ComboSession
-	isWindows            bool
-	canSpoofIP           atomic.Bool
+	id               string
+	assignedID       string
+	controller       string
+	httpPort         string
+	authToken        string
+	conn             *grpc.ClientConn
+	client           pb.NodeServiceClient
+	tasksMu          sync.Mutex
+	activeTasks      map[string]*attack.AttackSession
+	activeComboTasks map[string]*attack.ComboSession
+	isWindows        bool
+	canSpoofIP       atomic.Bool
 	// spoofProbed 是否已获得可靠的伪造能力探测结果（含缓存命中）。
 	// 周期维护协程据此决定：未探测 → 重试探测；已探测 → 周期上报状态。
 	spoofProbed atomic.Int32
@@ -60,7 +60,7 @@ type Worker struct {
 	spoofProbeRunning atomic.Int32
 	// spoofResultCh 探测结果回传通道：探测协程只做网络 IO，
 	// 结果经通道在主循环应用（canSpoofIP/localPool 只能由主循环写，避免竞争）
-	spoofResultCh chan spoofProbeResult
+	spoofResultCh        chan spoofProbeResult
 	proxySource          string
 	maxBWMbps            int
 	heartbeatFailStreak  int32
@@ -742,6 +742,28 @@ func (w *Worker) stopAllAttacks() {
 	}
 	// 0.1 Mbps 应急限速，等待重连恢复
 	attack.SetGlobalRateLimiter(0, 12500)
+}
+
+// reportActiveTasksComplete 更新/退出前把进行中任务的完成状态上报给
+// Controller（HTTP fallback 通道）。与 stopAllAttacks 配合：
+// 先上报再停攻击，避免进程即将被替换/退出时完成信息丢失，
+// 导致 Controller 任务停留 running 直到超时重试整段重跑。
+func (w *Worker) reportActiveTasksComplete() {
+	w.tasksMu.Lock()
+	tasks := w.activeTasks
+	comboTasks := w.activeComboTasks
+	w.tasksMu.Unlock()
+
+	for id, s := range tasks {
+		snap := s.Snapshot()
+		log.Printf("[worker] reporting task %s complete before restart (%d pkts)", id, snap.PacketsSent)
+		w.reportCompleteViaHTTP(id, snap)
+	}
+	for id, cs := range comboTasks {
+		snap := cs.Snapshot()
+		log.Printf("[worker] reporting combo task %s complete before restart (%d pkts)", id, snap.PacketsSent)
+		w.reportCompleteViaHTTP(id, snap)
+	}
 }
 
 func (w *Worker) fetchProxy() {

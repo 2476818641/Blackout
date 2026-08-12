@@ -2596,6 +2596,10 @@ func StartDNSAmplificationEx(cfg AttackConfig) *AttackSession {
 						q = fallbackQueries[rng.Intn(len(fallbackQueries))]
 					}
 					if q == nil {
+						// 无可用查询（域名被 Controller 清空且反射器无内嵌域名）：
+						// 空转紧循环会烧满 CPU，这里退避等待，后续循环可能
+						// 因列表刷新拿到新查询
+						time.Sleep(10 * time.Millisecond)
 						continue
 					}
 

@@ -511,11 +511,16 @@ func (p *LocalReflectorPool) retestGame(game string) {
 			`, now, now, r.LatencyMs, r.ResponseSize, r.AmpRatio, r.AmpDomain,
 				p.calculateScore(1, 0, r.LatencyMs, r.AmpRatio), r.IP, r.Port, r.Game)
 		} else {
+			// 失败：fail_count+1 且 score 减半。只加 fail_count 的话，
+			// 死反射器仍以最高分占据 GetReflectors 的列表头部
+			// （score DESC），连续 3 次失败被 Cleanup 删除前会持续
+			// 被攻击打向死目标。
 			p.db.Exec(`
 				UPDATE local_reflectors
-				SET fail_count = fail_count + 1, last_tested = ?
+				SET fail_count = fail_count + 1, last_tested = ?,
+					last_valid = ?, score = score * 0.5
 				WHERE ip = ? AND port = ? AND game = ?
-			`, now, r.IP, r.Port, r.Game)
+			`, now, 0, r.IP, r.Port, r.Game)
 		}
 	}
 }

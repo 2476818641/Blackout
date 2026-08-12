@@ -62,6 +62,10 @@ type Candidate struct {
 
 type Pool struct {
 	gameID string
+	// refreshMu 串行化同一 game 池的整批刷新（定时 cron 与手动"立即刷新"
+	// 可能并发执行）：stale 删除用批次时间戳判定，并发刷新会让先完成的
+	// 批次被后完成批次误删（last_seen_at < now）。
+	refreshMu sync.Mutex
 }
 
 type PoolInfo struct {
@@ -476,6 +480,10 @@ func (p *Pool) ReplaceSteamEntries(entries []Reflector) {
 		log.Printf("[pool] %s: skip steam replace (empty batch, keeping existing entries)", p.gameID)
 		return
 	}
+
+	// 串行化整批刷新：防止并发批次用各自的时间戳互删对方刚写入的条目
+	p.refreshMu.Lock()
+	defer p.refreshMu.Unlock()
 
 	now := time.Now().Unix()
 	d := getDB()

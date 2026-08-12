@@ -29,9 +29,24 @@ func NewComboSession(sessions []*AttackSession) *ComboSession {
 func (cs *ComboSession) Stop() {
 	if atomic.CompareAndSwapInt32(&cs.stopped, 0, 1) {
 		close(cs.StopChan)
+		// 并行触发所有子攻击停止：串行 Stop 时每个最多等 5s，
+		// N 个子攻击会让 worker 心跳主循环阻塞最长 5N 秒，
+		// 直接导致 Controller 误判离线、任务被重复派发。
 		for _, s := range cs.Sessions {
-			s.Stop()
+			s.finish()
 		}
+		var wg sync.WaitGroup
+		for _, s := range cs.Sessions {
+			wg.Add(1)
+			go func(s *AttackSession) {
+				defer wg.Done()
+				select {
+				case <-s.DoneChan:
+				case <-time.After(5 * time.Second):
+				}
+			}(s)
+		}
+		wg.Wait()
 	}
 	// 最多等 5 秒，防止子攻击 goroutine 卡死时调用方被永久阻塞
 	select {
