@@ -10,7 +10,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"newtool/internal/controller"
@@ -66,6 +68,26 @@ func main() {
 	}()
 
 	ensureSteamKey()
+
+	// 信号处理：
+	// - SIGHUP：清空证书缓存 → 下次 TLS 握手自动加载新证书。
+	//   配套 acme.sh --reloadcmd "kill -HUP <pid>" / systemctl reload
+	//   实现证书热更新（HTTP + gRPC 都生效，服务不中断）。
+	// - SIGINT/SIGTERM：正常退出。
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		for s := range sigChan {
+			switch s {
+			case syscall.SIGHUP:
+				log.Printf("SIGHUP received, reloading TLS certificate")
+				controller.ReloadTLS()
+			case syscall.SIGINT, syscall.SIGTERM:
+				log.Printf("Signal %v received, shutting down", s)
+				os.Exit(0)
+			}
+		}
+	}()
 
 	ctrl := controller.New(grpc, http, controller.BuildInfo{Version: buildVersion, GitRepo: gitRepo, GhProxy: ghProxy})
 	if err := ctrl.Start(); err != nil {

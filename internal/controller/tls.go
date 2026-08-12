@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc/credentials"
@@ -17,8 +18,35 @@ const (
 	KeyFile  = "data/cert/server.key"
 )
 
+// certCache 磁盘证书缓存：GetCertificate 每次握手时读取，
+// ReloadTLS 清空缓存后下次握手重新加载（证书热更新）。
+var certCache atomic.Value // *tls.Certificate
+
+// loadCert 加载证书（带缓存）。证书过期/损坏时返回错误 → 该次握手失败，
+// 不影响已建立的连接；acme.sh 更新流程是"先写文件后发 HUP"，加载到的
+// 必然是完整的新证书。
+func loadCert() (*tls.Certificate, error) {
+	if c, ok := certCache.Load().(*tls.Certificate); ok {
+		return c, nil
+	}
+	cert, err := tls.LoadX509KeyPair(CertFile, KeyFile)
+	if err != nil {
+		return nil, err
+	}
+	certCache.Store(&cert)
+	return &cert, nil
+}
+
+// ReloadTLS 清除证书缓存：SIGHUP（acme.sh reloadcmd / systemctl reload）时
+// 调用，下一个 TLS 握手自动加载磁盘上的新证书。
+func ReloadTLS() {
+	certCache.Store((*tls.Certificate)(nil))
+	log.Printf("✅ TLS certificate cache cleared, will reload on next handshake")
+}
+
 // LoadTLSConfig 尝试加载 data/cert/ 下的 TLS 证书
-// 返回 nil 表示无证书（使用明文），返回 *tls.Config 表示启用 TLS
+// 返回 nil 表示无证书（使用明文），返回 *tls.Config 表示启用 TLS。
+// 证书通过 GetCertificate 动态加载（不持有静态副本），支持热更新。
 func LoadTLSConfig() *tls.Config {
 	certDir := "data/cert"
 	certFile := CertFile
@@ -48,18 +76,19 @@ func LoadTLSConfig() *tls.Config {
 		return nil
 	}
 
-	// 加载证书
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
+	// 首次加载校验证书可用（动态加载 + 缓存，见 loadCert）
+	if _, err := loadCert(); err != nil {
 		log.Printf("[!] Failed to load TLS certificate: %v", err)
 		log.Printf("   Running in INSECURE mode")
 		return nil
 	}
 
-	log.Printf("✅ TLS enabled: %s, %s", certFile, keyFile)
+	log.Printf("✅ TLS enabled: %s, %s (hot-reload via SIGHUP)", certFile, keyFile)
 	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return loadCert()
+		},
+		MinVersion: tls.VersionTLS12,
 	}
 }
 
