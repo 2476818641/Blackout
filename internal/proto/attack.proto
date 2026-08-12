@@ -50,6 +50,11 @@ message HeartbeatResponse {
   AttackTask pending_task = 2;
   string cancel_task_id = 3;
   bool kick = 4;
+  // 环境迁移：非空时 worker 须切换到该 controller 地址并重新注册。
+  // 旧 controller 进入迁移模式后每条心跳都携带，worker 幂等处理
+  // （配置相同则忽略）。
+  string reconfigure_controller = 5;
+  string reconfigure_token = 6;
 }
 
 message AttackTask {

@@ -354,13 +354,18 @@ func (x *HeartbeatRequest) GetNetworkMbps() int32 {
 }
 
 type HeartbeatResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
-	PendingTask   *AttackTask            `protobuf:"bytes,2,opt,name=pending_task,json=pendingTask,proto3" json:"pending_task,omitempty"`
-	CancelTaskId  string                 `protobuf:"bytes,3,opt,name=cancel_task_id,json=cancelTaskId,proto3" json:"cancel_task_id,omitempty"`
-	Kick          bool                   `protobuf:"varint,4,opt,name=kick,proto3" json:"kick,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Ok           bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	PendingTask  *AttackTask            `protobuf:"bytes,2,opt,name=pending_task,json=pendingTask,proto3" json:"pending_task,omitempty"`
+	CancelTaskId string                 `protobuf:"bytes,3,opt,name=cancel_task_id,json=cancelTaskId,proto3" json:"cancel_task_id,omitempty"`
+	Kick         bool                   `protobuf:"varint,4,opt,name=kick,proto3" json:"kick,omitempty"`
+	// 环境迁移：非空时 worker 须切换到该 controller 地址并重新注册。
+	// 旧 controller 进入迁移模式后每条心跳都携带，worker 幂等处理
+	// （配置相同则忽略）。
+	ReconfigureController string `protobuf:"bytes,5,opt,name=reconfigure_controller,json=reconfigureController,proto3" json:"reconfigure_controller,omitempty"`
+	ReconfigureToken      string `protobuf:"bytes,6,opt,name=reconfigure_token,json=reconfigureToken,proto3" json:"reconfigure_token,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *HeartbeatResponse) Reset() {
@@ -419,6 +424,20 @@ func (x *HeartbeatResponse) GetKick() bool {
 		return x.Kick
 	}
 	return false
+}
+
+func (x *HeartbeatResponse) GetReconfigureController() string {
+	if x != nil {
+		return x.ReconfigureController
+	}
+	return ""
+}
+
+func (x *HeartbeatResponse) GetReconfigureToken() string {
+	if x != nil {
+		return x.ReconfigureToken
+	}
+	return ""
 }
 
 type AttackTask struct {
@@ -1007,12 +1026,14 @@ const file_internal_proto_attack_proto_rawDesc = "" +
 	"\vcpu_percent\x18\x03 \x01(\x01R\n" +
 	"cpuPercent\x12$\n" +
 	"\x0ememory_used_mb\x18\x04 \x01(\x03R\fmemoryUsedMb\x12!\n" +
-	"\fnetwork_mbps\x18\x05 \x01(\x05R\vnetworkMbps\"\x95\x01\n" +
+	"\fnetwork_mbps\x18\x05 \x01(\x05R\vnetworkMbps\"\xf9\x01\n" +
 	"\x11HeartbeatResponse\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x126\n" +
 	"\fpending_task\x18\x02 \x01(\v2\x13.nettool.AttackTaskR\vpendingTask\x12$\n" +
 	"\x0ecancel_task_id\x18\x03 \x01(\tR\fcancelTaskId\x12\x12\n" +
-	"\x04kick\x18\x04 \x01(\bR\x04kick\"\xfd\x03\n" +
+	"\x04kick\x18\x04 \x01(\bR\x04kick\x125\n" +
+	"\x16reconfigure_controller\x18\x05 \x01(\tR\x15reconfigureController\x12+\n" +
+	"\x11reconfigure_token\x18\x06 \x01(\tR\x10reconfigureToken\"\xfd\x03\n" +
 	"\n" +
 	"AttackTask\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x16\n" +

@@ -28,6 +28,20 @@ var (
 func main() {
 	flag.Parse()
 
+	// 未提供 -c/-token 时从持久化配置恢复（环境迁移 reconfigure 写入）。
+	// 迁移后 worker 重启/系统重启无需重新部署，自动连新 controller。
+	if *controllerAddr == "" || *authToken == "" {
+		if conf, ok := worker.LoadWorkerConf(); ok {
+			if *controllerAddr == "" {
+				*controllerAddr = conf.Controller
+			}
+			if *authToken == "" {
+				*authToken = conf.Token
+			}
+			log.Printf("Loaded connection config from %s: %s", "data/worker.conf", conf.Controller)
+		}
+	}
+
 	if *install {
 		if *controllerAddr == "" || *authToken == "" {
 			log.Fatal("--install requires -c and -token")

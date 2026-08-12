@@ -229,7 +229,38 @@ func InstallAutoStart(controllerAddr, token string) error {
 	return InstallAutoStartHTTP(controllerAddr, token, "8080")
 }
 
-func InstallAutoStartHTTP(controllerAddr, token, httpPort string) error {
+// workerConfFile 迁移持久化配置：worker 重启后无需再带 -c/-token 参数，
+// 从该文件恢复连接目标（reconfigure 时由 worker 自己更新）。
+const workerConfFile = "data/worker.conf"
+
+type workerConf struct {
+	Controller string `json:"controller"`
+	Token      string `json:"token"`
+	HTTPPort   string `json:"http_port"`
+}
+
+// LoadWorkerConf 读取持久化配置（不存在或损坏返回 ok=false）
+func LoadWorkerConf() (workerConf, bool) {
+	data, err := os.ReadFile(workerConfFile)
+	if err != nil {
+		return workerConf{}, false
+	}
+	var c workerConf
+	if json.Unmarshal(data, &c) != nil || c.Controller == "" || c.Token == "" {
+		return workerConf{}, false
+	}
+	return c, true
+}
+
+func saveWorkerConf(c workerConf) error {
+	os.MkdirAll("data", 0755)
+	data, _ := json.Marshal(c)
+	return os.WriteFile(workerConfFile, data, 0600)
+}
+
+// writeAutoStartConfig 写入开机自启配置（systemd unit / Windows 计划任务），
+// 不启动服务。InstallAutoStartHTTP 与迁移 reconfigure 共用。
+func writeAutoStartConfig(controllerAddr, token, httpPort string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("get executable path: %w", err)
@@ -255,19 +286,10 @@ WantedBy=multi-user.target
 
 		// 0600：systemd unit 内含 token，其他用户不应可读
 		if err := os.WriteFile("/etc/systemd/system/nettool-worker.service", []byte(service), 0600); err != nil {
-			return fmt.Errorf("write service file: %w (are you root?)", err)
+			return fmt.Errorf("write service file: %v (are you root?)", err)
 		}
-
 		exec.Command("systemctl", "daemon-reload").Run()
 		exec.Command("systemctl", "enable", "nettool-worker").Run()
-		// 安装后立即启动：否则 worker 进程在 -install 分支直接退出，
-		// 服务处于 enabled 但 inactive 状态，节点不会上线
-		if out, err := exec.Command("systemctl", "start", "nettool-worker").CombinedOutput(); err != nil {
-			log.Printf("[install] systemctl start failed: %v (%s)", err, string(out))
-		} else {
-			log.Println("[install] systemd service started")
-		}
-		log.Println("[install] systemd service created and enabled")
 		return nil
 
 	case "windows":
@@ -280,8 +302,34 @@ WantedBy=multi-user.target
 		if err != nil {
 			return fmt.Errorf("schtasks failed: %s: %w", string(output), err)
 		}
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+	}
+}
+
+func InstallAutoStartHTTP(controllerAddr, token, httpPort string) error {
+	if err := writeAutoStartConfig(controllerAddr, token, httpPort); err != nil {
+		return err
+	}
+
+	switch runtime.GOOS {
+	case "linux":
+		// 安装后立即启动：否则 worker 进程在 -install 分支直接退出，
+		// 服务处于 enabled 但 inactive 状态，节点不会上线
+		if out, err := exec.Command("systemctl", "start", "nettool-worker").CombinedOutput(); err != nil {
+			log.Printf("[install] systemctl start failed: %v (%s)", err, string(out))
+		} else {
+			log.Println("[install] systemd service started")
+		}
+		log.Println("[install] systemd service created and enabled")
+		return nil
+
+	case "windows":
+		taskName := "NetToolWorker"
 		// 安装后立即启动任务，节点立刻上线（开机自启依然生效）
-		if out, err := exec.Command("cmd", "/c", `schtasks /run /tn "`+taskName+`"`).CombinedOutput(); err != nil {
+		if out, err := exec.Command("cmd", "/c", `schtasks /run /tn "`+taskName+"\"").CombinedOutput(); err != nil {
 			log.Printf("[install] schtasks /run failed: %v (%s)", err, string(out))
 		} else {
 			log.Println("[install] Windows scheduled task started")
@@ -916,6 +964,14 @@ func (w *Worker) heartbeat() error {
 		w.kickSelf()
 	}
 
+	// 环境迁移：旧 controller 进入迁移模式，心跳携带新 controller 地址。
+	// worker 停止攻击 → 持久化配置 → 更新自启参数 → 断开旧连接 → 重连注册。
+	if resp.ReconfigureController != "" {
+		w.handleReconfigure(resp.ReconfigureController, resp.ReconfigureToken)
+		// 迁移后旧 controller 的挂起任务/取消指令不再有意义，直接返回
+		return nil
+	}
+
 	if resp.CancelTaskId != "" {
 		w.safeStopTask(resp.CancelTaskId)
 	}
@@ -925,6 +981,59 @@ func (w *Worker) heartbeat() error {
 	}
 
 	return nil
+}
+
+// handleReconfigure 环境迁移：切换到新 controller。
+// 幂等：目标地址与当前一致时忽略（重复心跳无害）。
+func (w *Worker) handleReconfigure(newController, newToken string) {
+	if newController == w.controller && (newToken == "" || newToken == w.authToken) {
+		log.Printf("[migrate] already configured for %s, ignoring", newController)
+		return
+	}
+	log.Printf("[migrate] switching controller: %s -> %s", w.controller, newController)
+
+	// 1. 停止本地攻击（迁移场景旧任务作废，无需向旧 controller 上报完成）
+	w.stopAllAttacks()
+
+	// 2. 持久化连接配置：进程重启/系统重启后仍连新 controller
+	if newToken != "" && newToken != w.authToken {
+		w.authToken = newToken
+	}
+	if err := saveWorkerConf(workerConf{Controller: newController, Token: w.authToken, HTTPPort: w.httpPort}); err != nil {
+		log.Printf("[migrate] failed to save worker.conf: %v", err)
+	}
+
+	// 3. 更新开机自启参数（systemd unit / 计划任务），不重启服务避免双开
+	if err := writeAutoStartConfig(newController, w.authToken, w.httpPort); err != nil {
+		log.Printf("[migrate] auto-start config update failed: %v", err)
+	}
+
+	// 4. 断开旧连接，重连新 controller 并注册
+	if w.conn != nil {
+		w.conn.Close()
+	}
+	w.controller = newController
+	if err := w.Connect(); err != nil {
+		log.Printf("[migrate] connect to %s failed: %v (retrying next heartbeat)", newController, err)
+		return
+	}
+	if err := w.register(); err != nil {
+		log.Printf("[migrate] register at %s failed: %v", newController, err)
+		return
+	}
+	log.Printf("[migrate] re-registered at %s as %s", newController, w.assignedID)
+	// 迁移瞬间的失败不应触发熔断，重置计数
+	atomic.StoreInt32(&w.heartbeatFailStreak, 0)
+	// 长断连/恢复状态复位：新连接从满速开始
+	w.disconnectStart = time.Time{}
+	w.longDisconnect = false
+	atomic.StoreInt32(&w.degraded, 0)
+	if w.maxBWMbps > 0 {
+		attack.SetGlobalRateLimiter(0, int64(w.maxBWMbps)*125000)
+	} else {
+		attack.SetGlobalRateLimiter(0, 0)
+	}
+	log.Printf("[migrate] migration to %s complete", newController)
 }
 
 // kickMarkerFile 踢出标记：存在则 worker 启动即退出（防 systemd 自动拉起复活）

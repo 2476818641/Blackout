@@ -179,6 +179,12 @@ type Ctrl struct {
 	nodeGroupsFile string
 	nodeGroupsMu   sync.RWMutex
 	nodeGroups     map[string][]string
+	// 环境迁移（见 migrate.go）：非空 = 迁移模式，心跳响应携带新 controller
+	// 地址，worker 收到后自动切换连接。workerToken 为空时 worker 沿用自身
+	// 已有 token（数据导入时已带过去）。
+	migrateMu     sync.RWMutex
+	migrateTarget string
+	migrateToken  string
 	// 编译信息：Version 标记 Controller 自身（与 Worker 版本对齐），
 	// GitRepo 用于云更新默认 GitHub Release 下载地址拼接
 	build BuildInfo
@@ -453,6 +459,10 @@ func (c *Ctrl) Start() error {
 	mux.HandleFunc("/api/nodes/", c.authHTTP(c.handleKickNode))
 	mux.HandleFunc("/api/tasks", c.authHTTP(c.handleTasks))
 	mux.HandleFunc("/api/node-groups", c.authHTTP(c.handleNodeGroups))
+	mux.HandleFunc("/api/migrate/export", c.authHTTP(c.handleMigrateExport))
+	mux.HandleFunc("/api/migrate/import", c.authHTTP(c.handleMigrateImport))
+	mux.HandleFunc("/api/migrate/start", c.authHTTP(c.handleMigrateStart))
+	mux.HandleFunc("/api/migrate/stop", c.authHTTP(c.handleMigrateStop))
 	mux.HandleFunc("/api/tasks/", c.authHTTP(c.handleTaskByID))
 	mux.HandleFunc("/api/scan", c.authHTTP(c.handleScan))
 	mux.HandleFunc("/api/stats", c.authHTTP(c.handleStats))
@@ -842,10 +852,18 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 		c.broadcastWS("nodes", c.listNodesForBroadcast())
 	}
 
+	// 迁移模式：携带新 controller 地址，worker 收到后自动切换
+	c.migrateMu.RLock()
+	migrateTarget := c.migrateTarget
+	migrateToken := c.migrateToken
+	c.migrateMu.RUnlock()
+
 	return &pb.HeartbeatResponse{
-		Ok:           true,
-		PendingTask:  pendingTask,
-		CancelTaskId: cancelTaskID,
+		Ok:                   true,
+		PendingTask:          pendingTask,
+		CancelTaskId:         cancelTaskID,
+		ReconfigureController: migrateTarget,
+		ReconfigureToken:      migrateToken,
 	}, nil
 }
 

