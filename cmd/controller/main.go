@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,7 @@ import (
 var (
 	grpcAddr = flag.String("grpc", ":9090", "gRPC listen address")
 	httpAddr = flag.String("http", ":8080", "HTTP listen address")
+	install  = flag.Bool("install", false, "Install as system service (auto-start) and print management commands")
 )
 
 // 编译时注入（-ldflags "-X main.buildVersion=... -X main.gitRepo=... -X main.ghProxy=..."）：
@@ -37,6 +39,15 @@ var (
 
 func main() {
 	flag.Parse()
+
+	if *install {
+		name, err := controller.InstallAutoStart(normalizeAddr(*grpcAddr), normalizeAddr(*httpAddr))
+		if err != nil {
+			log.Fatalf("Install failed: %v", err)
+		}
+		printManageCommands(name)
+		return
+	}
 
 	grpc := normalizeAddr(*grpcAddr)
 	http := normalizeAddr(*httpAddr)
@@ -93,6 +104,43 @@ func main() {
 	if err := ctrl.Start(); err != nil {
 		log.Fatalf("Fatal: %v", err)
 	}
+}
+
+// printManageCommands 安装完成后输出服务管理命令（启动/暂停/重启/日志/位置）
+func printManageCommands(serviceName string) {
+	if runtime.GOOS == "windows" {
+		fmt.Println("NetTool Controller 已安装为计划任务: " + serviceName)
+		fmt.Println()
+		fmt.Println("管理命令:")
+		fmt.Println("  启动:   schtasks /run   /tn " + serviceName)
+		fmt.Println("  停止:   schtasks /end   /tn " + serviceName)
+		fmt.Println("  状态:   schtasks /query /tn " + serviceName + " /v")
+		fmt.Println()
+		fmt.Println("日志: 无持久化日志文件，前台运行可见 stdout（schtasks 下 stdout 丢弃）")
+		return
+	}
+
+	fmt.Println("NetTool Controller 已安装为 systemd 服务: " + serviceName)
+	fmt.Println()
+	fmt.Println("管理命令:")
+	fmt.Println("  启动:   systemctl start   " + serviceName)
+	fmt.Println("  停止:   systemctl stop    " + serviceName)
+	fmt.Println("  重启:   systemctl restart " + serviceName)
+	fmt.Println("  状态:   systemctl status  " + serviceName)
+	fmt.Println("  日志:   journalctl -u " + serviceName + " -f      （实时跟踪）")
+	fmt.Println("          journalctl -u " + serviceName + " --since today")
+	fmt.Println("  热更新证书: systemctl reload " + serviceName + "   （SIGHUP，零中断）")
+	fmt.Println()
+	fmt.Println("日志位置: systemd journal（/var/log/journal/ 或 /run/log/journal/），")
+	fmt.Println("         日志大小上限由 journald 配置控制（默认日志滚动保留）")
+	fmt.Println()
+	fmt.Println("注意: 安装后如果移动了 controller 二进制的位置，")
+	fmt.Println("      需要手动修改 /etc/systemd/system/" + serviceName + ".service 中的")
+	fmt.Println("      ExecStart 与 WorkingDirectory 路径，然后执行:")
+	fmt.Println("      systemctl daemon-reload && systemctl restart " + serviceName)
+	fmt.Println()
+	fmt.Println("提示: 如已存在旧的 controller.service（手动创建的），请先停用避免端口冲突:")
+	fmt.Println("      systemctl disable --now controller")
 }
 
 func normalizeAddr(addr string) string {
