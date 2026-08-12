@@ -91,6 +91,9 @@ type TaskInfo struct {
 	// CancelToRetry 表示本次取消是超时重试触发的：全部确认后转 pending 重新派发，
 	// 而不是 completed。防止重试时旧攻击仍在运行导致同一任务双份流量叠加。
 	CancelToRetry bool `json:"-"`
+	// CancellingSince 进入 cancelling 状态的时刻：超时兜底（5 分钟无进展强制终结），
+	// 防止个别 worker 确认永远丢失导致任务永久卡在 cancelling。
+	CancellingSince time.Time `json:"-"`
 }
 
 type TaskStats struct {
@@ -715,12 +718,14 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 	}
 	c.mu.Unlock()
 
+	// 被踢出的节点优先返回 kick（必须在 unknown node 判定之前）：
+	// handleKickNode 已把节点从表中删除，若先查 !ok 则永远走不到
+	// Kick 分支，只能靠 worker 重注册被拒的间接路径自愈。
+	if kicked {
+		return &pb.HeartbeatResponse{Ok: true, Kick: true}, nil
+	}
 	if !ok {
 		return &pb.HeartbeatResponse{Ok: false}, fmt.Errorf("unknown node")
-	}
-	if kicked {
-		// 已被踢出：返回 kick 标志让 worker 自行退出并删除自身
-		return &pb.HeartbeatResponse{Ok: true, Kick: true}, nil
 	}
 
 	var pendingTask *pb.AttackTask
@@ -729,7 +734,7 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 
 	c.mu.Lock()
 	rem := c.pendingIDs[:0]
-	for _, tid := range c.pendingIDs {
+	for i, tid := range c.pendingIDs {
 		t := c.tasks[tid]
 		if t == nil || t.Status != "pending" {
 			continue
@@ -752,6 +757,10 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 		}
 		pendingTask = c.taskToProto(t)
 		assignedWorker = req.WorkerId
+		// 关键：只派发本心跳的第一个任务（协议限制），但 break 前必须把
+		// 尚未遍历的剩余 pending 任务保留回队列，否则后续任务被静默丢弃、
+		// 30s 后误判 failed / 永不派发。
+		rem = append(rem, c.pendingIDs[i+1:]...)
 		break
 	}
 	c.pendingIDs = rem
@@ -759,6 +768,11 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 	for _, tid := range c.cancelIDs {
 		t := c.tasks[tid]
 		if t == nil || t.Status != "cancelling" || !c.workerHasTask(t, req.WorkerId) {
+			continue
+		}
+		// 本 worker 已确认过该取消：不再重复投递，避免已确认的取消任务
+		// 一直占据队列头部、阻塞其他待取消任务的投递
+		if t.CancelAcks[req.WorkerId] {
 			continue
 		}
 		cancelTaskID = t.TaskID
@@ -946,13 +960,19 @@ func (c *Ctrl) workerHasTask(t *TaskInfo, workerID string) bool {
 
 // taskFullyCancelled 必须在持有 c.mu 时调用。
 // 返回 true 表示持有该任务的所有 worker 都已确认取消指令
-// （离线或已被清理的 worker 不会再攻击，视为已确认）。
+// （已自然完成 / 离线 / 已被清理的 worker 不会再产生流量，视为已确认）。
 func (c *Ctrl) taskFullyCancelled(t *TaskInfo) bool {
 	if len(t.Workers) == 0 {
 		return true
 	}
 	for wid := range t.Workers {
 		if t.CancelAcks[wid] {
+			continue
+		}
+		// 该 worker 已上报 Finished=true：攻击自然结束，不会再产生流量。
+		// 此前只认 CancelAcks 会导致"已完成 worker + 确认丢失的 worker"组合
+		// 使取消永远无法收尾，任务永久卡在 cancelling。
+		if st := t.Workers[wid]; st != nil && st.Finished {
 			continue
 		}
 		// 节点不存在（已注销/超时清理）或已离线：视为已停止
@@ -974,9 +994,31 @@ func (c *Ctrl) finishCancellingTask(t *TaskInfo) {
 		t.CancelToRetry = false
 		t.Status = "pending"
 		t.StartTime = time.Time{}
+		t.CreatedAt = time.Now() // 重置派发计时窗口，避免 30s 强制翻转误伤
+		// 重试只补派未完成的 worker：已完成（Finished=true）的节点
+		// 保留记录，不再重新派发，避免整个任务被重复攻击一遍完整时长。
+		oldWorkers := t.Workers
 		t.Workers = make(map[string]*TaskStats)
+		unfinished := 0
+		for wid, st := range oldWorkers {
+			if st == nil || !st.Finished {
+				unfinished++
+				continue
+			}
+			t.Workers[wid] = st
+		}
+		if unfinished == 0 {
+			// 所有节点都已自然完成（完成上报丢失触发超时）：直接置
+			// completed，否则 pending→running 循环重试死循环。
+			t.Status = "completed"
+			entry := c.buildTaskLog(t)
+			go c.logTaskComplete(entry)
+			log.Printf("[task] %s all workers finished, marking completed (no retry)", t.TaskID)
+			c.resetNodeStatusesLocked(wids...)
+			return
+		}
 		c.pendingIDs = append(c.pendingIDs, t.TaskID)
-		log.Printf("[task] %s cancelled for retry, re-dispatching (attempt %d/3)", t.TaskID, t.RetryCount)
+		log.Printf("[task] %s cancelled for retry, re-dispatching to unfinished workers (attempt %d/3)", t.TaskID, t.RetryCount)
 	} else {
 		t.Status = "completed"
 		entry := c.buildTaskLog(t)
@@ -3251,17 +3293,26 @@ func (c *Ctrl) watchTaskTimeout() {
 					task.Status = "cancelling"
 					task.CancelToRetry = true
 					task.CancelAcks = nil
+					task.CancellingSince = time.Now()
 					c.cancelIDs = append(c.cancelIDs, id)
 					log.Printf("[task] %s timed out, cancelling for retry %d/3", id, task.RetryCount)
 				} else {
 					task.Status = "failed"
 					entry := c.buildTaskLog(task)
 					go c.logTaskComplete(entry)
+					// 复位节点状态：否则节点永久显示 ATTACKING
+					c.resetNodeStatusesLocked(taskWorkerIDs(task)...)
 					log.Printf("[task] %s failed after 3 retries", id)
 				}
 			case "cancelling":
 				// 兜底：所有持有者均已确认/离线时即使没有心跳来触发也要终结
 				if c.taskFullyCancelled(task) {
+					c.finishCancellingTask(task)
+				} else if !task.CancellingSince.IsZero() && time.Since(task.CancellingSince) > 5*time.Minute {
+					// 绝对超时兜底：个别 worker 的确认可能永久丢失
+					// （已完成 worker 不 ack + 在线节点确认丢失等），
+					// 5 分钟无进展强制终结，避免任务永久卡在 cancelling。
+					log.Printf("[task] %s cancelling stuck >5min, force finishing", id)
 					c.finishCancellingTask(task)
 				}
 			}

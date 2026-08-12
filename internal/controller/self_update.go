@@ -253,6 +253,12 @@ func (c *Ctrl) handleUpdateToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		token := strings.TrimSpace(body.Token)
+		// 拒绝前端占位符：用户没修改就点保存时，字面量 ********
+		// 会把真实 token 覆盖掉，导致 GitHub 认证失效
+		if token == "********" {
+			http.Error(w, `{"error":"placeholder token rejected"}`, 400)
+			return
+		}
 
 		c.githubTokenMu.Lock()
 		c.githubToken = token
