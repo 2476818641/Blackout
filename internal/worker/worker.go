@@ -292,9 +292,12 @@ func (w *Worker) Connect() error {
 	// 再据此选择传输凭证，否则无证书的 Controller 会让 Worker 永远连不上。
 	tlsEnabled := probeControllerTLS(w.controller)
 
+	// keepalive 参数说明：攻击中网卡可能被占满，TCP 保活 ACK 排队会超过 5s。
+	// Time 15s / Timeout 10s：给满载链路留足排队余量，避免误判连接死亡
+	// 拆掉整个 gRPC 连接（连接重建期间心跳/统计/派发全部中断）。
 	keepaliveParams := grpc.WithKeepaliveParams(keepalive.ClientParameters{
-		Time:                10 * time.Second,
-		Timeout:             5 * time.Second,
+		Time:                15 * time.Second,
+		Timeout:             10 * time.Second,
 		PermitWithoutStream: true,
 	})
 
@@ -477,11 +480,21 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// 云更新检查：每 60s 轮询 Controller 目标版本，有新版本自动下载替换重启。
 	// 延迟 10s 首次检查（让注册/配置先就绪），攻击中也能更新（下载走独立连接）。
-	updateTicker := time.NewTicker(updateCheckEvery)
-	defer updateTicker.Stop()
-	updateTicker.Stop()
-	updateTimer := time.NewTimer(10 * time.Second)
-	defer updateTimer.Stop()
+	// 注意：checkUpdate 是同步 HTTP 调用（可能耗时数秒），必须跑在独立协程，
+	// 与心跳同循环串行执行会在网络抖动时阻塞心跳导致 Controller 误判离线。
+	go func() {
+		timer := time.NewTimer(10 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				w.checkUpdate()
+				timer.Reset(updateCheckEvery)
+			}
+		}
+	}()
 
 	// 攻击启动后延迟 30 秒再开始自动调优，让系统稳定
 	autoTuneTicker := time.NewTicker(15 * time.Second)
@@ -511,11 +524,6 @@ func (w *Worker) Run(ctx context.Context) error {
 					log.Printf("[autotune] startup stabilized, auto-tune enabled")
 				}
 			}
-		case <-updateTimer.C:
-			w.checkUpdate()
-			updateTicker.Reset(updateCheckEvery)
-		case <-updateTicker.C:
-			w.checkUpdate()
 		case <-autoTuneTicker.C:
 			if autoTuneEnabled {
 				w.autoTuneThreads()
@@ -529,6 +537,14 @@ func (w *Worker) Run(ctx context.Context) error {
 			if err != nil {
 				fails := atomic.AddInt32(&w.heartbeatFailStreak, 1)
 				log.Printf("[worker] heartbeat error (streak=%d): %v", fails, err)
+
+				// 连续失败说明当前连接可能已坏死：gRPC 内部退避重连太慢
+				// （最长可退避到 2 分钟），主动重置退避+立即重连，
+				// 否则 15s 级别的 Controller 离线判定早就触发。
+				if fails >= 2 && w.conn != nil {
+					w.conn.ResetConnectBackoff()
+					w.conn.Connect()
+				}
 
 				// 渐进恢复被打断：清零当前档的确认计数
 				w.recoveryOkCount = 0
@@ -637,6 +653,15 @@ func (w *Worker) applyRecoveryBandwidth() {
 }
 
 func (w *Worker) handleHeartbeatFailure(fails int) {
+	// 未配置带宽上限（maxBWMbps<=0，默认无限速）时不做熔断降级：
+	// 心跳失败与攻击流量无关，且无限速节点没有"给控制通道让路"的意义，
+	// 降级只会让节点在掉线期间白白损失攻击吞吐。
+	if w.maxBWMbps <= 0 {
+		if fails == 1 {
+			log.Printf("[worker] heartbeat failure — monitoring (no bandwidth limit, no throttling)")
+		}
+		return
+	}
 	switch fails {
 	case 1:
 		log.Printf("[worker] heartbeat failure — monitoring")

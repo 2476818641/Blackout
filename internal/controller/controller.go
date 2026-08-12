@@ -1117,7 +1117,10 @@ func (c *Ctrl) offlineTimeout(n *NodeInfo) time.Duration {
 		}
 		return 120 * time.Second
 	}
-	return 15 * time.Second
+	// 空闲（READY）节点：45s。worker 心跳 3s 一次、RPC 超时 10s，
+	// 15s 阈值只容忍 1~2 次失败，网络抖动/Controller 重启瞬间就会误判离线。
+	// 45s ≈ 15 次心跳机会，兼顾误判容忍与掉线感知延迟。
+	return 45 * time.Second
 }
 
 func (c *Ctrl) watchOfflineNodes() {
