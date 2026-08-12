@@ -112,9 +112,11 @@ func (w *Worker) probeIPSpoofing() (bool, bool) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	// 3. 轮询验证结果（最多 4 秒，Controller 验证窗口 5 秒）
+	// 3. 轮询验证结果（最多 8 秒，Controller 验证窗口 5 秒）。
+	// 注意 deadline 必须大于验证窗口：轮询 4s 截止会在窗口（5s）到期前
+	// 放弃，网络略有延迟就把"能伪造"误判成不可靠。
 	resultURL := fmt.Sprintf("%s/api/worker/spoof-probe/result?nonce=%s", w.ctrlBaseURL(), nonce)
-	deadline := time.Now().Add(4 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 
 	for {
 		req, err := http.NewRequest("GET", resultURL, nil)
@@ -126,8 +128,14 @@ func (w *Worker) probeIPSpoofing() (bool, bool) {
 
 		resp, err := client.Do(req)
 		if err != nil {
-			log.Printf("[spoof-probe] result request failed: %v", err)
-			return false, false
+			// 单次轮询失败（网络抖动/超时）不立即放弃：在 deadline 内
+			// 重试，避免 Controller 短暂不可达就把节点误判为"不支持"。
+			log.Printf("[spoof-probe] result request failed (retrying): %v", err)
+			if time.Now().After(deadline) {
+				return false, false
+			}
+			time.Sleep(300 * time.Millisecond)
+			continue
 		}
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -143,7 +151,7 @@ func (w *Worker) probeIPSpoofing() (bool, bool) {
 		if err := json.Unmarshal(body, &poll); err == nil && poll.Pending {
 			// 仍在等待窗口内，稍后重试
 			if time.Now().After(deadline) {
-				log.Printf("[spoof-probe] result timeout after 4s")
+				log.Printf("[spoof-probe] result timeout after 8s")
 				return false, false
 			}
 			time.Sleep(300 * time.Millisecond)
@@ -157,6 +165,67 @@ func (w *Worker) probeIPSpoofing() (bool, bool) {
 		log.Printf("[spoof-probe] result: can_spoof=%v message=%s", probeResp.CanSpoof, probeResp.Message)
 		return probeResp.CanSpoof, true
 	}
+}
+
+// spoofProbeResult 探测结果：reliable=false 表示未获得可信结果
+type spoofProbeResult struct {
+	reliable bool
+	result   bool
+}
+
+// spoofProbeMaintenance 周期维护（主循环每 60s 触发，独立 goroutine 执行，
+// 不阻塞心跳）。只做网络 IO 与上报：
+// - 从未获得可靠结果：重新探测，可靠结果经 spoofResultCh 送回主循环应用
+//   （启动时探测失败导致节点永久"检测中"的根因就是没有重试）。
+// - 已有可靠结果：周期上报 spoof 状态。Controller 重启后节点表内存清零
+//   （SpoofTested 全部归零），靠周期上报在 ~60s 内自动恢复所有标签。
+func (w *Worker) spoofProbeMaintenance() {
+	if !w.spoofProbeRunning.CompareAndSwap(0, 1) {
+		return
+	}
+	defer w.spoofProbeRunning.Store(0)
+
+	if w.spoofProbed.Load() == 0 {
+		log.Printf("[spoof-probe] retrying capability probe...")
+		result, reliable := w.probeIPSpoofing()
+		if !reliable {
+			log.Printf("[spoof-probe] probe unreliable, will retry next cycle")
+			return
+		}
+		// 结果先发主循环应用（避免状态竞争），上报在此协程直接完成
+		// （HTTP 调用不能阻塞心跳主循环）
+		w.spoofResultCh <- spoofProbeResult{reliable: true, result: result}
+		w.reportSpoofStatusValue(result)
+		return
+	}
+	w.reportSpoofStatus()
+}
+
+// applySpoofProbeResult 在主循环 goroutine 中应用探测结果（唯一写
+// canSpoofIP/localPool 的位置，避免与任务派发路径竞争）。
+func (w *Worker) applySpoofProbeResult(r spoofProbeResult) {
+	if !r.reliable {
+		return
+	}
+	w.canSpoofIP.Store(r.result)
+	w.spoofProbed.Store(1)
+	if w.localPool != nil {
+		if err := w.saveSpoofCapability(r.result); err != nil {
+			log.Printf("[spoof-probe] failed to save result: %v", err)
+		}
+	}
+	if r.result && w.localPool == nil {
+		// 启动时因不可靠结果被关闭的本地池，此处无法自动恢复（需重启）
+		log.Printf("[spoof-probe] WARNING: spoofing works but local pool was disabled at startup; restart worker to enable")
+	}
+	// 确认不支持：与启动路径一致，停止本地反射器池
+	if !r.result && w.localPool != nil {
+		log.Printf("[worker] IP spoofing confirmed unavailable (retry) — stopping local reflector pool")
+		w.localPool.Stop()
+		w.localPool = nil
+		w.useLocalPool = false
+	}
+	log.Printf("[spoof-probe] retry result applied: can_spoof=%v", r.result)
 }
 
 // queryControllerSpoofCache 查询 Controller 的伪造能力缓存（按 IP 持久化）。
@@ -199,9 +268,14 @@ func (w *Worker) queryControllerSpoofCache() (bool, bool) {
 // 使节点表的 CanSpoof/SpoofTested 反映真实能力（探测失败也会上报为 false，
 // 避免 Controller 端停留在"待检测"或乐观的默认值）。
 func (w *Worker) reportSpoofStatus() {
+	w.reportSpoofStatusValue(w.canSpoofIP.Load())
+}
+
+// reportSpoofStatusValue 上报指定能力值（供非主循环协程使用，避免读 w.canSpoofIP 竞争）
+func (w *Worker) reportSpoofStatusValue(canSpoof bool) {
 	url := w.ctrlBaseURL() + "/api/worker/spoof-status"
 	body := fmt.Sprintf(`{"worker_id":"%s","can_spoof":%v}`,
-		w.assignedID, w.canSpoofIP)
+		w.assignedID, canSpoof)
 	req, err := http.NewRequest("POST", url, strings.NewReader(body))
 	if err != nil {
 		log.Printf("[spoof-probe] status report request create failed: %v", err)
@@ -222,7 +296,7 @@ func (w *Worker) reportSpoofStatus() {
 		log.Printf("[spoof-probe] status report http %d", resp.StatusCode)
 		return
 	}
-	log.Printf("[spoof-probe] reported status to controller: can_spoof=%v", w.canSpoofIP)
+	log.Printf("[spoof-probe] reported status to controller: can_spoof=%v", canSpoof)
 }
 
 // saveSpoofCapability 保存伪造能力到本地数据库（含探测时间戳，用于 TTL 过期）
