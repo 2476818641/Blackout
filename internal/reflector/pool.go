@@ -292,6 +292,68 @@ func GetPoolInfo() []PoolInfo {
 	return infos
 }
 
+// CountryCount 池条目国家分布
+type CountryCount struct {
+	Country string `json:"country"`
+	Count   int    `json:"count"`
+}
+
+// PoolHealth 池健康指标
+type PoolHealth struct {
+	Game        string         `json:"game"`
+	Total       int            `json:"total"`
+	Steam       int            `json:"steam"`
+	Manual      int            `json:"manual"`
+	Shodan      int            `json:"shodan"`
+	AvgScore    float64        `json:"avg_score"`
+	SuccessRate float64        `json:"success_rate"` // 0-100
+	AvgLatency  int            `json:"avg_latency_ms"`
+	LastTested  int64          `json:"last_tested"` // 最近一次测试时间
+	Countries   []CountryCount `json:"countries"`   // Top 10
+}
+
+// GetPoolHealth 聚合各池健康指标（成功率/评分/国家分布/最近测试）
+func GetPoolHealth() []PoolHealth {
+	d := getDB()
+	health := make([]PoolHealth, 0, len(Games))
+	for _, g := range Games {
+		h := PoolHealth{Game: g.ID}
+		// 计数
+		if stmtCountSrc != nil {
+			stmtCountSrc.QueryRow(g.ID, "steam").Scan(&h.Steam)
+			stmtCountSrc.QueryRow(g.ID, "manual").Scan(&h.Manual)
+			stmtCountSrc.QueryRow(g.ID, "shodan").Scan(&h.Shodan)
+		}
+		h.Total = h.Steam + h.Manual + h.Shodan
+		// 聚合：评分 / 成功率 / 最近测试时间
+		var successCount, failCount float64
+		d.QueryRow(`
+			SELECT COALESCE(AVG(score),0), COALESCE(SUM(success_count),0),
+			       COALESCE(SUM(fail_count),0), COALESCE(MAX(last_test_at),0)
+			FROM reflectors WHERE game_pool = ?`, g.ID,
+		).Scan(&h.AvgScore, &successCount, &failCount, &h.LastTested)
+		if successCount+failCount > 0 {
+			h.SuccessRate = successCount / (successCount + failCount) * 100
+		}
+		// 国家分布 Top 10
+		rows, err := d.Query(`
+			SELECT country, COUNT(*) FROM reflectors
+			WHERE game_pool = ? AND country != '' AND country IS NOT NULL
+			GROUP BY country ORDER BY COUNT(*) DESC LIMIT 10`, g.ID)
+		if err == nil {
+			for rows.Next() {
+				var cc CountryCount
+				if rows.Scan(&cc.Country, &cc.Count) == nil {
+					h.Countries = append(h.Countries, cc)
+				}
+			}
+			rows.Close()
+		}
+		health = append(health, h)
+	}
+	return health
+}
+
 func AllTargets() []string {
 	return AllTargetsFiltered("ark", "csgo", "rust", "other")
 }

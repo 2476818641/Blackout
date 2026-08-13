@@ -264,6 +264,7 @@ func (c *Ctrl) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
 	c.mu.RUnlock()
 
 	log.Printf("[migrate] migration mode ON: %d online workers will switch to %s", workerCount, req.TargetGRPC)
+	c.auditAction(r, "migrate_start", req.TargetGRPC)
 	writeJSON(w, map[string]interface{}{
 		"ok":           true,
 		"migrating":    true,
@@ -285,6 +286,7 @@ func (c *Ctrl) handleMigrateStop(w http.ResponseWriter, r *http.Request) {
 	c.migrateToken = ""
 	c.migrateMu.Unlock()
 	log.Printf("[migrate] migration mode OFF")
+	c.auditAction(r, "migrate_stop", "")
 	writeJSON(w, map[string]interface{}{"ok": true})
 }
 

@@ -63,6 +63,19 @@
   .modal-overlay { position:fixed; top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1000; }
   .modal { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px; width:480px; max-width:92vw; max-height:80vh; display:flex; flex-direction:column; }
   .modal h3 { color:var(--cyan); }
+  /* 移动端兼容：窄屏单列布局 + 表格横向滚动 */
+  @media (max-width: 900px) {
+    .layout { grid-template-columns:1fr; padding:8px; }
+    .stats-grid { grid-template-columns:repeat(2,1fr); }
+    .form-row { flex-direction:column; }
+    .scan-row { flex-direction:column; align-items:stretch; }
+    .scan-row .btn { flex:1; }
+    .header { flex-wrap:wrap; gap:8px; }
+    .header h1 { font-size:14px; }
+    body { font-size:12px; }
+    table { display:block; overflow-x:auto; white-space:nowrap; }
+    .panel { padding:10px; }
+  }
 </style>
 </head>
 <body x-data="app()" x-init="init()">
@@ -252,6 +265,15 @@
         <input type="checkbox" x-model="form.fallback_to_udp" style="width:auto;margin:0;"> <span x-text="t('fallback_udp')"></span>
       </label>
     </div>
+    <!-- 重复攻击 + 优先级 -->
+    <div class="form-row" style="margin-bottom:6px;align-items:center">
+      <input x-model.number="form.repeat_count" type="number" :placeholder="t('repeat_count_ph')" value="1" min="1" max="1000" style="flex:1">
+      <input x-model.number="form.repeat_interval" type="number" :placeholder="t('repeat_interval_ph')" value="0" min="0" max="86400" style="flex:1">
+      <select x-model="form.priority" style="flex:0 0 90px;margin:0">
+        <option value="0" x-text="t('priority_normal')"></option>
+        <option value="1" x-text="t('priority_high')"></option>
+      </select>
+    </div>
     <div style="display:flex;gap:6px;margin-top:4px">
       <button class="btn" @click="startAttack()" :disabled="!form.target" style="flex:1" x-text="t('start_attack')"></button>
       <select x-model="selectedTemplate" @change="loadTemplate()" style="width:auto;flex:0;min-width:100px;margin:0">
@@ -264,6 +286,45 @@
       <button class="btn sm danger" @click="deleteTemplate()" style="flex:0" x-text="t('delete')"></button>
     </div>
     <div class="warning" x-show="nodes.length === 0" x-text="t('no_workers_warn')"></div>
+  </div>
+
+  <!-- Target Guard -->
+  <div class="panel">
+    <h2 x-text="t('guard') + (guard.enabled ? ' 🛡' : ' ⚠')"></h2>
+    <div style="display:flex;flex-direction:column;gap:6px;font-size:11px;margin-bottom:8px">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" x-model="guard.enabled" style="width:auto;margin:0"> <span x-text="t('guard_enabled')"></span>
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" x-model="guard.block_private" style="width:auto;margin:0"> <span x-text="t('guard_block_private')"></span>
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" x-model="guard.resolve_hosts" style="width:auto;margin:0"> <span x-text="t('guard_resolve_hosts')"></span>
+      </label>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div>
+        <div style="font-size:10px;opacity:0.7;margin-bottom:2px" x-text="t('guard_blocked_ips')"></div>
+        <textarea x-model="guardText.blocked_ips" rows="2" style="min-height:36px;font-size:10px"></textarea>
+        <div style="font-size:10px;opacity:0.7;margin:4px 0 2px" x-text="t('guard_blocked_cidr')"></div>
+        <textarea x-model="guardText.blocked_cidr" rows="2" style="min-height:36px;font-size:10px"></textarea>
+        <div style="font-size:10px;opacity:0.7;margin:4px 0 2px" x-text="t('guard_blocked_domains')"></div>
+        <textarea x-model="guardText.blocked_domains" rows="2" style="min-height:36px;font-size:10px"></textarea>
+      </div>
+      <div>
+        <div style="font-size:10px;opacity:0.7;margin-bottom:2px" x-text="t('guard_allowed_ips')"></div>
+        <textarea x-model="guardText.allowed_ips" rows="2" style="min-height:36px;font-size:10px"></textarea>
+        <div style="font-size:10px;opacity:0.7;margin:4px 0 2px" x-text="t('guard_allowed_cidr')"></div>
+        <textarea x-model="guardText.allowed_cidr" rows="2" style="min-height:36px;font-size:10px"></textarea>
+        <div style="font-size:10px;opacity:0.7;margin:4px 0 2px" x-text="t('guard_allowed_domains')"></div>
+        <textarea x-model="guardText.allowed_domains" rows="2" style="min-height:36px;font-size:10px"></textarea>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+      <button class="btn sm" @click="saveGuard()" x-text="t('guard_save')" style="flex:0;white-space:nowrap"></button>
+      <span x-show="guardMsg" style="font-size:10px;color:var(--cyan)" x-text="guardMsg"></span>
+    </div>
+    <div style="margin-top:6px;font-size:10px;opacity:0.6" x-text="t('guard_tip')"></div>
   </div>
 
   <!-- VSE Scanner -->
@@ -338,13 +399,24 @@
   <!-- Nodes -->
   <div class="panel">
     <h2 x-text="t('worker_nodes') + ' (' + nodes.length + ')'"></h2>
+    <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">
+      <span style="font-size:10px;opacity:0.7;white-space:nowrap" x-text="t('region_filter')"></span>
+      <select x-model="regionFilter" style="width:auto;margin:0;flex:0 0 130px">
+        <option value="" x-text="t('all_regions')"></option>
+        <template x-for="r in nodeRegions" :key="r">
+          <option :value="r" x-text="r"></option>
+        </template>
+      </select>
+      <span style="font-size:10px;opacity:0.6" x-text="regionFilter ? (regionFilteredNodes.length + '/' + nodes.length) : ''"></span>
+    </div>
     <table>
-      <thead><tr><th x-text="t('col_id')"></th><th x-text="t('col_ip')"></th><th x-text="t('col_os')"></th><th x-text="t('col_spoof')"></th><th x-text="t('col_cpu')"></th><th x-text="t('col_mem')"></th><th x-text="t('col_status')"></th><th></th></tr></thead>
+      <thead><tr><th x-text="t('col_id')"></th><th x-text="t('col_ip')"></th><th x-text="t('col_location')"></th><th x-text="t('col_os')"></th><th x-text="t('col_spoof')"></th><th x-text="t('col_cpu')"></th><th x-text="t('col_mem')"></th><th x-text="t('col_status')"></th><th></th></tr></thead>
       <tbody>
         <template x-for="n in pagedNodes" :key="n.worker_id">
           <tr>
             <td x-text="n.worker_id" style="color:var(--cyan);font-size:11px"></td>
             <td x-text="n.ip || '-'"></td>
+            <td><span style="color:var(--yellow);font-size:10px" x-text="n.location || '-'"></span></td>
             <td x-text="n.is_windows ? 'Windows' : 'Linux'"></td>
             <td>
               <span x-show="n.spoof_tested && n.can_spoof" style="color:var(--green);font-size:10px" x-text="t('spoof_yes')"></span>
@@ -387,7 +459,11 @@
               <span x-show="t.status=='running'" style="font-size:10px;opacity:0.6" x-text="taskTimeLeft(t)"></span>
             </td>
             <td>
-              <button x-show="t.status=='running'" class="btn danger sm" @click="stopTask(t.task_id)" x-text="t('stop')"></button>
+              <div style="display:flex;gap:4px">
+                <button x-show="t.status=='running'" class="btn danger sm" @click="stopTask(t.task_id)" x-text="t('stop')"></button>
+                <button x-show="t.status=='completed'||t.status=='failed'" class="btn sm" @click="rerunTask(t)" x-text="t('retry')" style="padding:3px 8px"></button>
+              </div>
+              <div x-show="(t.repeat_count||0)>1" style="font-size:9px;opacity:0.6;margin-top:2px" x-text="'↻ ' + (t.repeat_left||0) + '/' + (t.repeat_count-1) + ' left'"></div>
             </td>
           </tr>
         </template>
@@ -656,6 +732,45 @@
       </table>
     </div>
   </div>
+
+  <!-- Operation Audit Log -->
+  <div class="panel full">
+    <h2 x-text="t('audit_log')"></h2>
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+      <select x-model="auditAction" @change="fetchAudit()" style="width:auto;margin:0">
+        <option value="" x-text="t('all_methods')"></option>
+        <option value="task_create">task_create</option>
+        <option value="task_stop">task_stop</option>
+        <option value="node_kick">node_kick</option>
+        <option value="guard_update">guard_update</option>
+        <option value="proxy_update">proxy_update</option>
+        <option value="deploy_update_set">deploy_update_set</option>
+        <option value="update_controller">update_controller</option>
+        <option value="update_workers">update_workers</option>
+        <option value="update_all">update_all</option>
+        <option value="token_provision">token_provision</option>
+        <option value="token_revoke">token_revoke</option>
+      </select>
+      <button class="btn sm" @click="fetchAudit()" x-text="t('audit_refresh')" style="flex:0;white-space:nowrap"></button>
+    </div>
+    <div style="max-height:280px;overflow-y:auto">
+      <table>
+        <thead><tr><th x-text="t('col_time')"></th><th x-text="t('audit_role')"></th><th x-text="t('audit_token')"></th><th x-text="t('audit_action')"></th><th x-text="t('audit_detail')"></th></tr></thead>
+        <tbody>
+          <template x-for="a in auditLogs" :key="a.time + a.action + a.detail">
+            <tr>
+              <td style="font-size:10px" x-text="new Date(a.time*1000).toLocaleString().slice(0,16)"></td>
+              <td style="font-size:10px" x-text="a.role"></td>
+              <td style="font-size:10px;opacity:0.7" x-text="a.token_id"></td>
+              <td style="font-size:10px;color:var(--cyan)" x-text="a.action"></td>
+              <td style="font-size:10px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="a.detail"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+      <div x-show="!auditLogs.length" style="padding:12px;text-align:center;opacity:0.5;font-size:11px">—</div>
+    </div>
+  </div>
 </div>
 </template>
 
@@ -679,6 +794,14 @@ function app() {
       pps_limit:'PPS Limit (0=off)', bps_limit:'BPS Limit (0=off)',
       burst:'Burst', mix_queries:'Mix Queries', jitter_ms:'Jitter ms',
       start_attack:'Start Attack', attack_failed:'Attack failed:', templates:'Templates', save:'Save', delete:'Del',
+      repeat_count_ph:'Repeat (1=once)', repeat_interval_ph:'Interval (s)', priority_normal:'Normal', priority_high:'High',
+      attack_confirm:'Start attack?\n{0} → {1}\nduration {2}s | threads {3} | repeat {4}',
+      guard:'Target Guard', guard_enabled:'Enabled', guard_block_private:'Block private/reserved ranges', guard_resolve_hosts:'Resolve hosts & check IPs',
+      guard_blocked_ips:'Blocked IPs', guard_blocked_cidr:'Blocked CIDRs', guard_blocked_domains:'Blocked domains (substring)',
+      guard_allowed_ips:'Allowed IPs', guard_allowed_cidr:'Allowed CIDRs', guard_allowed_domains:'Allowed domains (suffix, empty=any)',
+      guard_save:'Save Rules', guard_tip:'Server-side enforced before every task. Whitelist overrides blacklist; private ranges blocked unless whitelisted. Domain targets are resolved and checked (anti DNS-rebinding).', guard_saved:'Guard rules saved.',
+      audit_log:'Audit Log', audit_role:'Role', audit_token:'Token', audit_action:'Action', audit_detail:'Detail', audit_refresh:'Refresh',
+      region_filter:'Region:', all_regions:'All', retry:'Rerun',
       no_workers_warn:'No worker nodes connected. Attacks will stay pending until a worker joins.',
       sub_attacks:'Sub Attacks', add:'Add', no_sub_attacks:'No sub-attacks. Click + Add to configure.',
       vse_scanner:'VSE Reflector Scanner', dns_scanner:'DNS Resolver Scanner', cldap_scanner:'CLDAP Reflector Scanner',
@@ -738,6 +861,14 @@ function app() {
       pps_limit:'PPS限制 (0=关闭)', bps_limit:'BPS限制 (0=关闭)',
       burst:'爆发', mix_queries:'混合查询', jitter_ms:'抖动(ms)',
       start_attack:'开始攻击', attack_failed:'攻击启动失败:', templates:'模板', save:'保存', delete:'删除',
+      repeat_count_ph:'重复次数 (1=单次)', repeat_interval_ph:'间隔(秒)', priority_normal:'普通', priority_high:'高优先级',
+      attack_confirm:'发起攻击？\n{0} → {1}\n时长 {2}s | 线程 {3} | 重复 {4}',
+      guard:'目标保护', guard_enabled:'启用', guard_block_private:'禁止内网/保留段', guard_resolve_hosts:'域名解析后校验 IP',
+      guard_blocked_ips:'IP 黑名单', guard_blocked_cidr:'CIDR 黑名单', guard_blocked_domains:'域名黑名单（子串）',
+      guard_allowed_ips:'IP 白名单', guard_allowed_cidr:'CIDR 白名单', guard_allowed_domains:'域名白名单（后缀，空=不限）',
+      guard_save:'保存规则', guard_tip:'服务端在每次任务创建前强制校验。白名单优先于黑名单；未白名单的内网/保留段一律拦截。域名目标会解析后检查 IP（防 DNS 重绑定）。', guard_saved:'规则已保存。',
+      audit_log:'操作审计', audit_role:'角色', audit_token:'令牌', audit_action:'操作', audit_detail:'详情', audit_refresh:'刷新',
+      region_filter:'地区:', all_regions:'全部', retry:'重发',
       no_workers_warn:'没有工作节点连接。攻击将保持等待直到有节点加入。',
       sub_attacks:'子攻击', add:'添加', no_sub_attacks:'暂无子攻击，点击 +添加 配置。',
       vse_scanner:'VSE 反射器扫描', dns_scanner:'DNS 解析器扫描', cldap_scanner:'CLDAP 反射器扫描',
@@ -792,7 +923,10 @@ function app() {
     deployStorage:'', deployProxy:false, deployInstall:false, deployDaemon:false, deployCmd:'', deployGrpcPort:'9090', deployTool:'curl',
     updateVersion:'', updateURL:'', updateStatus:'', updateCheckResult:null, updateChecking:false, updateApplying:false,
     githubToken:'', updateVersionSel:'',
-    form:{ method:'vse', game:'', target:'', duration:60, threads:10, packet_size:1400, rate_limit_pps:0, rate_limit_bps:0, burst_mode:false, mix:false, jitter_ms:0, fallback_to_udp:true, sub_attacks:[] },
+    form:{ method:'vse', game:'', target:'', duration:60, threads:10, packet_size:1400, rate_limit_pps:0, rate_limit_bps:0, burst_mode:false, mix:false, jitter_ms:0, fallback_to_udp:true, sub_attacks:[], repeat_count:1, repeat_interval:0, priority:0 },
+    regionFilter:'',
+    guard:{ enabled:true, block_private:true, resolve_hosts:true }, guardText:{}, guardMsg:'',
+    auditLogs:[], auditAction:'',
     templates:[], selectedTemplate:'',
     logs:[], logTotal:0, logFilter:'', logStats:null,
     nodeGroups:{}, newGroupName:'',
@@ -846,6 +980,7 @@ function app() {
       this.connectWS();
       setInterval(() => { this.uptime++; this.fetchStats(); }, 1000);
       this.fetchNodes(); this.fetchTasks(); this.loadProxy(); this.loadDNSAmp(); this.loadReflectors(); this.fetchTemplates(); this.fetchLogs(); this.fetchLogStats(); this.fetchNodeGroups(); this.loadDeploy(); this.loadUpdate();
+      this.loadGuard(); this.fetchAudit();
       this.$watch('nodes.length', () => {
         // 节点增删时把页码钳制在有效范围，避免停在空白页
         if (this.nodePage > this.nodeTotalPages) this.nodePage = Math.max(1, this.nodeTotalPages);
@@ -895,10 +1030,21 @@ function app() {
     },
 
     async startAttack() {
+      // 红色确认弹窗：展示攻击参数摘要（与服务端目标保护配合的安全网）
+      const firstTarget = (this.form.target||'').split('\n')[0] || '';
+      if (!confirm(this.t('attack_confirm')
+        .replace('{0}', this.form.method)
+        .replace('{1}', firstTarget)
+        .replace('{2}', this.form.duration)
+        .replace('{3}', this.form.threads)
+        .replace('{4}', this.form.repeat_count||1))) return;
       const payload = {...this.form};
       const lines = (payload.target||'').split('\n').filter(l=>l.trim());
       if (lines.length>1) { payload.targets = lines.map(l=>l.trim()).filter(l=>l); delete payload.target; }
       if (payload.method==='combo') payload.sub_attacks = payload.sub_attacks||[];
+      payload.repeat_count = this.form.repeat_count || 1;
+      payload.repeat_interval = this.form.repeat_interval || 0;
+      payload.priority = this.form.priority || 0;
       // 节点选择：未全选时提交选中的节点；全选/空 = 全部在线节点
       if (this.selectedNodes && this.selectedNodes.length !== this.nodes.length) {
         payload.workers = this.selectedNodes;
@@ -912,10 +1058,86 @@ function app() {
       } catch(e) { alert(this.t('attack_failed')+' '+e.message); }
     },
 
+    // 重发：一键用历史任务的参数再打一次（单次，不延续重复序列）
+    async rerunTask(t) {
+      const firstTarget = (t.target||'').split('\n')[0] || '';
+      if (!confirm(this.t('attack_confirm')
+        .replace('{0}', t.method)
+        .replace('{1}', firstTarget)
+        .replace('{2}', t.duration)
+        .replace('{3}', t.threads)
+        .replace('{4}', 1))) return;
+      const payload = {
+        target: t.target, method: t.method, duration: t.duration, threads: t.threads,
+        packet_size: t.packet_size, mix: !!t.mix, game: t.game||'',
+        rate_limit_pps: t.rate_limit_pps||0, rate_limit_bps: t.rate_limit_bps||0,
+        burst_mode: !!t.burst_mode, jitter_ms: t.jitter_ms||0, spoof_ip: !!t.spoof_ip,
+        fallback_to_udp: t.fallback_to_udp!==false,
+        repeat_count: 1, repeat_interval: 0, priority: 0
+      };
+      if (t.sub_attacks && t.sub_attacks.length) payload.sub_attacks = t.sub_attacks;
+      if (t.selected_workers && t.selected_workers.length) payload.workers = t.selected_workers;
+      try {
+        const r = await fetch('/api/tasks',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify(payload)});
+        const d = await r.json();
+        if (!r.ok || d.error) { alert((d&&d.error) || ('HTTP '+r.status)); return; }
+        this.fetchTasks();
+      } catch(e) { alert(this.t('attack_failed')+' '+e.message); }
+    },
+
+    // 目标保护规则
+    async loadGuard() {
+      try {
+        const r = await fetch('/api/guard',{headers:this.getAuthHeaders()});
+        this.guard = await r.json();
+        this.syncGuardText();
+      } catch(e) {}
+    },
+    syncGuardText() {
+      const arr = (a) => (a||[]).join('\n');
+      this.guardText = {
+        blocked_ips: arr(this.guard.blocked_ips), blocked_cidr: arr(this.guard.blocked_cidr),
+        blocked_domains: arr(this.guard.blocked_domains),
+        allowed_ips: arr(this.guard.allowed_ips), allowed_cidr: arr(this.guard.allowed_cidr),
+        allowed_domains: arr(this.guard.allowed_domains),
+      };
+    },
+    async saveGuard() {
+      const split = (s) => (s||'').split('\n').map(x=>x.trim()).filter(Boolean);
+      const g = {
+        enabled: !!this.guard.enabled, block_private: !!this.guard.block_private,
+        resolve_hosts: !!this.guard.resolve_hosts,
+        blocked_ips: split(this.guardText.blocked_ips), blocked_cidr: split(this.guardText.blocked_cidr),
+        blocked_domains: split(this.guardText.blocked_domains),
+        allowed_ips: split(this.guardText.allowed_ips), allowed_cidr: split(this.guardText.allowed_cidr),
+        allowed_domains: split(this.guardText.allowed_domains),
+      };
+      try {
+        const r = await fetch('/api/guard',{method:'PUT',headers:this.getAuthHeaders(),body:JSON.stringify(g)});
+        const d = await r.json();
+        if (!r.ok || d.error) { alert((d&&d.error) || ('HTTP '+r.status)); return; }
+        this.guard = g; this.syncGuardText(); this.guardMsg = this.t('guard_saved');
+        setTimeout(()=>this.guardMsg='', 3000);
+      } catch(e) { alert(e.message); }
+    },
+
+    // 操作审计
+    async fetchAudit() {
+      try {
+        const qs = this.auditAction ? '?action='+encodeURIComponent(this.auditAction) : '';
+        const r = await fetch('/api/audit'+qs,{headers:this.getAuthHeaders()});
+        const d = await r.json();
+        this.auditLogs = d.logs||[];
+      } catch(e) {}
+    },
+
     selectAllNodes() { this.selectedNodes = this.nodes.map(n=>n.worker_id); },
     openNodePicker() { this.nodeSearch=''; this.nodePickerOpen=true; },
-    get nodeTotalPages() { return Math.max(1, Math.ceil(this.nodes.length / this.nodePageSize)); },
-    get pagedNodes() { return this.nodes.slice((this.nodePage-1)*this.nodePageSize, this.nodePage*this.nodePageSize); },
+    // 节点地区分类：去重地区列表 + 按地区筛选（筛选结果参与分页）
+    get nodeRegions() { return [...new Set(this.nodes.map(n=>n.location).filter(Boolean))].sort(); },
+    get regionFilteredNodes() { return this.regionFilter ? this.nodes.filter(n=>n.location===this.regionFilter) : this.nodes; },
+    get nodeTotalPages() { return Math.max(1, Math.ceil(this.regionFilteredNodes.length / this.nodePageSize)); },
+    get pagedNodes() { return this.regionFilteredNodes.slice((this.nodePage-1)*this.nodePageSize, this.nodePage*this.nodePageSize); },
     get filteredNodes() {
       const q = (this.nodeSearch||'').toLowerCase().trim();
       if (!q) return this.nodes;

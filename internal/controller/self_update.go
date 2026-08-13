@@ -275,6 +275,7 @@ func (c *Ctrl) handleUpdateToken(w http.ResponseWriter, r *http.Request) {
 		} else {
 			log.Printf("[update] GitHub token cleared (unauthenticated API)")
 		}
+		c.auditAction(r, "github_token_set", map[bool]string{true: "saved", false: "cleared"}[token != ""])
 		writeJSON(w, map[string]interface{}{"ok": true})
 	default:
 		http.Error(w, `{"error":"method not allowed"}`, 405)
@@ -319,6 +320,7 @@ func (c *Ctrl) handleUpdateController(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, map[string]interface{}{"ok": true, "version": rel.TagName, "url": dlURL})
 	log.Printf("[self-update] updating controller to %s from %s", rel.TagName, dlURL)
+	c.auditAction(r, "update_controller", rel.TagName)
 
 	go func() {
 		time.Sleep(1 * time.Second)
@@ -424,6 +426,7 @@ func (c *Ctrl) handleUpdateWorkers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[self-update] workers update target set to %s", rel.TagName)
+	c.auditAction(r, "update_workers", rel.TagName)
 	writeJSON(w, map[string]interface{}{"ok": true, "version": rel.TagName})
 }
 
@@ -495,6 +498,7 @@ func (c *Ctrl) handleUpdateAll(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, map[string]interface{}{"ok": true, "version": rel.TagName})
+	c.auditAction(r, "update_all", rel.TagName)
 }
 
 // applyControllerUpdate 下载新 Controller → 校验（魔数 + SHA-256）→ 替换 → 重启。

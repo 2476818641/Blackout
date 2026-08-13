@@ -90,6 +90,33 @@
 </div>
 
 <div class="container">
+  <!-- Pool Health Dashboard -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px;margin-bottom:16px">
+    <template x-for="h in poolHealth" :key="h.game">
+      <div class="panel" style="padding:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="color:var(--cyan);font-size:12px;font-weight:bold" x-text="h.game + ' (' + h.total + ')'"></span>
+          <span style="font-size:10px;opacity:0.7" x-text="'S:'+h.steam+' M:'+h.manual+' Sh:'+h.shodan"></span>
+        </div>
+        <div style="display:flex;gap:14px;font-size:11px;margin-bottom:6px">
+          <span><span style="opacity:0.6">Score</span> <span style="color:var(--accent)" x-text="h.avg_score.toFixed(1)"></span></span>
+          <span><span style="opacity:0.6">Success</span>
+            <span :style="'color:' + (h.success_rate >= 60 ? 'var(--green)' : (h.success_rate >= 30 ? 'var(--yellow)' : 'var(--red)'))" x-text="h.success_rate.toFixed(1) + '%'"></span>
+          </span>
+          <span><span style="opacity:0.6">Tested</span> <span x-text="h.last_tested ? new Date(h.last_tested*1000).toLocaleDateString() : '-'"></span></span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">
+          <template x-for="c in (h.countries||[]).slice(0,6)" :key="c.country">
+            <span style="font-size:10px;background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:1px 6px">
+              <span x-text="c.country"></span> <span style="opacity:0.6" x-text="c.count"></span>
+            </span>
+          </template>
+          <span x-show="!(h.countries||[]).length" style="font-size:10px;opacity:0.4" x-text="t('no_geo')"></span>
+        </div>
+      </div>
+    </template>
+  </div>
+
   <div class="tabs">
     <template x-for="p in pools" :key="p.game">
       <button class="tab" :class="{active:tab===p.game}" @click="tab=p.game; page[p.game]=1">
@@ -311,6 +338,7 @@ function poolApp() {
       steam_refresh:'Steam Refresh', test_clean:'Test & Clean', add_scan:'Add & Scan',
       refreshes:'Refreshing...', testing:'Testing...',
       steam_label:'Steam', manual_label:'Manual', shodan_label:'Shodan',
+      no_geo:'no geo data',
       add_placeholder:'Add IP:Port, one per line (auto-scanned on save)',
       showing:'Showing', of:'of', load_more:'Load 200 more',
       col_game:'Game', col_resp:'Resp', col_challenge:'Challenge', col_score:'Score', col_name:'Name', col_source:'Source',
@@ -327,6 +355,7 @@ function poolApp() {
       steam_refresh:'Steam刷新', test_clean:'测试清理', add_scan:'添加扫描',
       refreshes:'刷新中...', testing:'测试中...',
       steam_label:'Steam', manual_label:'手动', shodan_label:'Shodan',
+      no_geo:'无地区数据',
       add_placeholder:'添加 IP:Port，每行一个 (保存时自动扫描验证)',
       showing:'显示', of:'/共', load_more:'加载200条',
       col_game:'游戏', col_resp:'响应', col_challenge:'挑战', col_score:'评分', col_name:'名称', col_source:'来源',
@@ -343,6 +372,7 @@ function poolApp() {
   return {
     token:'', error:'', authed:false, lang:localStorage.getItem('lang')||'en',
     tab:'ark', pools:[], poolData:{}, manualTexts:{},
+    poolHealth:[],
     poolRefreshing:'', poolTesting:'', poolStatus:'', poolStatusErr:false,
     shodanRefreshing: false,
     shodanRefreshMode: 'all',
@@ -388,7 +418,15 @@ function poolApp() {
       } catch(e) {}
     },
 
-    startRefresh() { this.loadPools(); this.loadDomains(); this.loadShodanConfig(); this.loadShodanCountries(); setInterval(() => this.loadPools(), 15000); },
+    startRefresh() { this.loadPools(); this.loadPoolHealth(); this.loadDomains(); this.loadShodanConfig(); this.loadShodanCountries(); setInterval(() => { this.loadPools(); this.loadPoolHealth(); }, 15000); },
+
+    // 池健康仪表盘：成功率/评分/国家分布（来自 /api/pools/stats）
+    async loadPoolHealth() {
+      try {
+        const r = await fetch('/api/pools/stats',{headers:this.getAuthHeaders()});
+        this.poolHealth = await r.json();
+      } catch(e) {}
+    },
 
     async loadDomains() {
       try {
