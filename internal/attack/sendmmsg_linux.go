@@ -66,10 +66,10 @@ func sendmmsgBatch(conn *net.UDPConn, pkts [][]byte) (int, int, int, bool) {
 	err = raw.Write(func(fd uintptr) bool {
 		n, _, errno := unix.RawSyscall6(unix.SYS_SENDMMSG, fd,
 			uintptr(unsafe.Pointer(&msgs[0])), uintptr(len(msgs)), 0, 0, 0)
+		// 注意：errno != 0 时 n 可能仍 > 0（部分成功，如 EINTR 中断一批）。
+		// 此时必须保留 nSent——把 nSent 清零会让调用方整批回退重发，
+		// 已发送的包重复、统计失真。
 		nSent := int(n)
-		if errno != 0 {
-			nSent = 0
-		}
 		for i := 0; i < nSent; i++ {
 			sent++
 			totalBytes += int(msgs[i].Len)

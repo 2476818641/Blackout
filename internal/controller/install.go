@@ -61,9 +61,12 @@ WantedBy=multi-user.target
 
 	case "windows":
 		taskName := "NetToolController"
+		// schtasks 任务默认工作目录是 System32，而 Controller 的 data/ 是
+		// 相对路径（cwd）——不切目录会让 token/证书写到 System32 且重启后
+		// 找不到。用 cmd /c "cd /d <exe目录> && <exe> ..." 固定工作目录。
 		cmd := fmt.Sprintf(
-			`schtasks /create /tn "%s" /tr "\"%s\" -grpc %s -http %s" /sc onstart /ru SYSTEM /f`,
-			taskName, exe, grpcAddr, httpAddr,
+			`schtasks /create /tn "%s" /tr "cmd /c cd /d \"%s\" && \"%s\" -grpc %s -http %s" /sc onstart /ru SYSTEM /f`,
+			taskName, dir, exe, grpcAddr, httpAddr,
 		)
 		output, err := exec.Command("cmd", "/c", cmd).CombinedOutput()
 		if err != nil {

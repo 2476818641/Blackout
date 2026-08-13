@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -308,12 +310,19 @@ func (c *Ctrl) handleUpdateController(w http.ResponseWriter, r *http.Request) {
 		dlURL = strings.TrimSuffix(c.build.GhProxy, "/") + "/" + dlURL
 	}
 
+	// 供应链校验：先取官方 asset digest，取不到即拒绝更新（fail-closed）
+	selfSHA256 := c.fetchAssetSHA256(rel.TagName, binName)
+	if selfSHA256 == "" {
+		writeJSON(w, map[string]interface{}{"error": "failed to fetch release asset SHA-256; update rejected (supply-chain protection)"})
+		return
+	}
+
 	writeJSON(w, map[string]interface{}{"ok": true, "version": rel.TagName, "url": dlURL})
 	log.Printf("[self-update] updating controller to %s from %s", rel.TagName, dlURL)
 
 	go func() {
 		time.Sleep(1 * time.Second)
-		if err := c.applyControllerUpdate(dlURL); err != nil {
+		if err := c.applyControllerUpdate(dlURL, selfSHA256); err != nil {
 			log.Printf("[self-update] FAILED: %v", err)
 		}
 	}()
@@ -325,6 +334,60 @@ func (c *Ctrl) resolveRelease(r *http.Request) (*ReleaseInfo, error) {
 		return c.fetchReleaseByTag(v)
 	}
 	return c.fetchLatestRelease()
+}
+
+// fetchAssetSHA256 查询指定 tag 的 Release 中目标 asset 的 SHA-256
+// （GitHub API 的 digest 字段，形如 "sha256:<hex64>"）。
+// 供应链校验用：下载的二进制必须与官方发布产物 digest 一致。
+// 获取失败返回空串（调用方决定 fail-closed 或告警）。
+func (c *Ctrl) fetchAssetSHA256(tag, assetName string) string {
+	if c.build.GitRepo == "" || assetName == "" {
+		return ""
+	}
+	req, err := c.githubRequest("GET", "/repos/"+c.build.GitRepo+"/releases/tags/"+tag)
+	if err != nil {
+		return ""
+	}
+	resp, err := updateCheckClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return ""
+	}
+	var rel struct {
+		Assets []struct {
+			Name   string `json:"name"`
+			Digest string `json:"digest"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		return ""
+	}
+	for _, a := range rel.Assets {
+		if a.Name == assetName {
+			d := strings.TrimPrefix(a.Digest, "sha256:")
+			if len(d) == 64 {
+				return d
+			}
+		}
+	}
+	return ""
+}
+
+// sha256File 计算文件 SHA-256（hex）
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // handleUpdateWorkers POST /api/update/workers[?version=v1.0.5]
@@ -341,12 +404,21 @@ func (c *Ctrl) handleUpdateWorkers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 版本用指定 tag；URL 留空 = 各 Worker 按平台取默认 GitHub Release 地址
+	// 版本用指定 tag；URL 留空 = 各 Worker 按平台取默认 GitHub Release 地址。
+	// 同时拉取双平台 asset digest 供供应链校验（worker 下载后强制比对）。
+	sha256linux := c.fetchAssetSHA256(rel.TagName, "worker-linux-amd64")
+	sha256windows := c.fetchAssetSHA256(rel.TagName, "worker-windows-amd64.exe")
+	if sha256linux == "" && sha256windows == "" {
+		log.Printf("[update] WARNING: failed to fetch asset SHA-256 for %s — workers will REJECT the update (supply-chain protection)", rel.TagName)
+	}
+
 	c.updateMu.Lock()
 	c.updateVersion = rel.TagName
 	c.updateURL = ""
+	c.updateSHA256Linux = sha256linux
+	c.updateSHA256Windows = sha256windows
 	c.updateMu.Unlock()
-	payload, _ := json.Marshal(map[string]string{"version": rel.TagName, "url": ""})
+	payload, _ := json.Marshal(map[string]string{"version": rel.TagName, "url": "", "sha256_linux": sha256linux, "sha256_windows": sha256windows})
 	if err := os.WriteFile(c.updateFile, payload, 0644); err != nil {
 		writeJSON(w, map[string]interface{}{"error": err.Error()})
 		return
@@ -376,12 +448,20 @@ func (c *Ctrl) handleUpdateAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. 设置 Workers 更新目标
+	// 1. 设置 Workers 更新目标（含双平台 digest 供应链校验）
+	sha256linux := c.fetchAssetSHA256(rel.TagName, "worker-linux-amd64")
+	sha256windows := c.fetchAssetSHA256(rel.TagName, "worker-windows-amd64.exe")
+	if sha256linux == "" && sha256windows == "" {
+		log.Printf("[update] WARNING: failed to fetch asset SHA-256 for %s — workers will REJECT the update (supply-chain protection)", rel.TagName)
+	}
+
 	c.updateMu.Lock()
 	c.updateVersion = rel.TagName
 	c.updateURL = ""
+	c.updateSHA256Linux = sha256linux
+	c.updateSHA256Windows = sha256windows
 	c.updateMu.Unlock()
-	payload, _ := json.Marshal(map[string]string{"version": rel.TagName, "url": ""})
+	payload, _ := json.Marshal(map[string]string{"version": rel.TagName, "url": "", "sha256_linux": sha256linux, "sha256_windows": sha256windows})
 	if err := os.WriteFile(c.updateFile, payload, 0644); err != nil {
 		writeJSON(w, map[string]interface{}{"error": err.Error()})
 		return
@@ -397,12 +477,19 @@ func (c *Ctrl) handleUpdateAll(w http.ResponseWriter, r *http.Request) {
 	if c.build.GhProxy != "" {
 		dlURL = strings.TrimSuffix(c.build.GhProxy, "/") + "/" + dlURL
 	}
+	// Controller 自身二进制的 digest（下载后强制比对）
+	selfSHA256 := c.fetchAssetSHA256(rel.TagName, binName)
+	if selfSHA256 == "" {
+		log.Printf("[self-update] WARNING: failed to fetch controller asset SHA-256 for %s — controller self-update ABORTED (supply-chain protection)", rel.TagName)
+		writeJSON(w, map[string]interface{}{"error": "failed to fetch controller asset SHA-256; update rejected (supply-chain protection)"})
+		return
+	}
 
 	// 3. 延迟 3s 后升级 Controller（让响应先发出，Worker 先收到目标）
 	go func() {
 		time.Sleep(3 * time.Second)
 		log.Printf("[self-update] ALL upgrade: updating controller to %s", rel.TagName)
-		if err := c.applyControllerUpdate(dlURL); err != nil {
+		if err := c.applyControllerUpdate(dlURL, selfSHA256); err != nil {
 			log.Printf("[self-update] controller update FAILED: %v", err)
 		}
 	}()
@@ -410,8 +497,19 @@ func (c *Ctrl) handleUpdateAll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"ok": true, "version": rel.TagName})
 }
 
-// applyControllerUpdate 下载新 Controller → 校验 → 替换 → 重启
-func (c *Ctrl) applyControllerUpdate(dlURL string) error {
+// applyControllerUpdate 下载新 Controller → 校验（魔数 + SHA-256）→ 替换 → 重启。
+// updateApplyMu 串行化整个流程：并发更新写同一临时文件会撕裂二进制、
+// 破坏备份恢复（可能导致 Controller 起不来）。
+func (c *Ctrl) applyControllerUpdate(dlURL, expectedSHA256 string) error {
+	c.updateApplyMu.Lock()
+	defer c.updateApplyMu.Unlock()
+
+	// Windows 上运行中的 exe 被 OS 独占锁定，rename 必然失败：
+	// 直接明确报错，避免产生 .update 残留与必败重试
+	if runtime.GOOS == "windows" {
+		return fmt.Errorf("controller self-update on Windows is not supported (running exe is locked); replace the binary manually")
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("get executable: %w", err)
@@ -421,25 +519,36 @@ func (c *Ctrl) applyControllerUpdate(dlURL string) error {
 		exeAbs = exe
 	}
 
-	tmp := exeAbs + ".update"
-	os.Remove(tmp)
+	// 唯一临时文件名：并发/重复更新互不干扰
+	tmp := fmt.Sprintf("%s.update.%d", exeAbs, time.Now().UnixNano())
+	defer os.Remove(tmp)
 	if err := downloadUpdateBinary(dlURL, tmp); err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
 	if err := verifyUpdateBinary(tmp); err != nil {
-		os.Remove(tmp)
 		return fmt.Errorf("verify: %w", err)
+	}
+	// 供应链校验：下载产物必须与官方 Release digest 一致
+	if expectedSHA256 != "" {
+		got, err := sha256File(tmp)
+		if err != nil {
+			return fmt.Errorf("hash: %w", err)
+		}
+		if !strings.EqualFold(got, expectedSHA256) {
+			return fmt.Errorf("SHA-256 mismatch (expected %s, got %s) — update rejected (supply-chain protection)", expectedSHA256, got)
+		}
+		log.Printf("[self-update] SHA-256 verified: %s", got)
+	} else {
+		return fmt.Errorf("no SHA-256 configured for target binary — update rejected (supply-chain protection)")
 	}
 
 	backup := exeAbs + ".bak"
 	os.Remove(backup)
 	if err := os.Rename(exeAbs, backup); err != nil {
-		os.Remove(tmp)
 		return fmt.Errorf("backup: %w", err)
 	}
 	if err := os.Rename(tmp, exeAbs); err != nil {
 		os.Rename(backup, exeAbs)
-		os.Remove(tmp)
 		return fmt.Errorf("replace: %w", err)
 	}
 

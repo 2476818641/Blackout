@@ -46,6 +46,10 @@ type Worker struct {
 	controller       string
 	httpPort         string
 	authToken        string
+	// configMu 保护 assignedID/controller/authToken 的跨 goroutine 访问：
+	// 主循环写（register/handleReconfigure），stats 流/更新 goroutine 读。
+	// 避免 Go race detector 报数据竞争（撕裂读/陈旧值）。
+	configMu         sync.RWMutex
 	conn             *grpc.ClientConn
 	client           pb.NodeServiceClient
 	tasksMu          sync.Mutex
@@ -164,12 +168,35 @@ func (w *Worker) EnableLocalPool(location string) error {
 	return nil
 }
 
+// getConfig 原子读取 controller/authToken/assignedID（跨 goroutine 安全）
+func (w *Worker) getConfig() (controller, authToken, assignedID string) {
+	w.configMu.RLock()
+	defer w.configMu.RUnlock()
+	return w.controller, w.authToken, w.assignedID
+}
+
+// setAssignedID 主循环写 assignedID（注册/重注册后）
+func (w *Worker) setAssignedID(id string) {
+	w.configMu.Lock()
+	w.assignedID = id
+	w.configMu.Unlock()
+}
+
+// setReconfigure 主循环写 controller/authToken（环境迁移）
+func (w *Worker) setReconfigure(controller, token string) {
+	w.configMu.Lock()
+	w.controller = controller
+	w.authToken = token
+	w.configMu.Unlock()
+}
+
 // controllerHost 提取 Controller 主机名（支持 [IPv6]:port 形式）
 func (w *Worker) controllerHost() string {
-	if host, _, err := net.SplitHostPort(w.controller); err == nil {
+	controller, _, _ := w.getConfig()
+	if host, _, err := net.SplitHostPort(controller); err == nil {
 		return host
 	}
-	return w.controller
+	return controller
 }
 
 // ctrlBaseURL 返回 Controller 的 HTTP 基础 URL，自动选择 http/https
@@ -619,20 +646,13 @@ func (w *Worker) Run(ctx context.Context) error {
 				fails := atomic.AddInt32(&w.heartbeatFailStreak, 1)
 				log.Printf("[worker] heartbeat error (streak=%d): %v", fails, err)
 
-				// 连续失败说明当前连接可能已坏死：gRPC 内部退避重连太慢
-				// （最长可退避到 2 分钟），主动重置退避+立即重连，
-				// 否则 15s 级别的 Controller 离线判定早就触发。
-				if fails >= 2 && w.conn != nil {
-					w.conn.ResetConnectBackoff()
-					w.conn.Connect()
-				}
-
 				// 渐进恢复被打断：清零当前档的确认计数
 				w.recoveryOkCount = 0
 
 				// 攻击中：带宽被攻击流量打满是正常现象，心跳失败不代表
-				// Controller 失联。此时绝不降带宽/停攻击——否则攻击刚开打
-				// 就被熔断限到 0.1Mbps，看起来像"摸鱼"。
+				// Controller 失联。此时绝不降带宽/停攻击，也不强制重连
+				// （重连会拆掉同连接上的 stats 流，导致全程无统计）——
+				// 否则攻击刚开打就被熔断限到 0.1Mbps，看起来像"摸鱼"。
 				if w.hasActiveTask() {
 					if w.disconnectStart.IsZero() {
 						w.disconnectStart = time.Now()
@@ -645,6 +665,15 @@ func (w *Worker) Run(ctx context.Context) error {
 						log.Printf("[worker] controller unreachable > 60s during attack — lifting bandwidth limit (local pool attacks at full speed)")
 					}
 					continue // 攻击中不做熔断降级、不进入恢复流程
+				}
+
+				// 连续失败说明当前连接可能已坏死：gRPC 内部退避重连太慢
+				// （最长可退避到 2 分钟），主动重置退避+立即重连，
+				// 否则 15s 级别的 Controller 离线判定早就触发。
+				// （仅非攻击态执行：攻击中强制重连会拆掉 stats 流）
+				if fails >= 2 && w.conn != nil {
+					w.conn.ResetConnectBackoff()
+					w.conn.Connect()
 				}
 
 				// 长断连检测：controller 失联超过 60s 后，保护控制通道的
@@ -682,9 +711,11 @@ func (w *Worker) Run(ctx context.Context) error {
 				}
 				atomic.StoreInt32(&w.heartbeatFailStreak, 0)
 
-				if inRecovery {
+				if inRecovery && atomic.LoadInt32(&w.degraded) == 1 {
 					// 渐进恢复：每档连续 2 次成功心跳后升一档（50% → 75% → 100%），
-					// 避免恢复瞬间流量突变
+					// 避免恢复瞬间流量突变。degraded==1 门控：仅当确实发生过
+					// 降级（fails>=2）才进入恢复阶梯——单次瞬时抖动（fails==1
+					// 仅监控）不得触发任何降速/升档。
 					w.recoveryOkCount++
 					if w.recoveryOkCount >= 2 {
 						w.recoveryOkCount = 0
@@ -697,6 +728,10 @@ func (w *Worker) Run(ctx context.Context) error {
 							log.Printf("[worker] connection fully restored, bandwidth at %d Mbps", w.maxBWMbps)
 						}
 					}
+				} else if inRecovery && atomic.LoadInt32(&w.degraded) == 0 {
+					// 未发生过降级（单次失败即恢复）：直接复位，不进入恢复阶梯
+					inRecovery = false
+					recoveryTicker.Stop()
 				}
 			}
 		case <-recoveryTicker.C:
@@ -730,6 +765,10 @@ func (w *Worker) applyRecoveryBandwidth() {
 		log.Printf("[worker] recovery step 2/3: bandwidth at 75%% (%d Mbps)", w.maxBWMbps*3/4)
 	case 3:
 		attack.SetGlobalRateLimiter(0, int64(w.maxBWMbps)*125000)
+	default:
+		// 兜底：任何未预期的档位一律恢复到满速，防止带宽永久卡在降级档
+		attack.SetGlobalRateLimiter(0, int64(w.maxBWMbps)*125000)
+		log.Printf("[worker] recovery: unexpected step %d, bandwidth restored to %d Mbps", w.recoveryStep, w.maxBWMbps)
 	}
 }
 
@@ -749,17 +788,22 @@ func (w *Worker) handleHeartbeatFailure(fails int) {
 	case 2:
 		log.Printf("[worker] heartbeat failure x2 — halving bandwidth limit")
 		atomic.StoreInt32(&w.degraded, 1)
+		// 新降级轮次：复位恢复档位，避免上一轮遗留的 recoveryStep 导致
+		// 本轮升档空操作（switch 无对应 case）后误判恢复完成、带宽永久卡死
+		w.recoveryStep = 0
 		// 单位 bytes/s：maxBWMbps Mbps = maxBWMbps*125000 B/s，减半后至少保底 1 Mbps
 		halfBps := max(int64(w.maxBWMbps)*62500, 125000)
 		attack.SetGlobalRateLimiter(0, halfBps)
 		log.Printf("[worker] bandwidth limit reduced to ~%d Mbps", halfBps/125000)
 	case 3:
 		atomic.StoreInt32(&w.degraded, 1)
+		w.recoveryStep = 0
 		// 1 Mbps survival mode（125000 B/s）
 		attack.SetGlobalRateLimiter(0, 125000)
 		log.Printf("[worker] bandwidth limit reduced to 1 Mbps — survival mode")
 	default:
 		atomic.StoreInt32(&w.degraded, 1)
+		w.recoveryStep = 0
 		// 0.1 Mbps（12500 B/s）
 		attack.SetGlobalRateLimiter(0, 12500)
 		log.Printf("[worker] TX nearly paused (0.1 Mbps)")
@@ -879,8 +923,15 @@ func (w *Worker) register() error {
 	// 补传系统信息：CPU 核数/内存/带宽/地理位置，让 Controller 在注册时
 	// 就能完整展示节点，无需等首个心跳（之前这些字段全为空）
 	stats := collectSystemStats()
+	// 重注册（unknown node 自愈）必须用分配后的 ID：
+	// Controller 的 kicked 表按分配后 ID 登记，用原始 ID 重注册
+	// 会让被踢节点借 ID 冲突重分配"复活"
+	regID := w.id
+	if w.assignedID != "" {
+		regID = w.assignedID
+	}
 	resp, err := w.client.Register(ctx, &pb.RegisterRequest{
-		WorkerId:      w.id,
+		WorkerId:      regID,
 		AuthToken:     w.authToken,
 		IsWindows:     w.isWindows,
 		Tags:          []string{"vse", "l4", "l7"},
@@ -896,14 +947,14 @@ func (w *Worker) register() error {
 		return fmt.Errorf("registration rejected: %s", resp.Message)
 	}
 
-	if resp.AssignedId != "" && resp.AssignedId != w.id {
-		log.Printf("[worker] ID reassigned: %s -> %s", w.id, resp.AssignedId)
-		w.assignedID = resp.AssignedId
+	if resp.AssignedId != "" && resp.AssignedId != regID {
+		log.Printf("[worker] ID reassigned: %s -> %s", regID, resp.AssignedId)
+		w.setAssignedID(resp.AssignedId)
 	} else {
-		w.assignedID = w.id
+		w.setAssignedID(regID)
 	}
 
-	log.Printf("[worker] registered as %s", w.assignedID)
+	log.Printf("[worker] registered as %s", regID)
 	return nil
 }
 
@@ -940,6 +991,13 @@ func (w *Worker) heartbeat() error {
 		MemoryUsedMb: stats.MemoryMB,
 	})
 	if err != nil {
+		// 认证失败（token 被撤销/更换）：继续心跳只会无限失败并触发
+		// 熔断钳制（stopAllAttacks 的 0.1Mbps），节点变成"活着但瘫痪"
+		// 的僵尸——直接退出，由部署流程重新下发凭据
+		if strings.Contains(err.Error(), "invalid token") {
+			log.Printf("[worker] authentication failed (token invalid or revoked), exiting")
+			os.Exit(1)
+		}
 		// Controller 重启后节点表清空，心跳会返回 unknown node：
 		// 自动重新注册自愈，否则 worker 会永久失联收不到新任务
 		if strings.Contains(err.Error(), "unknown node") {
@@ -986,25 +1044,27 @@ func (w *Worker) heartbeat() error {
 // handleReconfigure 环境迁移：切换到新 controller。
 // 幂等：目标地址与当前一致时忽略（重复心跳无害）。
 func (w *Worker) handleReconfigure(newController, newToken string) {
-	if newController == w.controller && (newToken == "" || newToken == w.authToken) {
+	curController, curToken, _ := w.getConfig()
+	if newController == curController && (newToken == "" || newToken == curToken) {
 		log.Printf("[migrate] already configured for %s, ignoring", newController)
 		return
 	}
-	log.Printf("[migrate] switching controller: %s -> %s", w.controller, newController)
+	log.Printf("[migrate] switching controller: %s -> %s", curController, newController)
 
 	// 1. 停止本地攻击（迁移场景旧任务作废，无需向旧 controller 上报完成）
 	w.stopAllAttacks()
 
 	// 2. 持久化连接配置：进程重启/系统重启后仍连新 controller
-	if newToken != "" && newToken != w.authToken {
-		w.authToken = newToken
+	effectiveToken := curToken
+	if newToken != "" && newToken != curToken {
+		effectiveToken = newToken
 	}
-	if err := saveWorkerConf(workerConf{Controller: newController, Token: w.authToken, HTTPPort: w.httpPort}); err != nil {
+	if err := saveWorkerConf(workerConf{Controller: newController, Token: effectiveToken, HTTPPort: w.httpPort}); err != nil {
 		log.Printf("[migrate] failed to save worker.conf: %v", err)
 	}
 
 	// 3. 更新开机自启参数（systemd unit / 计划任务），不重启服务避免双开
-	if err := writeAutoStartConfig(newController, w.authToken, w.httpPort); err != nil {
+	if err := writeAutoStartConfig(newController, effectiveToken, w.httpPort); err != nil {
 		log.Printf("[migrate] auto-start config update failed: %v", err)
 	}
 
@@ -1012,7 +1072,7 @@ func (w *Worker) handleReconfigure(newController, newToken string) {
 	if w.conn != nil {
 		w.conn.Close()
 	}
-	w.controller = newController
+	w.setReconfigure(newController, effectiveToken)
 	if err := w.Connect(); err != nil {
 		log.Printf("[migrate] connect to %s failed: %v (retrying next heartbeat)", newController, err)
 		return
@@ -1021,7 +1081,8 @@ func (w *Worker) handleReconfigure(newController, newToken string) {
 		log.Printf("[migrate] register at %s failed: %v", newController, err)
 		return
 	}
-	log.Printf("[migrate] re-registered at %s as %s", newController, w.assignedID)
+	_, _, newID := w.getConfig()
+	log.Printf("[migrate] re-registered at %s as %s", newController, newID)
 	// 迁移瞬间的失败不应触发熔断，重置计数
 	atomic.StoreInt32(&w.heartbeatFailStreak, 0)
 	// 长断连/恢复状态复位：新连接从满速开始
@@ -1248,10 +1309,14 @@ func (w *Worker) streamStats(taskID string, session *attack.AttackSession) {
 		w.tasksMu.Unlock()
 	}()
 
+	// 快照配置：assignedID/authToken 可能被主循环（重注册/迁移）改写，
+	// 此 goroutine 后续只使用本次快照，避免数据竞争
+	_, authToken, assignedID := w.getConfig()
+
 	// stats 流携带 worker token：Controller 端据此认证，
 	// 否则任何能连通 gRPC 端口的对端都能伪造统计
 	streamCtx := metadata.AppendToOutgoingContext(context.Background(),
-		"authorization", "Bearer "+w.authToken)
+		"authorization", "Bearer "+authToken)
 	stream, err := w.client.ReportStats(streamCtx)
 	if err != nil {
 		log.Printf("[worker] stats stream error (task %s continues without reporting): %v", taskID, err)
@@ -1284,7 +1349,7 @@ func (w *Worker) streamStats(taskID string, session *attack.AttackSession) {
 			// 因此失败时补 HTTP fallback
 			if err := stream.Send(&pb.WorkerStatsPush{
 				TaskId:         taskID,
-				WorkerId:       w.assignedID,
+				WorkerId:       assignedID,
 				PacketsSent:    snap.PacketsSent,
 				BytesSent:      snap.BytesSent,
 				Errors:         snap.Errors,
@@ -1309,7 +1374,7 @@ func (w *Worker) streamStats(taskID string, session *attack.AttackSession) {
 			snap := session.Snapshot()
 			if err := stream.Send(&pb.WorkerStatsPush{
 				TaskId:         taskID,
-				WorkerId:       w.assignedID,
+				WorkerId:       assignedID,
 				PacketsSent:    snap.PacketsSent,
 				BytesSent:      snap.BytesSent,
 				Errors:         snap.Errors,
@@ -1321,9 +1386,12 @@ func (w *Worker) streamStats(taskID string, session *attack.AttackSession) {
 				log.Printf("[worker] stats send failed for task %s, stopping reports: %v", taskID, err)
 				// 注意：流失败不能上报"完成"——攻击仍在进行，提前上报会让
 				// Controller 误判任务完成而不再跟踪。等攻击真正结束（done）
-				// 后再上报完成状态。
+				// 后补报完成状态（HTTP fallback），否则 Controller 只能超时
+				// 重试、整段重跑任务。
 				<-done
-				log.Printf("[worker] task %s completed (reporting had stopped)", taskID)
+				snap = session.Snapshot()
+				w.reportCompleteViaHTTP(taskID, snap)
+				log.Printf("[worker] task %s completed (reported via HTTP fallback after stream loss)", taskID)
 				return
 			}
 		}
@@ -1331,22 +1399,24 @@ func (w *Worker) streamStats(taskID string, session *attack.AttackSession) {
 }
 
 func (w *Worker) reportCompleteViaHTTP(taskID string, snap attack.AttackSnapshot) {
-	url := w.ctrlBaseURL() + "/api/tasks/complete"
+	// 快照配置：可能被 stats goroutine 与主循环（更新前上报）并发调用
+	_, authToken, assignedID := w.getConfig()
+	url := w.ctrlBaseURL()
 	body := fmt.Sprintf(
 		`{"task_id":"%s","worker_id":"%s","packets_sent":%d,"bytes_sent":%d,"errors":%d,"current_pps":%d,"current_bps":%d,"elapsed_seconds":%f}`,
-		taskID, w.assignedID, snap.PacketsSent, snap.BytesSent, snap.Errors, snap.PPS, snap.BPS, snap.Elapsed,
+		taskID, assignedID, snap.PacketsSent, snap.BytesSent, snap.Errors, snap.PPS, snap.BPS, snap.Elapsed,
 	)
 
 	// 完成上报失败会触发 Controller 超时重试、整段攻击重跑：
 	// 重试 3 次（间隔递增），最大程度保证 Controller 收到完成状态
 	for attempt := 1; attempt <= 3; attempt++ {
-		req, err := http.NewRequest("POST", url, strings.NewReader(body))
+		req, err := http.NewRequest("POST", url+"/api/tasks/complete", strings.NewReader(body))
 		if err != nil {
 			log.Printf("[worker] http fallback build request error: %v", err)
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+w.authToken)
+		req.Header.Set("Authorization", "Bearer "+authToken)
 		resp, err := ctrlHTTPClient.Do(req)
 		if err != nil {
 			log.Printf("[worker] http fallback complete error (attempt %d/3): %v", attempt, err)
@@ -1696,9 +1766,13 @@ func (w *Worker) streamComboStats(taskID string, session *attack.ComboSession) {
 		w.tasksMu.Unlock()
 	}()
 
+	// 快照配置：assignedID/authToken 可能被主循环（重注册/迁移）改写，
+	// 此 goroutine 后续只使用本次快照，避免数据竞争
+	_, authToken, assignedID := w.getConfig()
+
 	// stats 流携带 worker token：Controller 端据此认证
 	streamCtx := metadata.AppendToOutgoingContext(context.Background(),
-		"authorization", "Bearer "+w.authToken)
+		"authorization", "Bearer "+authToken)
 	stream, err := w.client.ReportStats(streamCtx)
 	if err != nil {
 		log.Printf("[worker] combo stats stream error: %v", err)
@@ -1730,7 +1804,7 @@ func (w *Worker) streamComboStats(taskID string, session *attack.ComboSession) {
 			// 防止流断开导致 Controller 超时重试整段重跑
 			if err := stream.Send(&pb.WorkerStatsPush{
 				TaskId:         taskID,
-				WorkerId:       w.assignedID,
+				WorkerId:       assignedID,
 				PacketsSent:    snap.PacketsSent,
 				BytesSent:      snap.BytesSent,
 				Errors:         snap.Errors,
@@ -1755,7 +1829,7 @@ func (w *Worker) streamComboStats(taskID string, session *attack.ComboSession) {
 			snap := session.Snapshot()
 			if err := stream.Send(&pb.WorkerStatsPush{
 				TaskId:         taskID,
-				WorkerId:       w.assignedID,
+				WorkerId:       assignedID,
 				PacketsSent:    snap.PacketsSent,
 				BytesSent:      snap.BytesSent,
 				Errors:         snap.Errors,
@@ -1766,9 +1840,11 @@ func (w *Worker) streamComboStats(taskID string, session *attack.ComboSession) {
 			}); err != nil {
 				log.Printf("[worker] combo stats send failed for task %s, stopping reports: %v", taskID, err)
 				// 注意：不能提前上报完成——攻击仍在进行。
-				// 等任务真正结束后（done）再上报完成状态。
+				// 等任务真正结束后（done）补报完成状态（HTTP fallback）。
 				<-done
-				log.Printf("[worker] combo task %s completed (reporting had stopped)", taskID)
+				snap = session.Snapshot()
+				w.reportCompleteViaHTTP(taskID, snap)
+				log.Printf("[worker] combo task %s completed (reported via HTTP fallback after stream loss)", taskID)
 				return
 			}
 		}

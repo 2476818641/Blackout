@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"log"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,6 +24,31 @@ var (
 	sharedHTTPClientMu sync.Once
 )
 
+// parseProxyLine 解析单行代理配置；非法行返回空串并告警。
+// 支持的格式：host:port、http://host:port、http(s)://user:pass@host:port、
+// socks5://user:pass@host:port。
+// 修复：非标准格式（如 ip:port:user:pass）此前会被静默当作直连/坏 host，
+// 代理轮换失效且无任何日志——现在加载时即告警并跳过。
+func parseProxyLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return ""
+	}
+	if !strings.Contains(line, "://") {
+		line = "http://" + line
+	}
+	u, err := url.Parse(line)
+	if err != nil || u.Host == "" {
+		log.Printf("[proxy] skipping invalid proxy line: %q", line)
+		return ""
+	}
+	if _, _, err := net.SplitHostPort(u.Host); err != nil {
+		log.Printf("[proxy] skipping invalid proxy host (missing port?): %q", line)
+		return ""
+	}
+	return line
+}
+
 func LoadProxies(filename string) int {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -32,14 +59,9 @@ func LoadProxies(filename string) int {
 	var loaded []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+		if line := parseProxyLine(scanner.Text()); line != "" {
+			loaded = append(loaded, line)
 		}
-		if !strings.Contains(line, "://") {
-			line = "http://" + line
-		}
-		loaded = append(loaded, line)
 	}
 
 	proxyLock.Lock()
@@ -55,14 +77,9 @@ func LoadProxiesFromData(data []byte) int {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	var loaded []string
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+		if line := parseProxyLine(scanner.Text()); line != "" {
+			loaded = append(loaded, line)
 		}
-		if !strings.Contains(line, "://") {
-			line = "http://" + line
-		}
-		loaded = append(loaded, line)
 	}
 	proxyLock.Lock()
 	if len(loaded) > 0 {

@@ -34,17 +34,17 @@ func jsonNewDecoder(r io.Reader, v interface{}) error {
 // 执行换身，自身立即退出。运行中的 exe 被独占锁定无法 rename，
 // 换身必须由新进程（临时路径）完成。
 func (w *Worker) applyUpdateWindows(exeAbs, tmp, targetVersion string) error {
-	// 记录版本（换身成功后运行的就是新二进制，版本标记一致）
-	if err := saveLocalVersion(targetVersion); err != nil {
-		log.Printf("[update] version file write failed (ignored): %v", err)
-	}
+	// 注意：版本文件不能在这里写——换身（复制到正式路径）可能失败，
+	// 提前记录版本会导致"版本已记录但旧二进制仍在跑"的永久跳过。
+	// 版本由 FinishWindowsUpdate 在复制成功后记录（经 NETTOOL_UPDATE_VERSION 传递）。
 
 	w.preUpdateShutdown()
 
 	cmd := exec.Command(tmp, os.Args[1:]...)
 	cmd.Env = append(os.Environ(),
 		"NETTOOL_UPDATE_PENDING=1",
-		"NETTOOL_UPDATE_TARGET="+exeAbs)
+		"NETTOOL_UPDATE_TARGET="+exeAbs,
+		"NETTOOL_UPDATE_VERSION="+targetVersion)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -92,6 +92,13 @@ func FinishWindowsUpdate() bool {
 	if copyErr != nil {
 		log.Printf("[update] swap FAILED after 60s: %v (continuing from temp path)", copyErr)
 		return true
+	}
+
+	// 换身成功后才记录版本：替换失败时版本文件保持旧值，下次轮询可重试
+	if ver := os.Getenv("NETTOOL_UPDATE_VERSION"); ver != "" {
+		if err := saveLocalVersion(ver); err != nil {
+			log.Printf("[update] version file write failed (ignored): %v", err)
+		}
 	}
 
 	// 拉起正式路径进程（清理更新标记，避免递归换身），自身退出

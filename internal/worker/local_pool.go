@@ -528,7 +528,11 @@ func (p *LocalReflectorPool) retestGame(game string) {
 // Cleanup 清理失效条目
 func (p *LocalReflectorPool) Cleanup() error {
 	// 连续 3 次失败 → 删除
-	result, _ := p.db.Exec("DELETE FROM local_reflectors WHERE fail_count >= 3 AND last_valid < last_tested")
+	result, err := p.db.Exec("DELETE FROM local_reflectors WHERE fail_count >= 3 AND last_valid < last_tested")
+	// Exec 失败时 Result 为 nil，直接调 RowsAffected 会空指针 panic
+	if err != nil || result == nil {
+		return err
+	}
 	n, _ := result.RowsAffected()
 	if n > 0 {
 		log.Printf("[local_pool] cleanup: removed %d failed entries", n)

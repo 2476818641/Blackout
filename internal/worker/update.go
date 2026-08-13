@@ -26,6 +26,20 @@ const (
 	updateMinSize     = 1 << 20 // 1MB：小于此视为下载失败
 )
 
+// computeFileHash 计算文件的完整 SHA-256（hex，64 字符）
+func computeFileHash(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // computeSelfVersion 返回当前运行二进制的版本标识（自身 SHA256 前 16 位）。
 // Controller 下发目标版本后，Worker 用此值判断是否需要更新。
 func computeSelfVersion() string {
@@ -69,37 +83,43 @@ var updateClient = &http.Client{
 
 // fetchTargetVersion 从 Controller 拉取目标版本与下载 URL。
 // 携带 worker_id：Controller 未配置自定义 URL 时，按 Worker 平台
-// （Linux/Windows）返回对应的 GitHub Release 二进制地址。
-func (w *Worker) fetchTargetVersion() (version, url string, err error) {
+// （Linux/Windows）返回对应的 GitHub Release 二进制地址，并附带该 asset
+// 的 SHA-256（require_sha256=true 时 Worker 必须校验，防止供应链注入）。
+func (w *Worker) fetchTargetVersion() (version, url, sha256 string, requireSHA256 bool, err error) {
+	// 快照配置：此函数在独立更新 goroutine 中运行，assignedID/authToken
+	// 可能被主循环（重注册/迁移）改写，先取快照避免数据竞争
+	_, authToken, assignedID := w.getConfig()
 	apiURL := w.ctrlBaseURL() + "/api/deploy/version"
-	if w.assignedID != "" {
-		apiURL += "?worker_id=" + w.assignedID
+	if assignedID != "" {
+		apiURL += "?worker_id=" + assignedID
 	}
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
-		return "", "", err
+		return "", "", "", false, err
 	}
-	req.Header.Set("Authorization", "Bearer "+w.authToken)
+	req.Header.Set("Authorization", "Bearer "+authToken)
 
 	resp, err := updateClient.Do(req)
 	if err != nil {
-		return "", "", err
+		return "", "", "", false, err
 	}
 	defer resp.Body.Close()
 
 	var v struct {
-		Version string `json:"version"`
-		URL     string `json:"url"`
+		Version       string `json:"version"`
+		URL           string `json:"url"`
+		SHA256        string `json:"sha256"`
+		RequireSHA256 bool   `json:"require_sha256"`
 	}
 	if err := jsonNewDecoder(resp.Body, &v); err != nil {
-		return "", "", err
+		return "", "", "", false, err
 	}
-	return v.Version, v.URL, nil
+	return v.Version, v.URL, v.SHA256, v.RequireSHA256, nil
 }
 
 // checkUpdate 轮询 Controller 检查是否需要更新，需要时执行更新。
 func (w *Worker) checkUpdate() {
-	targetVersion, url, err := w.fetchTargetVersion()
+	targetVersion, url, sha256, requireSHA256, err := w.fetchTargetVersion()
 	if err != nil {
 		log.Printf("[update] check failed: %v", err)
 		return
@@ -118,14 +138,14 @@ func (w *Worker) checkUpdate() {
 	}
 
 	log.Printf("[update] new version available: %s (local %s), downloading %s", targetVersion, w.selfVersion, url)
-	if err := w.applyUpdate(url, targetVersion); err != nil {
+	if err := w.applyUpdate(url, targetVersion, sha256, requireSHA256); err != nil {
 		log.Printf("[update] FAILED: %v (will retry next check)", err)
 	}
 }
 
-// applyUpdate 下载新二进制 → 校验 → 替换 → 记录版本 → 重启。
+// applyUpdate 下载新二进制 → 校验（魔数 + SHA-256）→ 替换 → 记录版本 → 重启。
 // 所有步骤失败均不修改当前文件，保证可回滚。
-func (w *Worker) applyUpdate(url, targetVersion string) error {
+func (w *Worker) applyUpdate(url, targetVersion, sha256 string, requireSHA256 bool) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("get executable: %w", err)
@@ -142,10 +162,41 @@ func (w *Worker) applyUpdate(url, targetVersion string) error {
 		return fmt.Errorf("download: %w", err)
 	}
 
-	// 2. 校验
+	// 2. 校验：魔数 + 大小
 	if err := verifyBinary(tmp); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("verify: %w", err)
+	}
+
+	// 3. 供应链校验：下载产物 hash 必须与 Controller 下发的期望值一致。
+	// require_sha256=true 且期望值为空 = Controller 未能获取官方 digest，
+	// 拒绝更新（fail-closed），防止 ghproxy/中间人注入任意可执行文件。
+	fileHash, err := computeFileHash(tmp)
+	if err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("hash: %w", err)
+	}
+	if requireSHA256 {
+		if sha256 == "" {
+			os.Remove(tmp)
+			return fmt.Errorf("no SHA-256 configured by controller — update rejected (supply-chain protection)")
+		}
+		if !strings.EqualFold(fileHash, sha256) {
+			os.Remove(tmp)
+			return fmt.Errorf("SHA-256 mismatch (expected %s, got %s) — update rejected (supply-chain protection)", sha256, fileHash)
+		}
+		log.Printf("[update] SHA-256 verified: %s", fileHash)
+	}
+
+	// 4. 与运行中二进制完全相同（部署的产物已是最新 tag）：只记录版本，
+	// 不替换不重启——避免新节点上线 10s 后无故重启一次
+	if len(fileHash) >= 16 && fileHash[:16] == w.selfVersion {
+		if err := saveLocalVersion(targetVersion); err != nil {
+			log.Printf("[update] version file write failed (ignored): %v", err)
+		}
+		log.Printf("[update] binary identical to running version, marked %s (no restart)", targetVersion)
+		os.Remove(tmp)
+		return nil
 	}
 
 	// Windows 分支：运行中的 exe 被系统独占锁定，rename/覆盖必然失败
@@ -157,7 +208,7 @@ func (w *Worker) applyUpdate(url, targetVersion string) error {
 		return w.applyUpdateWindows(exeAbs, tmp, targetVersion)
 	}
 
-	// 3. 原子替换：备份旧文件 → 新文件 rename 到位
+	// 5. 原子替换：备份旧文件 → 新文件 rename 到位
 	backup := exeAbs + ".bak"
 	os.Remove(backup)
 	if err := os.Rename(exeAbs, backup); err != nil {
@@ -171,12 +222,14 @@ func (w *Worker) applyUpdate(url, targetVersion string) error {
 		return fmt.Errorf("replace: %w", err)
 	}
 
-	// 4. 记录版本（替换成功后写，重启后不再重复更新）
+	// 6. 记录版本（替换成功后写，重启后不再重复更新）。
+	// 必须在替换成功之后：先写版本文件会让"替换失败但版本已记录"的
+	// 场景永久跳过更新——运行旧二进制且无任何告警。
 	if err := saveLocalVersion(targetVersion); err != nil {
 		log.Printf("[update] version file write failed (ignored): %v", err)
 	}
 
-	// 5. 重启前上报进行中任务的完成状态 + 注销旧节点条目：
+	// 7. 重启前上报进行中任务的完成状态 + 注销旧节点条目：
 	// 注销旧条目是为了防止 Controller 节点表里旧 ID（如 xxx-node1）仍在线
 	// （Linux exec 保持 PID 或 Windows spawn 时旧进程尚未退出），新进程注册
 	// 时被分配 node2/node3，出现"更新后两个节点"的僵尸条目。
@@ -188,7 +241,9 @@ func (w *Worker) applyUpdate(url, targetVersion string) error {
 	w.preUpdateShutdown()
 
 	log.Printf("[update] binary replaced, restarting...")
-	w.restartSelf(exeAbs)
+	if err := w.restartSelf(exeAbs); err != nil {
+		return fmt.Errorf("restart: %w", err)
+	}
 	return nil
 }
 
@@ -265,7 +320,9 @@ func verifyBinary(path string) error {
 // restartSelf 重启自身进程：
 // Linux 用 syscall.Exec 直接替换镜像（保持 PID，systemd/daemon 场景最干净）；
 // Windows 无法 exec，启动新进程后退出当前进程。
-func (w *Worker) restartSelf(exe string) {
+// exec 与 spawn 均失败时返回错误（调用方保留 .bak 供人工恢复，且不写版本文件，
+// 下次轮询可重试——避免"版本已记录但旧二进制仍在跑"的永久跳过）。
+func (w *Worker) restartSelf(exe string) error {
 	args := os.Args[1:]
 	env := os.Environ()
 
@@ -273,7 +330,7 @@ func (w *Worker) restartSelf(exe string) {
 		if err := execSyscallExec(exe, args, env); err != nil {
 			log.Printf("[update] exec failed, falling back to spawn: %v", err)
 		} else {
-			return
+			return nil
 		}
 	}
 
@@ -283,9 +340,9 @@ func (w *Worker) restartSelf(exe string) {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	if err := cmd.Start(); err != nil {
-		log.Printf("[update] spawn failed: %v", err)
-		return
+		return fmt.Errorf("spawn failed: %w", err)
 	}
 	log.Printf("[update] new process started (pid=%d), exiting", cmd.Process.Pid)
 	os.Exit(0)
+	return nil
 }

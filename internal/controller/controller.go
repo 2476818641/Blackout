@@ -160,7 +160,15 @@ type Ctrl struct {
 	updateFile    string
 	updateVersion string
 	updateURL     string
-	updateMu      sync.RWMutex
+	// updateSHA256Linux/updateSHA256Windows：对应平台二进制的 SHA-256
+	// （从 GitHub Release API 的 asset digest 获取并缓存）。Worker 下载后
+	// 强制比对，防止供应链注入/下载损坏。空值 = 未配置（Worker 将拒绝更新）。
+	updateSHA256Linux   string
+	updateSHA256Windows string
+	updateMu            sync.RWMutex
+	// updateApplyMu 串行化 Controller 自更新流程：并发更新写同一临时文件
+	// 会撕裂二进制、破坏备份恢复
+	updateApplyMu sync.Mutex
 	// GitHub Token（可选）：认证后 API 速率限制 5000/小时（未认证仅 60/小时），
 	// 并支持查询版本列表选择任意版本。持久化在 data/github_token.txt。
 	githubTokenFile string
@@ -270,15 +278,19 @@ func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 		}
 	}
 
-	// 云更新配置：data/deploy_update.json {"version":"...","url":"..."}
+	// 云更新配置：data/deploy_update.json {"version":"...","url":"...","sha256_linux":"...","sha256_windows":"..."}
 	updateVersion, updateURL := "", ""
+	updateSHA256Linux, updateSHA256Windows := "", ""
 	if updBytes, err := os.ReadFile("data/deploy_update.json"); err == nil {
 		var upd struct {
-			Version string `json:"version"`
-			URL     string `json:"url"`
+			Version         string `json:"version"`
+			URL             string `json:"url"`
+			SHA256Linux     string `json:"sha256_linux"`
+			SHA256Windows   string `json:"sha256_windows"`
 		}
 		if json.Unmarshal(updBytes, &upd) == nil {
 			updateVersion, updateURL = upd.Version, upd.URL
+			updateSHA256Linux, updateSHA256Windows = upd.SHA256Linux, upd.SHA256Windows
 			if updateVersion != "" && updateURL != "" {
 				log.Printf("[update] target version %s configured (url: %s)", updateVersion, updateURL)
 			}
@@ -349,6 +361,8 @@ func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 		updateFile:        "data/deploy_update.json",
 		updateVersion:     updateVersion,
 		updateURL:         updateURL,
+		updateSHA256Linux:   updateSHA256Linux,
+		updateSHA256Windows: updateSHA256Windows,
 		githubTokenFile:   "data/github_token.txt",
 		githubToken:       githubToken,
 		spoofCacheFile:    "data/spoof_cache.json",
@@ -459,10 +473,10 @@ func (c *Ctrl) Start() error {
 	mux.HandleFunc("/api/nodes/", c.authHTTP(c.handleKickNode))
 	mux.HandleFunc("/api/tasks", c.authHTTP(c.handleTasks))
 	mux.HandleFunc("/api/node-groups", c.authHTTP(c.handleNodeGroups))
-	mux.HandleFunc("/api/migrate/export", c.authHTTP(c.handleMigrateExport))
-	mux.HandleFunc("/api/migrate/import", c.authHTTP(c.handleMigrateImport))
-	mux.HandleFunc("/api/migrate/start", c.authHTTP(c.handleMigrateStart))
-	mux.HandleFunc("/api/migrate/stop", c.authHTTP(c.handleMigrateStop))
+	mux.HandleFunc("/api/migrate/export", c.authAdmin(c.handleMigrateExport))
+	mux.HandleFunc("/api/migrate/import", c.authAdmin(c.handleMigrateImport))
+	mux.HandleFunc("/api/migrate/start", c.authAdmin(c.handleMigrateStart))
+	mux.HandleFunc("/api/migrate/stop", c.authAdmin(c.handleMigrateStop))
 	mux.HandleFunc("/api/tasks/", c.authHTTP(c.handleTaskByID))
 	mux.HandleFunc("/api/scan", c.authHTTP(c.handleScan))
 	mux.HandleFunc("/api/stats", c.authHTTP(c.handleStats))
@@ -545,12 +559,22 @@ func corsMiddleware(next http.Handler) http.Handler {
 func (c *Ctrl) authHTTP(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if token != c.adminToken && token != c.workerToken {
+		// 接受 admin / 共享 worker / per-worker 三类凭据；高危管理端点
+		// 必须走 authAdmin（仅 admin），避免 worker 凭据越权。
+		if token != c.adminToken && token != c.workerToken && !c.workerTokenEnabled(token) {
 			http.Error(w, `{"error":"unauthorized"}`, 401)
 			return
 		}
 		next(w, r)
 	}
+}
+
+// workerTokenEnabled 检查 token 是否为已签发的 per-worker token 且未被撤销
+func (c *Ctrl) workerTokenEnabled(token string) bool {
+	c.workerTokensMu.RLock()
+	enabled, ok := c.workerTokens[token]
+	c.workerTokensMu.RUnlock()
+	return ok && enabled
 }
 
 // authAdmin 仅允许 adminToken 通过，用于 worker token 的签发/撤销等高权限操作
@@ -740,6 +764,18 @@ func (c *Ctrl) Deregister(ctx context.Context, req *pb.DeregisterRequest) (*pb.D
 		return &pb.DeregisterResponse{Ok: false}, fmt.Errorf("invalid token")
 	}
 	c.mu.Lock()
+	n, ok := c.nodes[req.WorkerId]
+	if !ok {
+		c.mu.Unlock()
+		return &pb.DeregisterResponse{Ok: false}, fmt.Errorf("unknown node")
+	}
+	// 身份绑定：仅允许对端 IP 与节点注册 IP 一致的注销请求，
+	// 防止共享 token 下任意 worker 注销他人节点。
+	if p, ok := peerFromContext(ctx); ok && n.IP != "" && p != n.IP {
+		c.mu.Unlock()
+		log.Printf("[node] deregister %s REJECTED (peer %s != node ip %s)", req.WorkerId, p, n.IP)
+		return &pb.DeregisterResponse{Ok: false}, fmt.Errorf("ip mismatch")
+	}
 	delete(c.nodes, req.WorkerId)
 	log.Printf("[node] %s deregistered", req.WorkerId)
 	c.mu.Unlock()
@@ -927,6 +963,12 @@ func (c *Ctrl) ReportStats(stream pb.NodeService_ReportStatsServer) error {
 	}
 
 	streamWorkerID := "" // 一条流只允许上报一个节点
+	// 流身份绑定：记录本流对端 IP，消息中的 WorkerId 必须与节点注册 IP 一致，
+	// 防止共享 token 下伪造其他节点的统计/完成状态
+	streamPeerIP := ""
+	if p, ok := peerFromContext(stream.Context()); ok {
+		streamPeerIP = p
+	}
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -948,10 +990,18 @@ func (c *Ctrl) ReportStats(stream pb.NodeService_ReportStatsServer) error {
 		c.mu.Lock()
 		// WorkerStatsPush 无 token 字段，但可校验上报者必须是已注册节点，
 		// 且任务必须真实分派给该节点，阻断未认证者伪造任意任务统计。
-		if node, nok := c.nodes[msg.WorkerId]; !nok {
+		node, nok := c.nodes[msg.WorkerId]
+		if !nok {
 			c.mu.Unlock()
 			continue
-		} else if node.Status == "OFFLINE" {
+		}
+		// 身份绑定：对端 IP 与节点注册 IP 不一致视为伪造（节点 IP 为空时
+		// 放行，兼容旧节点表）
+		if streamPeerIP != "" && node.IP != "" && node.IP != streamPeerIP {
+			c.mu.Unlock()
+			continue
+		}
+		if node.Status == "OFFLINE" {
 			node.LastHeartbeat = time.Now()
 			node.Status = "READY"
 		}
@@ -1274,11 +1324,10 @@ func (c *Ctrl) watchOfflineNodes() {
 // 调用方不得持有 c.mu（内部取 RLock 做快照，锁外执行磁盘 IO）。
 // 关键事件（注册/注销/踢出）后立即调用；心跳类状态变化由 30s 定时兜底。
 func (c *Ctrl) persistNodes() {
+	// 深拷贝快照：心跳等路径在写锁下并发修改 NodeInfo 字段，
+	// 直接序列化裸指针存在数据竞争（撕裂读可能写出坏 JSON）
 	c.mu.RLock()
-	list := make([]*NodeInfo, 0, len(c.nodes))
-	for _, n := range c.nodes {
-		list = append(list, n)
-	}
+	list := c.listNodesLocked()
 	c.mu.RUnlock()
 
 	data, err := json.Marshal(list)
@@ -1353,6 +1402,11 @@ func (c *Ctrl) handleNodes(w http.ResponseWriter, r *http.Request) {
 // 踢出节点：标记 kicked，worker 下次心跳收到 kick 标志后自行退出并删除自身。
 // 同时从节点表中移除（防止未退出的 worker 继续收到任务）。
 func (c *Ctrl) handleKickNode(w http.ResponseWriter, r *http.Request) {
+	// DELETE /api/nodes/:id/kick → 撤销踢出（worker 尚未退出时可反悔）
+	if r.Method == "DELETE" {
+		c.handleUnkickNode(w, r)
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(w, `{"error":"POST required"}`, 405)
 		return
@@ -1447,6 +1501,15 @@ func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]string{"error": "unknown method: " + req.Method})
 			return
 		}
+		// 防滥用：数组类输入设上限，避免单请求打爆内存/派发风暴
+		if len(req.Targets) > 500 {
+			writeJSON(w, map[string]string{"error": "too many targets (max 500)"})
+			return
+		}
+		if len(req.SubAttacks) > 20 {
+			writeJSON(w, map[string]string{"error": "too many sub_attacks (max 20)"})
+			return
+		}
 
 		// combo 模式下每个子攻击拥有独立的线程/包大小配置，
 		// 外层配置仅作兜底，不强制要求
@@ -1456,6 +1519,11 @@ func (c *Ctrl) handleTasks(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			for _, sub := range req.SubAttacks {
+				// 校验子攻击方法：未知方法/嵌套 combo 会让子攻击静默空转
+				if !isValidMethod(sub.Method) || sub.Method == "combo" {
+					writeJSON(w, map[string]string{"error": "unknown sub-attack method: " + sub.Method})
+					return
+				}
 				if sub.Threads < 1 || sub.Threads > 10000 {
 					writeJSON(w, map[string]string{"error": "sub-attack threads must be 1-10000"})
 					return
@@ -1597,6 +1665,7 @@ func (c *Ctrl) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			switch task.Status {
 			case "running", "pending":
 				task.Status = "cancelling"
+				task.CancellingSince = time.Now()
 				c.cancelIDs = append(c.cancelIDs, taskID)
 			}
 		}
@@ -1692,6 +1761,21 @@ func (c *Ctrl) handleTaskComplete(w http.ResponseWriter, r *http.Request) {
 		c.mu.Unlock()
 		writeJSON(w, map[string]string{"error": "worker not assigned to task"})
 		return
+	}
+	// 身份绑定：HTTP 来源 IP 必须与节点注册 IP 一致，防止共享 token 下
+	// 伪造其他节点的完成上报（来源 IP 不可得或节点 IP 为空时放行）
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		if n, ok := c.nodes[req.WorkerID]; ok && n.IP != "" && n.IP != host {
+			c.mu.Unlock()
+			writeJSON(w, map[string]string{"error": "ip mismatch"})
+			return
+		}
+	} else if r.RemoteAddr != "" {
+		if n, ok := c.nodes[req.WorkerID]; ok && n.IP != "" && n.IP != r.RemoteAddr {
+			c.mu.Unlock()
+			writeJSON(w, map[string]string{"error": "ip mismatch"})
+			return
+		}
 	}
 	task.Workers[req.WorkerID] = &TaskStats{
 		WorkerID:    req.WorkerID,
@@ -1829,9 +1913,14 @@ func (c *Ctrl) handleProxy(w http.ResponseWriter, r *http.Request) {
 		w.Write(data)
 
 	case "PUT", "POST":
-		data, err := io.ReadAll(r.Body)
+		// 上限 4MB：代理文件远超此量即为异常请求
+		data, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
 		if err != nil {
 			http.Error(w, err.Error(), 400)
+			return
+		}
+		if len(data) >= 4<<20 {
+			http.Error(w, `{"error":"body too large (max 4MB)"}`, 413)
 			return
 		}
 		c.proxyMu.Lock()
@@ -2021,7 +2110,9 @@ func (c *Ctrl) handleDeployUpdate(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Version *string `json:"version"`
 			URL     *string `json:"url"`
-			Clear   bool    `json:"clear"`
+			// SHA256 仅对自定义 URL 有意义（默认 GitHub 路径自动从 API 拉取）
+			SHA256 *string `json:"sha256"`
+			Clear  bool    `json:"clear"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, `{"error":"invalid json"}`, 400)
@@ -2033,8 +2124,10 @@ func (c *Ctrl) handleDeployUpdate(w http.ResponseWriter, r *http.Request) {
 			c.updateMu.Lock()
 			c.updateVersion = ""
 			c.updateURL = ""
+			c.updateSHA256Linux = ""
+			c.updateSHA256Windows = ""
 			c.updateMu.Unlock()
-			payload, _ := json.Marshal(map[string]string{"version": "", "url": ""})
+			payload, _ := json.Marshal(map[string]string{"version": "", "url": "", "sha256_linux": "", "sha256_windows": ""})
 			os.WriteFile(c.updateFile, payload, 0644)
 			log.Printf("[update] update config cleared")
 			writeJSON(w, map[string]interface{}{"ok": true, "version": "", "cleared": true})
@@ -2060,13 +2153,32 @@ func (c *Ctrl) handleDeployUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// SHA-256 供应链校验（见 handleDeployVersion 的 require_sha256）：
+		// 默认 GitHub 路径自动从 Release API 拉取双平台 asset digest；
+		// 自定义 URL 时由管理员显式提供（否则 Worker 跳过 digest 校验）。
+		sha256linux, sha256windows := "", ""
+		if url == "" {
+			if c.build.GitRepo != "" {
+				sha256linux = c.fetchAssetSHA256(version, "worker-linux-amd64")
+				sha256windows = c.fetchAssetSHA256(version, "worker-windows-amd64.exe")
+				if sha256linux == "" && sha256windows == "" {
+					log.Printf("[update] WARNING: failed to fetch asset SHA-256 for %s — workers will REJECT this update (supply-chain protection)", version)
+				}
+			}
+		} else if req.SHA256 != nil {
+			sha256linux = strings.TrimSpace(*req.SHA256)
+			sha256windows = sha256linux
+		}
+
 		c.updateMu.Lock()
 		c.updateVersion = version
 		c.updateURL = url
+		c.updateSHA256Linux = sha256linux
+		c.updateSHA256Windows = sha256windows
 		c.updateMu.Unlock()
 
 		// 持久化
-		payload, _ := json.Marshal(map[string]string{"version": version, "url": url})
+		payload, _ := json.Marshal(map[string]string{"version": version, "url": url, "sha256_linux": sha256linux, "sha256_windows": sha256windows})
 		if err := os.WriteFile(c.updateFile, payload, 0644); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -2098,11 +2210,14 @@ func (c *Ctrl) handleDeployUpdate(w http.ResponseWriter, r *http.Request) {
 func (c *Ctrl) handleDeployVersion(w http.ResponseWriter, r *http.Request) {
 	c.updateMu.RLock()
 	v, u := c.updateVersion, c.updateURL
+	sha256linux, sha256windows := c.updateSHA256Linux, c.updateSHA256Windows
 	c.updateMu.RUnlock()
 
-	// 自定义 URL 或未配置：直接返回
+	// 自定义 URL 或未配置：直接返回。
+	// require_sha256=false 表示自定义 URL（管理员显式配置的下载源），
+	// Worker 不做 digest 校验（无自动获取渠道）。
 	if u != "" || v == "" {
-		writeJSON(w, map[string]interface{}{"version": v, "url": u})
+		writeJSON(w, map[string]interface{}{"version": v, "url": u, "sha256": "", "require_sha256": false})
 		return
 	}
 
@@ -2115,7 +2230,13 @@ func (c *Ctrl) handleDeployVersion(w http.ResponseWriter, r *http.Request) {
 		}
 		c.mu.RUnlock()
 	}
-	writeJSON(w, map[string]interface{}{"version": v, "url": c.defaultUpdateURL(v, isWindows)})
+	sha := sha256linux
+	if isWindows {
+		sha = sha256windows
+	}
+	// require_sha256=true：Worker 必须校验 digest，缺失即拒绝更新
+	// （供应链保护，防止 ghproxy/中间人注入任意可执行文件）
+	writeJSON(w, map[string]interface{}{"version": v, "url": c.defaultUpdateURL(v, isWindows), "sha256": sha, "require_sha256": true})
 }
 
 // getPublicIP 探测 Controller 公网 IP（缓存 1 小时）。
@@ -2289,9 +2410,11 @@ func (c *Ctrl) handleWS(w http.ResponseWriter, r *http.Request) {
 	data, _ := json.Marshal(map[string]interface{}{"type": "nodes", "data": nodes})
 	client.enqueue(data)
 
-	// 读循环：客户端断开/超时 → 移除客户端
+	// 读循环：客户端断开/超时 → 移除客户端。
+	// 设读超时防静默断连（无 FIN）永久泄漏 goroutine + fd。
 	go func() {
 		for {
+			conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 			_, _, err := conn.ReadMessage()
 			if err != nil {
 				c.removeWSClient(client)
@@ -3111,12 +3234,13 @@ func (c *Ctrl) broadcastPoolUpdate(game string, version int64) {
 	// 非阻塞入队：持锁时间极短，不再逐客户端同步写（此前持 wsMu.RLock
 	// 期间写 IO 会阻塞新连接注册与其他广播）
 	c.wsMu.RLock()
+	clientCount := len(c.wsClients)
 	for client := range c.wsClients {
 		client.enqueue(data)
 	}
 	c.wsMu.RUnlock()
 
-	log.Printf("[pool] broadcasted update: game=%s version=%d count=%d to %d clients", game, version, count, len(c.wsClients))
+	log.Printf("[pool] broadcasted update: game=%s version=%d count=%d to %d clients", game, version, count, clientCount)
 }
 
 func (c *Ctrl) cronSteamRefresh() {
@@ -3334,6 +3458,16 @@ func (c *Ctrl) handleLogs(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	fmt.Sscanf(r.URL.Query().Get("page"), "%d", &page)
 	fmt.Sscanf(r.URL.Query().Get("limit"), "%d", &limit)
+	// 防滥用：limit 上限 1000（?limit=1e9 会把整表拉进内存）
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
 
 	logs, total := reflector.GetLogs(method, status, page, limit)
 	writeJSON(w, map[string]interface{}{

