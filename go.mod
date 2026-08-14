@@ -1,4 +1,4 @@
-module newtool
+module blackout
 
 go 1.25.0
 

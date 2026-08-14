@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"newtool/internal/attack"
+	"blackout/internal/attack"
 
 	_ "modernc.org/sqlite"
 )

@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"newtool/internal/attack"
+	"blackout/internal/attack"
 )
 
 // SpoofProbeResponse Controller → Worker HTTP 响应

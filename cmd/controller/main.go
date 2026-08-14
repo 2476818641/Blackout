@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"newtool/internal/controller"
+	"blackout/internal/controller"
 )
 
 var (
@@ -29,7 +29,7 @@ var (
 // 编译时注入（-ldflags "-X main.buildVersion=... -X main.gitRepo=... -X main.ghProxy=..."）：
 // buildVersion = 当前发布标签（如 v1.0.4），Controller 用它标记自身并作为
 // 云更新的默认目标版本（Worker 版本需与 Controller 一致）。
-// gitRepo = GitHub 仓库（如 2476818641/newtool），云更新默认 URL 基于它拼接。
+// gitRepo = GitHub 仓库（如 2476818641/Blackout），云更新默认 URL 基于它拼接。
 // ghProxy = GitHub 转发代理前缀（国内服务器直连 GitHub 下载慢/失败时的加速通道），
 // 默认内置 cf.liuass.eu.org/ghproxy/，可用 ldflags 覆盖为空串禁用。
 var (
@@ -120,7 +120,7 @@ func executablePath() string {
 // printManageCommands 安装完成后输出服务管理命令（启动/暂停/重启/日志/位置）+ acme.sh 证书部署示例
 func printManageCommands(serviceName, workDir string) {
 	if runtime.GOOS == "windows" {
-		fmt.Println("NetTool Controller 已安装为计划任务: " + serviceName)
+		fmt.Println("Blackout Controller 已安装为计划任务: " + serviceName)
 		fmt.Println()
 		fmt.Println("管理命令:")
 		fmt.Println("  启动:   schtasks /run   /tn " + serviceName)
@@ -131,7 +131,7 @@ func printManageCommands(serviceName, workDir string) {
 		return
 	}
 
-	fmt.Println("NetTool Controller 已安装为 systemd 服务: " + serviceName)
+	fmt.Println("Blackout Controller 已安装为 systemd 服务: " + serviceName)
 	fmt.Println()
 	fmt.Println("管理命令:")
 	fmt.Println("  启动:   systemctl start   " + serviceName)

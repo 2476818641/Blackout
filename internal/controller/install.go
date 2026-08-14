@@ -10,7 +10,7 @@ import (
 )
 
 // InstallAutoStart 把 Controller 安装为开机自启服务：
-//   - Linux → systemd unit（nettool-controller.service），日志进 systemd journal
+//   - Linux → systemd unit（blackout-controller.service），日志进 systemd journal
 //   - Windows → schtasks 计划任务（无持久日志，前台运行可见 stdout）
 //
 // 返回服务名（供调用方打印管理命令）。
@@ -31,7 +31,7 @@ func InstallAutoStart(grpcAddr, httpAddr string) (string, error) {
 	switch runtime.GOOS {
 	case "linux":
 		service := fmt.Sprintf(`[Unit]
-Description=NetTool Controller
+Description=Blackout Controller
 After=network.target
 
 [Service]
@@ -47,20 +47,20 @@ WorkingDirectory=%s
 WantedBy=multi-user.target
 `, exe, grpcAddr, httpAddr, dir)
 
-		const unitPath = "/etc/systemd/system/nettool-controller.service"
+		const unitPath = "/etc/systemd/system/blackout-controller.service"
 		if err := os.WriteFile(unitPath, []byte(service), 0600); err != nil {
 			return "", fmt.Errorf("write service file: %v (are you root?)", err)
 		}
 		exec.Command("systemctl", "daemon-reload").Run()
-		exec.Command("systemctl", "enable", "nettool-controller").Run()
+		exec.Command("systemctl", "enable", "blackout-controller").Run()
 		// 安装后立即启动：否则 -install 分支退出后服务处于 enabled 但 inactive
-		if out, err := exec.Command("systemctl", "start", "nettool-controller").CombinedOutput(); err != nil {
+		if out, err := exec.Command("systemctl", "start", "blackout-controller").CombinedOutput(); err != nil {
 			log.Printf("[install] systemctl start failed: %v (%s)", err, string(out))
 		}
-		return "nettool-controller", nil
+		return "blackout-controller", nil
 
 	case "windows":
-		taskName := "NetToolController"
+		taskName := "BlackoutController"
 		// schtasks 任务默认工作目录是 System32，而 Controller 的 data/ 是
 		// 相对路径（cwd）——不切目录会让 token/证书写到 System32 且重启后
 		// 找不到。用 cmd /c "cd /d <exe目录> && <exe> ..." 固定工作目录。

@@ -1,4 +1,4 @@
-# NetTool - Distributed Network Stress Testing
+# Blackout - Distributed Network Stress Testing
 
 ## Architecture
 
@@ -29,14 +29,14 @@ flowchart LR
 ```bash
 # Linux (primary target) — controller version tag + repo are injected for cloud updates
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
-  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/newtool" \
+  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/Blackout" \
   -o dist/controller-linux-amd64 ./cmd/controller/
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" \
   -o dist/worker-linux-amd64 ./cmd/worker/
 
 # Windows (limited: no IP spoofing)
 GOOS=windows GOARCH=amd64 go build \
-  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/newtool" \
+  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/Blackout" \
   -o dist/controller-windows-amd64.exe ./cmd/controller/
 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" \
   -o dist/worker-windows-amd64.exe ./cmd/worker/

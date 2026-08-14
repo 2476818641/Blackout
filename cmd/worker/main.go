@@ -12,8 +12,8 @@ import (
 	"strings"
 	"syscall"
 
-	"newtool/internal/attack"
-	"newtool/internal/worker"
+	"blackout/internal/attack"
+	"blackout/internal/worker"
 )
 
 var (
@@ -72,8 +72,8 @@ func main() {
 	}
 
 	// 后台运行：父进程重新拉起自身（detached + 输出重定向到日志）后立即退出。
-	// NETTOOL_DAEMONIZED 环境变量防止子进程再次自启造成无限循环。
-	if *daemon && os.Getenv("NETTOOL_DAEMONIZED") == "" {
+	// BLACKOUT_DAEMONIZED 环境变量防止子进程再次自启造成无限循环。
+	if *daemon && os.Getenv("BLACKOUT_DAEMONIZED") == "" {
 		if err := launchBackground(); err != nil {
 			log.Fatalf("[daemon] failed to start in background: %v", err)
 		}
@@ -84,7 +84,7 @@ func main() {
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	// Windows 自更新换身：带 NETTOOL_UPDATE_PENDING 标记的进程（正从临时
+	// Windows 自更新换身：带 BLACKOUT_UPDATE_PENDING 标记的进程（正从临时
 	// 路径运行）在此完成"复制到正式路径 → 拉起正式进程"的换身。
 	// 必须在任何业务逻辑（踢出检测/注册等）之前执行。
 	worker.FinishWindowsUpdate()
@@ -186,7 +186,7 @@ func launchBackground() error {
 	}
 
 	cmd := exec.Command(exe, os.Args[1:]...)
-	cmd.Env = append(os.Environ(), "NETTOOL_DAEMONIZED=1")
+	cmd.Env = append(os.Environ(), "BLACKOUT_DAEMONIZED=1")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Stdin = nil

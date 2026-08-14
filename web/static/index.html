@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NetTool Dashboard</title>
+<title>Blackout Dashboard</title>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
   :root { --bg:#0a0e14; --panel:#131820; --border:#1e2836; --text:#b0b8c4; --green:#0c6; --red:#f44; --yellow:#fa0; --cyan:#0cc; --accent:#3b82f6; }
@@ -94,7 +94,7 @@
 <template x-if="authed">
 <div>
 <div class="header">
-  <h1>NetTool Dashboard</h1>
+  <h1>Blackout Dashboard</h1>
   <div style="display:flex;gap:12px;align-items:center">
     <button class="lang-btn" :class="{active:lang==='en'}" @click="setLang('en')">EN</button>
     <button class="lang-btn" :class="{active:lang==='zh'}" @click="setLang('zh')">中文</button>
@@ -778,7 +778,7 @@
 function app() {
   const TR = {
     en: {
-      login_title:'NetTool Auth', login_placeholder:'Enter admin token', login_btn:'Login',
+      login_title:'Blackout Auth', login_placeholder:'Enter admin token', login_btn:'Login',
       logout:'Logout', nodes_count:'Nodes: {0} | Tasks: {1}',
       live_stats:'Live Stats', packets_sec:'PACKETS/SEC', mb_sec:'MB/SEC', total_packets:'TOTAL PACKETS', active_online:'ACTIVE / {0} ONLINE',
       new_attack:'New Attack',
@@ -845,7 +845,7 @@ function app() {
       stop:'Stop', completed:'Completed', fallback_udp:'Auto UDP fallback',
     },
     zh: {
-      login_title:'NetTool 认证', login_placeholder:'输入管理员令牌', login_btn:'登录',
+      login_title:'Blackout 认证', login_placeholder:'输入管理员令牌', login_btn:'登录',
       logout:'退出', nodes_count:'节点: {0} | 任务: {1}',
       live_stats:'实时统计', packets_sec:'包/秒', mb_sec:'MB/秒', total_packets:'总发包量', active_online:'活跃 {0} / 在线 {1}',
       new_attack:'发起攻击',

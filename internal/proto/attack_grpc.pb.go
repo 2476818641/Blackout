@@ -19,10 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NodeService_Register_FullMethodName    = "/nettool.NodeService/Register"
-	NodeService_Deregister_FullMethodName  = "/nettool.NodeService/Deregister"
-	NodeService_Heartbeat_FullMethodName   = "/nettool.NodeService/Heartbeat"
-	NodeService_ReportStats_FullMethodName = "/nettool.NodeService/ReportStats"
+	NodeService_Register_FullMethodName    = "/blackout.NodeService/Register"
+	NodeService_Deregister_FullMethodName  = "/blackout.NodeService/Deregister"
+	NodeService_Heartbeat_FullMethodName   = "/blackout.NodeService/Heartbeat"
+	NodeService_ReportStats_FullMethodName = "/blackout.NodeService/ReportStats"
 )
 
 // NodeServiceClient is the client API for NodeService service.
@@ -202,7 +202,7 @@ type NodeService_ReportStatsServer = grpc.ClientStreamingServer[WorkerStatsPush,
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var NodeService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "nettool.NodeService",
+	ServiceName: "blackout.NodeService",
 	HandlerType: (*NodeServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{

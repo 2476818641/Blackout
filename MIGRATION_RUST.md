@@ -1,6 +1,6 @@
-﻿# Rust Worker 迁移计划
+# Rust Worker 迁移计划
 
-> 目标：将 NetTool 的 Worker 从 Go 重写为 Rust，**仅作为大机器（G 口伪造机）的高性能专项变体**，
+> 目标：将 Blackout 的 Worker 从 Go 重写为 Rust，**仅作为大机器（G 口伪造机）的高性能专项变体**，
 > 与 Go Worker 混布。小机器（带宽受限）继续使用 Go。
 > 原则：Controller 零改动，协议即契约，渐进替换，测试先行。
 

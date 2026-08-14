@@ -36,15 +36,15 @@ func jsonNewDecoder(r io.Reader, v interface{}) error {
 func (w *Worker) applyUpdateWindows(exeAbs, tmp, targetVersion string) error {
 	// 注意：版本文件不能在这里写——换身（复制到正式路径）可能失败，
 	// 提前记录版本会导致"版本已记录但旧二进制仍在跑"的永久跳过。
-	// 版本由 FinishWindowsUpdate 在复制成功后记录（经 NETTOOL_UPDATE_VERSION 传递）。
+	// 版本由 FinishWindowsUpdate 在复制成功后记录（经 BLACKOUT_UPDATE_VERSION 传递）。
 
 	w.preUpdateShutdown()
 
 	cmd := exec.Command(tmp, os.Args[1:]...)
 	cmd.Env = append(os.Environ(),
-		"NETTOOL_UPDATE_PENDING=1",
-		"NETTOOL_UPDATE_TARGET="+exeAbs,
-		"NETTOOL_UPDATE_VERSION="+targetVersion)
+		"BLACKOUT_UPDATE_PENDING=1",
+		"BLACKOUT_UPDATE_TARGET="+exeAbs,
+		"BLACKOUT_UPDATE_VERSION="+targetVersion)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -56,7 +56,7 @@ func (w *Worker) applyUpdateWindows(exeAbs, tmp, targetVersion string) error {
 	return nil
 }
 
-// FinishWindowsUpdate 由带 NETTOOL_UPDATE_PENDING=1 标记的新进程
+// FinishWindowsUpdate 由带 BLACKOUT_UPDATE_PENDING=1 标记的新进程
 // （正在从临时路径运行）调用，在 worker 正常启动前完成换身：
 //  1. 等待旧进程退出释放 exe 路径的独占锁（轮询复制，最长 60s）
 //  2. 把自身（临时路径）复制到正式路径
@@ -65,10 +65,10 @@ func (w *Worker) applyUpdateWindows(exeAbs, tmp, targetVersion string) error {
 // 复制失败时降级为直接从临时路径运行（新版仍可用，下次更新再试）。
 // 返回 true 表示消费了更新标记（调用方继续正常启动流程）。
 func FinishWindowsUpdate() bool {
-	if os.Getenv("NETTOOL_UPDATE_PENDING") != "1" {
+	if os.Getenv("BLACKOUT_UPDATE_PENDING") != "1" {
 		return false
 	}
-	target := os.Getenv("NETTOOL_UPDATE_TARGET")
+	target := os.Getenv("BLACKOUT_UPDATE_TARGET")
 	self, err := os.Executable()
 	if err != nil || target == "" || self == "" {
 		log.Printf("[update] swap aborted: missing env/self (%v)", err)
@@ -95,7 +95,7 @@ func FinishWindowsUpdate() bool {
 	}
 
 	// 换身成功后才记录版本：替换失败时版本文件保持旧值，下次轮询可重试
-	if ver := os.Getenv("NETTOOL_UPDATE_VERSION"); ver != "" {
+	if ver := os.Getenv("BLACKOUT_UPDATE_VERSION"); ver != "" {
 		if err := saveLocalVersion(ver); err != nil {
 			log.Printf("[update] version file write failed (ignored): %v", err)
 		}
@@ -104,7 +104,7 @@ func FinishWindowsUpdate() bool {
 	// 拉起正式路径进程（清理更新标记，避免递归换身），自身退出
 	env := make([]string, 0, len(os.Environ()))
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "NETTOOL_UPDATE_") {
+		if strings.HasPrefix(e, "BLACKOUT_UPDATE_") {
 			continue
 		}
 		env = append(env, e)

@@ -17,10 +17,10 @@ import (
 	"sync"
 	"time"
 
-	"newtool/internal/attack"
-	pb "newtool/internal/proto"
-	"newtool/internal/reflector"
-	"newtool/web"
+	"blackout/internal/attack"
+	pb "blackout/internal/proto"
+	"blackout/internal/reflector"
+	"blackout/web"
 
 	"github.com/gorilla/websocket"
 	"google.golang.org/grpc"
@@ -219,7 +219,7 @@ type Ctrl struct {
 // BuildInfo 编译时注入的构建信息
 type BuildInfo struct {
 	Version string // 发布标签（如 v1.0.4）；本地手动编译为 "dev"
-	GitRepo string // GitHub 仓库（如 2476818641/newtool）；空 = 未启用默认仓库地址
+	GitRepo string // GitHub 仓库（如 2476818641/Blackout）；空 = 未启用默认仓库地址
 	GhProxy string // GitHub 转发代理前缀（如 https://cf.liuass.eu.org/ghproxy/）；
 	// 国内服务器直连 GitHub 下载慢/失败时的加速通道，空 = 直连
 }

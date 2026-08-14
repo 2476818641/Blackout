@@ -201,7 +201,7 @@ func (w *Worker) applyUpdate(url, targetVersion, sha256 string, requireSHA256 bo
 
 	// Windows 分支：运行中的 exe 被系统独占锁定，rename/覆盖必然失败
 	// （"Access is denied"）。走"临时副本换身"流程：
-	// ① 拉起 tmp 副本（带 NETTOOL_UPDATE_PENDING 标记）→ 自身退出
+	// ① 拉起 tmp 副本（带 BLACKOUT_UPDATE_PENDING 标记）→ 自身退出
 	// ② tmp 副本等旧进程退出释放锁后，把自身复制到 exe 路径
 	// ③ tmp 副本拉起正式路径进程并退出，正式进程启动时清理 .update 残留
 	if runtime.GOOS == "windows" {

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"newtool/internal/attack"
-	"newtool/internal/reflector"
+	"blackout/internal/attack"
+	"blackout/internal/reflector"
 )
 
 type shodanConfig struct {

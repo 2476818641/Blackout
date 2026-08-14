@@ -18,8 +18,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"newtool/internal/attack"
-	pb "newtool/internal/proto"
+	"blackout/internal/attack"
+	pb "blackout/internal/proto"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -297,7 +297,7 @@ func writeAutoStartConfig(controllerAddr, token, httpPort string) error {
 	switch runtime.GOOS {
 	case "linux":
 		service := fmt.Sprintf(`[Unit]
-Description=NetTool Worker
+Description=Blackout Worker
 After=network.target
 
 [Service]
@@ -312,15 +312,15 @@ WantedBy=multi-user.target
 `, exe, controllerAddr, token, httpPort)
 
 		// 0600：systemd unit 内含 token，其他用户不应可读
-		if err := os.WriteFile("/etc/systemd/system/nettool-worker.service", []byte(service), 0600); err != nil {
+		if err := os.WriteFile("/etc/systemd/system/blackout-worker.service", []byte(service), 0600); err != nil {
 			return fmt.Errorf("write service file: %v (are you root?)", err)
 		}
 		exec.Command("systemctl", "daemon-reload").Run()
-		exec.Command("systemctl", "enable", "nettool-worker").Run()
+		exec.Command("systemctl", "enable", "blackout-worker").Run()
 		return nil
 
 	case "windows":
-		taskName := "NetToolWorker"
+		taskName := "BlackoutWorker"
 		cmd := fmt.Sprintf(
 			`schtasks /create /tn "%s" /tr "\"%s\" -c %s -token %s -http-port %s" /sc onstart /ru SYSTEM /f`,
 			taskName, exe, controllerAddr, token, httpPort,
@@ -345,7 +345,7 @@ func InstallAutoStartHTTP(controllerAddr, token, httpPort string) error {
 	case "linux":
 		// 安装后立即启动：否则 worker 进程在 -install 分支直接退出，
 		// 服务处于 enabled 但 inactive 状态，节点不会上线
-		if out, err := exec.Command("systemctl", "start", "nettool-worker").CombinedOutput(); err != nil {
+		if out, err := exec.Command("systemctl", "start", "blackout-worker").CombinedOutput(); err != nil {
 			log.Printf("[install] systemctl start failed: %v (%s)", err, string(out))
 		} else {
 			log.Println("[install] systemd service started")
@@ -354,7 +354,7 @@ func InstallAutoStartHTTP(controllerAddr, token, httpPort string) error {
 		return nil
 
 	case "windows":
-		taskName := "NetToolWorker"
+		taskName := "BlackoutWorker"
 		// 安装后立即启动任务，节点立刻上线（开机自启依然生效）
 		if out, err := exec.Command("cmd", "/c", `schtasks /run /tn "`+taskName+"\"").CombinedOutput(); err != nil {
 			log.Printf("[install] schtasks /run failed: %v (%s)", err, string(out))
@@ -1141,7 +1141,7 @@ func (w *Worker) kickSelf() {
 // 防止 worker 退出后被自动拉起而复活。
 func (w *Worker) disableAutoRestart() {
 	if runtime.GOOS == "windows" {
-		out, err := exec.Command("cmd", "/c", `schtasks /end /tn "NetToolWorker" && schtasks /delete /tn "NetToolWorker" /f`).CombinedOutput()
+		out, err := exec.Command("cmd", "/c", `schtasks /end /tn "BlackoutWorker" && schtasks /delete /tn "BlackoutWorker" /f`).CombinedOutput()
 		if err != nil {
 			log.Printf("[worker] kick: schtasks cleanup failed: %v (%s)", err, strings.TrimSpace(string(out)))
 		} else {
@@ -1150,12 +1150,12 @@ func (w *Worker) disableAutoRestart() {
 		return
 	}
 	// Linux：stop + disable 服务，防止 Restart=always 拉起
-	if out, err := exec.Command("systemctl", "stop", "nettool-worker").CombinedOutput(); err != nil {
+	if out, err := exec.Command("systemctl", "stop", "blackout-worker").CombinedOutput(); err != nil {
 		log.Printf("[worker] kick: systemctl stop failed (may not be a service): %v", err)
 	} else {
 		log.Printf("[worker] kick: systemd service stopped (%s)", strings.TrimSpace(string(out)))
 	}
-	if out, err := exec.Command("systemctl", "disable", "nettool-worker").CombinedOutput(); err != nil {
+	if out, err := exec.Command("systemctl", "disable", "blackout-worker").CombinedOutput(); err != nil {
 		log.Printf("[worker] kick: systemctl disable failed (may not be a service): %v", err)
 	} else {
 		log.Printf("[worker] kick: systemd service disabled (%s)", strings.TrimSpace(string(out)))

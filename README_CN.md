@@ -1,4 +1,4 @@
-# NetTool - 分布式网络压力测试
+# Blackout - 分布式网络压力测试
 
 ## 架构
 
@@ -29,14 +29,14 @@ flowchart LR
 ```bash
 # Linux（主推平台）— Controller 注入版本标签与仓库地址（云更新默认目标）
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
-  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/newtool" \
+  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/Blackout" \
   -o dist/controller-linux-amd64 ./cmd/controller/
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" \
   -o dist/worker-linux-amd64 ./cmd/worker/
 
 # Windows（功能受限：不支持 IP 欺骗，纯 Go 无需 CGO）
 GOOS=windows GOARCH=amd64 go build \
-  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/newtool" \
+  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/Blackout" \
   -o dist/controller-windows-amd64.exe ./cmd/controller/
 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" \
   -o dist/worker-windows-amd64.exe ./cmd/worker/

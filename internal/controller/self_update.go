@@ -59,7 +59,7 @@ func (c *Ctrl) githubRequest(method, apiPath string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "NetTool-Controller/"+c.build.Version)
+	req.Header.Set("User-Agent", "Blackout-Controller/"+c.build.Version)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	if tok := c.githubAuthToken(); tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)

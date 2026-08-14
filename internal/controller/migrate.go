@@ -73,7 +73,7 @@ func (c *Ctrl) handleMigrateExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/gzip")
-	w.Header().Set("Content-Disposition", "attachment; filename=nettool-migrate.tar.gz")
+	w.Header().Set("Content-Disposition", "attachment; filename=blackout-migrate.tar.gz")
 	w.Write(buf.Bytes())
 	log.Printf("[migrate] export complete (%d bytes)", buf.Len())
 }

@@ -996,7 +996,7 @@ var File_internal_proto_attack_proto protoreflect.FileDescriptor
 
 const file_internal_proto_attack_proto_rawDesc = "" +
 	"\n" +
-	"\x1binternal/proto/attack.proto\x12\anettool\"\xfd\x01\n" +
+	"\x1binternal/proto/attack.proto\x12\ablackout\"\xfd\x01\n" +
 	"\x0fRegisterRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x1d\n" +
 	"\n" +
@@ -1029,7 +1029,7 @@ const file_internal_proto_attack_proto_rawDesc = "" +
 	"\fnetwork_mbps\x18\x05 \x01(\x05R\vnetworkMbps\"\xf9\x01\n" +
 	"\x11HeartbeatResponse\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x126\n" +
-	"\fpending_task\x18\x02 \x01(\v2\x13.nettool.AttackTaskR\vpendingTask\x12$\n" +
+	"\fpending_task\x18\x02 \x01(\v2\x13.blackout.AttackTaskR\vpendingTask\x12$\n" +
 	"\x0ecancel_task_id\x18\x03 \x01(\tR\fcancelTaskId\x12\x12\n" +
 	"\x04kick\x18\x04 \x01(\bR\x04kick\x125\n" +
 	"\x16reconfigure_controller\x18\x05 \x01(\tR\x15reconfigureController\x12+\n" +
@@ -1051,7 +1051,7 @@ const file_internal_proto_attack_proto_rawDesc = "" +
 	"\n" +
 	"burst_mode\x18\f \x01(\bR\tburstMode\x12\x1b\n" +
 	"\tjitter_ms\x18\r \x01(\x05R\bjitterMs\x123\n" +
-	"\vsub_attacks\x18\x0e \x03(\v2\x12.nettool.SubAttackR\n" +
+	"\vsub_attacks\x18\x0e \x03(\v2\x12.blackout.SubAttackR\n" +
 	"subAttacks\x12\x19\n" +
 	"\bspoof_ip\x18\x0f \x01(\bR\aspoofIp\x12&\n" +
 	"\x0ffallback_to_udp\x18\x10 \x01(\bR\rfallbackToUdp\x12)\n" +
@@ -1096,11 +1096,11 @@ const file_internal_proto_attack_proto_rawDesc = "" +
 	"serverName\x12!\n" +
 	"\fis_reflector\x18\x05 \x01(\bR\visReflector2\x97\x02\n" +
 	"\vNodeService\x12?\n" +
-	"\bRegister\x12\x18.nettool.RegisterRequest\x1a\x19.nettool.RegisterResponse\x12E\n" +
+	"\bRegister\x12\x18.blackout.RegisterRequest\x1a\x19.blackout.RegisterResponse\x12E\n" +
 	"\n" +
-	"Deregister\x12\x1a.nettool.DeregisterRequest\x1a\x1b.nettool.DeregisterResponse\x12B\n" +
-	"\tHeartbeat\x12\x19.nettool.HeartbeatRequest\x1a\x1a.nettool.HeartbeatResponse\x12<\n" +
-	"\vReportStats\x12\x18.nettool.WorkerStatsPush\x1a\x11.nettool.StatsAck(\x01B\x18Z\x16newtool/internal/protob\x06proto3"
+	"Deregister\x12\x1a.blackout.DeregisterRequest\x1a\x1b.blackout.DeregisterResponse\x12B\n" +
+	"\tHeartbeat\x12\x19.blackout.HeartbeatRequest\x1a\x1a.blackout.HeartbeatResponse\x12<\n" +
+	"\vReportStats\x12\x18.blackout.WorkerStatsPush\x1a\x11.blackout.StatsAck(\x01B\x18Z\x16blackout/internal/protob\x06proto3"
 
 var (
 	file_internal_proto_attack_proto_rawDescOnce sync.Once
@@ -1116,30 +1116,30 @@ func file_internal_proto_attack_proto_rawDescGZIP() []byte {
 
 var file_internal_proto_attack_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_internal_proto_attack_proto_goTypes = []any{
-	(*RegisterRequest)(nil),    // 0: nettool.RegisterRequest
-	(*RegisterResponse)(nil),   // 1: nettool.RegisterResponse
-	(*DeregisterRequest)(nil),  // 2: nettool.DeregisterRequest
-	(*DeregisterResponse)(nil), // 3: nettool.DeregisterResponse
-	(*HeartbeatRequest)(nil),   // 4: nettool.HeartbeatRequest
-	(*HeartbeatResponse)(nil),  // 5: nettool.HeartbeatResponse
-	(*AttackTask)(nil),         // 6: nettool.AttackTask
-	(*SubAttack)(nil),          // 7: nettool.SubAttack
-	(*WorkerStatsPush)(nil),    // 8: nettool.WorkerStatsPush
-	(*StatsAck)(nil),           // 9: nettool.StatsAck
-	(*ScanRequest)(nil),        // 10: nettool.ScanRequest
-	(*ScanResult)(nil),         // 11: nettool.ScanResult
+	(*RegisterRequest)(nil),    // 0: blackout.RegisterRequest
+	(*RegisterResponse)(nil),   // 1: blackout.RegisterResponse
+	(*DeregisterRequest)(nil),  // 2: blackout.DeregisterRequest
+	(*DeregisterResponse)(nil), // 3: blackout.DeregisterResponse
+	(*HeartbeatRequest)(nil),   // 4: blackout.HeartbeatRequest
+	(*HeartbeatResponse)(nil),  // 5: blackout.HeartbeatResponse
+	(*AttackTask)(nil),         // 6: blackout.AttackTask
+	(*SubAttack)(nil),          // 7: blackout.SubAttack
+	(*WorkerStatsPush)(nil),    // 8: blackout.WorkerStatsPush
+	(*StatsAck)(nil),           // 9: blackout.StatsAck
+	(*ScanRequest)(nil),        // 10: blackout.ScanRequest
+	(*ScanResult)(nil),         // 11: blackout.ScanResult
 }
 var file_internal_proto_attack_proto_depIdxs = []int32{
-	6, // 0: nettool.HeartbeatResponse.pending_task:type_name -> nettool.AttackTask
-	7, // 1: nettool.AttackTask.sub_attacks:type_name -> nettool.SubAttack
-	0, // 2: nettool.NodeService.Register:input_type -> nettool.RegisterRequest
-	2, // 3: nettool.NodeService.Deregister:input_type -> nettool.DeregisterRequest
-	4, // 4: nettool.NodeService.Heartbeat:input_type -> nettool.HeartbeatRequest
-	8, // 5: nettool.NodeService.ReportStats:input_type -> nettool.WorkerStatsPush
-	1, // 6: nettool.NodeService.Register:output_type -> nettool.RegisterResponse
-	3, // 7: nettool.NodeService.Deregister:output_type -> nettool.DeregisterResponse
-	5, // 8: nettool.NodeService.Heartbeat:output_type -> nettool.HeartbeatResponse
-	9, // 9: nettool.NodeService.ReportStats:output_type -> nettool.StatsAck
+	6, // 0: blackout.HeartbeatResponse.pending_task:type_name -> blackout.AttackTask
+	7, // 1: blackout.AttackTask.sub_attacks:type_name -> blackout.SubAttack
+	0, // 2: blackout.NodeService.Register:input_type -> blackout.RegisterRequest
+	2, // 3: blackout.NodeService.Deregister:input_type -> blackout.DeregisterRequest
+	4, // 4: blackout.NodeService.Heartbeat:input_type -> blackout.HeartbeatRequest
+	8, // 5: blackout.NodeService.ReportStats:input_type -> blackout.WorkerStatsPush
+	1, // 6: blackout.NodeService.Register:output_type -> blackout.RegisterResponse
+	3, // 7: blackout.NodeService.Deregister:output_type -> blackout.DeregisterResponse
+	5, // 8: blackout.NodeService.Heartbeat:output_type -> blackout.HeartbeatResponse
+	9, // 9: blackout.NodeService.ReportStats:output_type -> blackout.StatsAck
 	6, // [6:10] is the sub-list for method output_type
 	2, // [2:6] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name
