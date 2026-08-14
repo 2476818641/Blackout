@@ -196,6 +196,10 @@ Requires: Linux + root, CLDAP server pool pre-loaded
 | Minecraft | 25565 | TCP Handshake / Login |
 | PUBG / ARK / Fortnite | 27015 | Game UDP Spam (prefixed packets) |
 
+**ARK smart attack** (`game_udp` + game=ARK, method list unchanged):
+- **IP spoof capable** → A2S PLAYER(0x55)/RULES(0x56) **reflector amplification**: reflectors are probed in real-time at attack start (direct 5B query if no challenge / 9B with prefetched challenge), then spoofed flooding; 80-player PLAYER responses split to 2 packets ≈2.8KB per query, **~300x amplification**; challenges refreshed every 30s, dead reflectors auto-removed
+- **No spoof / non-IPv4 target / no pool** → **direct two-phase query storm**: worker exchanges challenge itself (never spoofs at itself), saturating server CPU (protocol parsing) and uplink (responses starving game traffic), challenge refreshed every 15s
+
 ---
 
 ## Web Dashboard

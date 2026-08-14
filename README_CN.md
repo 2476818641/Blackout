@@ -199,6 +199,10 @@ Worker → [伪造源IP=受害者] → CLDAP 服务器 → [39字节查询 → 1
 | Minecraft | 25565 | TCP 握手 / 登录 |
 | PUBG / ARK / Fortnite | 27015 | Game UDP Spam（带前缀） |
 
+**ARK 智能攻击**（`game_udp` + game=ARK，方法列表不变）：
+- **支持 IP 伪造** → A2S PLAYER(0x55)/RULES(0x56) **反射放大**：攻击启动时实测每个反射器（免 challenge 直打 5B 查询 / 需 challenge 预取后发 9B），伪源洪泛；80 人服 PLAYER 响应 split 2 包 ≈2.8KB/查询，**放大比约 300x**；每 30s 刷新 challenge，连续失败自动剔除反射器
+- **不支持 IP 伪造 / 目标非 IPv4 / 无池** → **直连两段式查询风暴**：worker 自收发 challenge（绝不伪源打自己），持续打服务器 CPU（协议解析）与上行（响应挤占游戏包），15s 刷新 challenge
+
 ---
 
 ## Web 仪表盘

