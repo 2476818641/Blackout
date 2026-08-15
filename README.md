@@ -17,6 +17,14 @@ flowchart LR
 - **Worker**: gRPC client, registers with Controller, executes attacks  
 - **Dashboard**: Alpine.js SPA, real-time stats via WebSocket, EN/ZH language toggle  
 
+### 🛰 Lightweight Spoof Worker (routers / low-end devices)
+
+> **For routers and low-end devices, use [blackout-lw](https://github.com/2476818641/lw-worker) (standalone Rust build) instead of the Go worker in this repo.**
+
+- **blackout-lw** (Rust, single static binary <750KB): built for OpenWrt routers / low-end devices, executes **DNS reflector amplification** (spoofed UDP) only; targets x86_64 / armv7 / aarch64 / **mipsel** (MT7620/MT7628 etc.)
+- Connects to the Controller via HTTP polling (dashboard node list has **Go / LW** switcher, LW nodes marked ⚡)
+- **Coexists with Go workers**: regular tasks go to Go nodes only, reflector tasks run on both in parallel
+
 ---
 
 ## Quick Start

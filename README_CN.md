@@ -17,6 +17,14 @@ flowchart LR
 - **Worker**：gRPC 客户端，向 Controller 注册后执行攻击任务  
 - **仪表盘**：基于 Alpine.js 的单页应用，WebSocket 实时推送，中英文切换  
 
+### 🛰 轻量伪造 Worker（路由器/小型设备）
+
+> **如果你的节点是路由器、软路由等低性能设备，请使用 [blackout-lw](https://github.com/2476818641/lw-worker)（Rust 独立版本）**，不要使用本仓库的 Go worker。
+
+- **blackout-lw**（Rust，单二进制 <750KB）：为 OpenWrt 路由器/低性能设备设计，仅执行 **DNS 反射放大**（UDP 伪源），支持 x86_64 / armv7 / aarch64 / **mipsel**（MT7620/MT7628 等）
+- 通过 HTTP 轮询接入 Controller（仪表盘节点列表可切换 **Go / LW** 视图，LW 节点带 ⚡ 标记）
+- 与 Go worker **混布互补**：常规任务只派 Go 节点，反射任务双方并行执行
+
 ---
 
 ## 快速开始
