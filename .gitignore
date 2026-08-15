@@ -6,6 +6,9 @@
 *.log
 *.pid
 
+# Rust 轻量伪造 Worker（独立 git 仓库，见 lw-worker/）
+/lw-worker/
+
 # Python 手动测试脚本
 vse_amp_test.py
 dns_amp_test.py

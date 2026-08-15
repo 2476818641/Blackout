@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package blackout;
+package nettool;
 
-option go_package = "blackout/internal/proto";
+option go_package = "newtool/internal/proto";
 
 service NodeService {
   rpc Register(RegisterRequest) returns (RegisterResponse);

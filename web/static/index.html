@@ -421,6 +421,12 @@
       </select>
       <span style="font-size:10px;opacity:0.6" x-text="regionFilter ? (regionFilteredNodes.length + '/' + nodes.length) : ''"></span>
     </div>
+    <!-- 节点类型切换：全部 / Go worker / LW（轻量伪造节点） -->
+    <div style="display:flex;gap:4px;margin-bottom:8px">
+      <button class="btn sm" :style="nodeTypeFilter==='' ? 'background:var(--accent)' : ''" @click="nodeTypeFilter=''" x-text="t('all_nodes')"></button>
+      <button class="btn sm" :style="nodeTypeFilter==='go' ? 'background:var(--accent)' : ''" @click="nodeTypeFilter='go'">Go</button>
+      <button class="btn sm" :style="nodeTypeFilter==='lw' ? 'background:var(--accent)' : ''" @click="nodeTypeFilter='lw'">LW ⚡</button>
+    </div>
     <table>
       <thead><tr><th x-text="t('col_id')"></th><th x-text="t('col_ip')"></th><th x-text="t('col_location')"></th><th x-text="t('col_os')"></th><th x-text="t('col_spoof')"></th><th x-text="t('col_cpu')"></th><th x-text="t('col_mem')"></th><th x-text="t('col_status')"></th><th></th></tr></thead>
       <tbody>
@@ -428,8 +434,11 @@
           <tr>
             <td x-text="n.worker_id" style="color:var(--cyan);font-size:11px"></td>
             <td x-text="n.ip || '-'"></td>
-            <td><span style="color:var(--yellow);font-size:10px" x-text="n.location || '-'"></span></td>
-            <td x-text="n.is_windows ? 'Windows' : 'Linux'"></td>
+            <td>
+              <span style="color:var(--yellow);font-size:10px" x-text="n.location || '-'"></span>
+              <span x-show="isLW(n)" style="color:var(--accent);font-size:9px;border:1px solid var(--accent);border-radius:3px;padding:0 4px;margin-left:4px">LW</span>
+            </td>
+            <td x-text="n.platform || (n.is_windows ? 'Windows' : 'Linux')"></td>
             <td>
               <span x-show="n.spoof_tested && n.can_spoof" style="color:var(--green);font-size:10px" x-text="t('spoof_yes')"></span>
               <span x-show="n.spoof_tested && !n.can_spoof" style="color:#f66;font-size:10px" x-text="t('spoof_no')"></span>
@@ -936,7 +945,7 @@ function app() {
     updateVersion:'', updateURL:'', updateStatus:'', updateCheckResult:null, updateChecking:false, updateApplying:false,
     githubToken:'', updateVersionSel:'',
     form:{ method:'vse', game:'', target:'', duration:60, threads:10, packet_size:1400, rate_limit_pps:0, rate_limit_bps:0, burst_mode:false, mix:false, jitter_ms:0, fallback_to_udp:true, sub_attacks:[], repeat_count:1, repeat_interval:0, priority:0 },
-    regionFilter:'',
+    regionFilter:'', nodeTypeFilter:'',
     guard:{ enabled:true, block_private:true, resolve_hosts:true }, guardText:{}, guardMsg:'',
     auditLogs:[], auditAction:'',
     templates:[], selectedTemplate:'',
@@ -1147,7 +1156,13 @@ function app() {
     openNodePicker() { this.nodeSearch=''; this.nodePickerOpen=true; },
     // 节点地区分类：去重地区列表 + 按地区筛选（筛选结果参与分页）
     get nodeRegions() { return [...new Set(this.nodes.map(n=>n.location).filter(Boolean))].sort(); },
-    get regionFilteredNodes() { return this.regionFilter ? this.nodes.filter(n=>n.location===this.regionFilter) : this.nodes; },
+    isLW(n) { return (n.tags||[]).includes('lw'); },
+    get regionFilteredNodes() {
+      let list = this.regionFilter ? this.nodes.filter(n=>n.location===this.regionFilter) : this.nodes;
+      if (this.nodeTypeFilter==='go') list = list.filter(n=>!this.isLW(n));
+      if (this.nodeTypeFilter==='lw') list = list.filter(n=>this.isLW(n));
+      return list;
+    },
     get nodeTotalPages() { return Math.max(1, Math.ceil(this.regionFilteredNodes.length / this.nodePageSize)); },
     get pagedNodes() { return this.regionFilteredNodes.slice((this.nodePage-1)*this.nodePageSize, this.nodePage*this.nodePageSize); },
     get filteredNodes() {
