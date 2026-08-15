@@ -2127,8 +2127,15 @@ func (c *Ctrl) handleDeployCommand(w http.ResponseWriter, r *http.Request) {
 	c.deployMu.RUnlock()
 
 	if storageURL == "" {
-		writeJSON(w, map[string]interface{}{"error": "storage URL not configured", "command": ""})
-		return
+		// 未配置云存储：回退默认 GitHub Release 地址（基于编译注入的仓库，
+		// 版本 = Controller 当前构建版本，与 worker 对齐）。
+		// 避免旧配置残留旧仓库名（如改名前的 newtool）导致 404。
+		if c.build.GitRepo != "" && c.build.Version != "" && c.build.Version != "dev" {
+			storageURL = c.defaultUpdateURL(c.build.Version, false)
+		} else {
+			writeJSON(w, map[string]interface{}{"error": "storage URL not configured", "command": ""})
+			return
+		}
 	}
 
 	// gRPC 端口：优先查询参数，否则从监听地址推导
@@ -2219,9 +2226,10 @@ func (c *Ctrl) handleDeployCommand(w http.ResponseWriter, r *http.Request) {
 
 	// -install 需要 root 写入 /etc/systemd 或注册 schtasks：
 	// 普通用户直接执行会因权限失败，用 sudo bash -c 包装整条命令链。
-	// 内部双引号必须转义，否则会提前终止 bash -c 的字符串。
+	// 用单引号包裹：内部 URL 的双引号无需转义，命令干净可读
+	// （token/URL 为 hex 无单引号；万一含单引号用 '\'' 转义兜底）。
 	if r.URL.Query().Get("install") == "1" {
-		command = "sudo bash -c \"" + strings.ReplaceAll(command, "\"", "\\\"") + "\""
+		command = "sudo bash -c '" + strings.ReplaceAll(command, "'", "'\\''") + "'"
 	}
 
 	writeJSON(w, map[string]interface{}{
