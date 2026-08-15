@@ -18,12 +18,11 @@ import (
 //   - 心跳即任务轮询（HTTP/1.1 + JSON，替代 gRPC）
 // ============================================================
 
-// isLWNode 判断节点是否为轻量伪造节点（Tags 含 "lw"）
-func (c *Ctrl) isLWNode(id string) bool {
-	c.mu.RLock()
-	n, ok := c.nodes[id]
-	c.mu.RUnlock()
-	if !ok {
+// isLWNodeLocked 判断节点是否为轻量伪造节点（Tags 含 "lw"）。
+// 调用方必须已持有 c.mu（读/写锁）——内部不加锁，
+// 避免"写锁内 RLock"导致 RWMutex 死锁。
+func isLWNodeLocked(n *NodeInfo) bool {
+	if n == nil {
 		return false
 	}
 	for _, t := range n.Tags {
@@ -32,6 +31,14 @@ func (c *Ctrl) isLWNode(id string) bool {
 		}
 	}
 	return false
+}
+
+// isLWNode 锁外版本（自行加锁）
+func (c *Ctrl) isLWNode(id string) bool {
+	c.mu.RLock()
+	n, ok := c.nodes[id]
+	c.mu.RUnlock()
+	return ok && isLWNodeLocked(n)
 }
 
 // isReflectorTaskMethod 判断任务是否反射类（lw 节点只参与反射任务）

@@ -881,10 +881,13 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 			rem = append(rem, tid)
 			continue
 		}
-		// lw 节点只参与反射任务（非反射任务跳过；lw 走 HTTP 心跳，此处为保险）
-		if !isReflectorTaskMethod(t.Method) && c.isLWNode(req.WorkerId) {
-			rem = append(rem, tid)
-			continue
+		// lw 节点只参与反射任务（非反射任务跳过；lw 走 HTTP 心跳，此处为保险）。
+		// 注意：此处已持有 c.mu 写锁，必须用 isLWNodeLocked（isLWNode 会 RLock 死锁）
+		if !isReflectorTaskMethod(t.Method) {
+			if wn, ok := c.nodes[req.WorkerId]; ok && isLWNodeLocked(wn) {
+				rem = append(rem, tid)
+				continue
+			}
 		}
 		if c.workerHasTask(t, req.WorkerId) {
 			rem = append(rem, tid)
@@ -1300,8 +1303,9 @@ func (c *Ctrl) onlineWorkersAllAssigned(t *TaskInfo) bool {
 		if n.Status == "OFFLINE" {
 			continue
 		}
-		// 非反射任务：lw 节点不参与（lw 只跑反射）
-		if !reflectorTask && c.isLWNode(id) {
+		// 非反射任务：lw 节点不参与（lw 只跑反射）。
+		// 注意：调用方已持有 c.mu 写锁，必须用 isLWNodeLocked（避免 RLock 死锁）
+		if !reflectorTask && isLWNodeLocked(n) {
 			continue
 		}
 		// 任务指定了参与节点：只统计选中的
