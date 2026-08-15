@@ -188,8 +188,13 @@ Worker → [伪造源IP=受害者] → CLDAP 服务器 → [39字节查询 → 1
 ### 七层攻击
 | 方法 | 说明 |
 |--------|-------------|
-| `http_flood` | 快速 HTTP GET 请求 |
-| `https_bypass` | HTTPS GET（跳过 TLS 验证 + 代理轮换） |
+| `http_flood` | HTTP GET 洪水（UA/路径/Accept 随机轮换，统计按真实字节计） |
+| `post_flood` | POST 洪水（随机 body，大小由包大小控制，默认 512B，打业务处理层） |
+| `http2_flood` | HTTP/2 洪水（单连接多路复用，无 fd 压力，PPS 极高；http:// 用 h2c） |
+| `http2_reset` | HTTP/2 Rapid Reset（CVE-2023-44487）：HEADERS→RST 流级轰炸，绕过流并发上限；攻击前自动指纹探测（Server 头/ALPN/版本 → nginx/Apache/Envoy 脆弱性判定） |
+| `http2_continuation` | HTTP/2 CONTINUATION Flood（CVE-2024-27316/27983/45288）：未结束 header block 无限扩展，打内存累积；对修复版仍有帧处理压力 |
+| `http2_bomb` | HTTP/2 HPACK Bomb（CVE-2026-49975/47774）：动态表索引引用放大（16KB 帧 → 65MB 解压）；**自动门控**——指纹判定 IIS/未修复版本才全力 bomb，否则降级 CONTINUATION |
+| `https_bypass` | HTTPS GET（跳过 TLS 验证 + 代理轮换 + 死代理即时切换 + UA 轮换） |
 
 ### 游戏专项
 | 游戏 | 默认端口 | 推荐攻击 |

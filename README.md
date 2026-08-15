@@ -185,7 +185,7 @@ Requires: Linux + root, CLDAP server pool pre-loaded
 ### Layer 7
 | Method | Description |
 |--------|-------------|
-| `http_flood` | Rapid HTTP GET requests |
+| `http_flood` | HTTP GET flood (random UA/path/Accept rotation, real byte accounting) |
 | `https_bypass` | HTTPS GET (TLS skip-verify + proxy rotation) |
 
 ### Game-Specific

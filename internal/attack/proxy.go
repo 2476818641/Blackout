@@ -3,6 +3,7 @@ package attack
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"log"
 	"math/rand"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/http2"
 	"golang.org/x/net/proxy"
 )
 
@@ -102,11 +104,32 @@ func newHTTPClient() *http.Client {
 			Transport: &http.Transport{
 				MaxIdleConns:        1000,
 				MaxIdleConnsPerHost: 100,
-				IdleConnTimeout:     5 * time.Second,
+				// 单目标连接上限：目标慢时防本机 fd/goroutine 堆积
+				MaxConnsPerHost: 128,
+				IdleConnTimeout: 5 * time.Second,
 			},
 		}
 	})
 	return sharedHTTPClient
+}
+
+// newHTTP2Client HTTP/2 客户端：
+//   - forceH2C=true  → 明文 h2c（http:// 目标）：单连接多路复用，无 fd 压力
+//   - forceH2C=false → 标准 TLS + ALPN 协商 h2（https:// 目标，跳过证书校验）
+func newHTTP2Client(forceH2C bool) *http.Client {
+	if forceH2C {
+		tr := &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, addr)
+			},
+		}
+		return &http.Client{Timeout: 5 * time.Second, Transport: tr}
+	}
+	tr := &http2.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	return &http.Client{Timeout: 5 * time.Second, Transport: tr}
 }
 
 func newProxyHTTPClient() *http.Client {

