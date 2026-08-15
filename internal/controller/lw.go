@@ -230,8 +230,11 @@ func (c *Ctrl) handleLWHeartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLWReport POST /api/lw/report
-// body: {"token":"...","node_id":"...","task_id":"...","packets":N,"bytes":N,"errors":N,"pps":N}
-// 更新任务统计；duration 到期后的上报视为完成。
+// body: {"token":"...","node_id":"...","task_id":"...","packets":N,"bytes":N,"errors":N,"pps":N,"finished":bool}
+//   - finished=true（或字段缺省，兼容 v0.1.1 旧协议）：任务完成上报。
+//     更新统计并标记该节点 Finished，全部节点完成后任务置 completed。
+//   - finished=false：周期统计上报（仅更新统计，不触发完成判定；
+//     task_id 可为空，空 id 静默接受，不产生 404 噪音）。
 func (c *Ctrl) handleLWReport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Token   string `json:"token"`
@@ -241,6 +244,8 @@ func (c *Ctrl) handleLWReport(w http.ResponseWriter, r *http.Request) {
 		Bytes   uint64 `json:"bytes"`
 		Errors  uint64 `json:"errors"`
 		PPS     uint64 `json:"pps"`
+		// 指针区分缺省：nil = 旧协议，按完成上报处理
+		Finished *bool `json:"finished"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid json"}`, 400)
@@ -248,6 +253,24 @@ func (c *Ctrl) handleLWReport(w http.ResponseWriter, r *http.Request) {
 	}
 	if !c.workerTokenEnabled(req.Token) && req.Token != c.workerToken && req.Token != c.adminToken {
 		writeJSON(w, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	// 周期统计上报：只更新进行中任务的统计字段，不置 Finished
+	if req.Finished != nil && !*req.Finished {
+		if req.TaskID != "" {
+			c.mu.Lock()
+			if task, ok := c.tasks[req.TaskID]; ok && task.Workers != nil {
+				if st, assigned := task.Workers[req.NodeID]; assigned {
+					st.PacketsSent = req.Packets
+					st.BytesSent = req.Bytes
+					st.Errors = req.Errors
+					st.CurrentPPS = req.PPS
+				}
+			}
+			c.mu.Unlock()
+		}
+		writeJSON(w, map[string]bool{"ok": true})
 		return
 	}
 
@@ -271,7 +294,17 @@ func (c *Ctrl) handleLWReport(w http.ResponseWriter, r *http.Request) {
 		CurrentPPS:  req.PPS,
 		Finished:    true,
 	}
-	if task.Status == "running" {
+	if task.Status == "cancelling" {
+		// 取消流程中：与 Go worker 的 ReportStats 对齐——已停止的节点记为
+		// 已确认取消，全部确认后由 finishCancellingTask 收尾（重派或完成）。
+		if task.CancelAcks == nil {
+			task.CancelAcks = make(map[string]bool)
+		}
+		task.CancelAcks[req.NodeID] = true
+		if c.taskFullyCancelled(task) {
+			c.finishCancellingTask(task)
+		}
+	} else if task.Status == "running" {
 		allDone := true
 		for _, st := range task.Workers {
 			if !st.Finished {
