@@ -37,14 +37,14 @@ flowchart LR
 ```bash
 # Linux (primary target) — controller version tag + repo are injected for cloud updates
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
-  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/Blackout" \
+  -ldflags="-s -w -X main.buildVersion=v1.2.7 -X main.gitRepo=2476818641/Blackout" \
   -o dist/controller-linux-amd64 ./cmd/controller/
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" \
   -o dist/worker-linux-amd64 ./cmd/worker/
 
 # Windows (limited: no IP spoofing)
 GOOS=windows GOARCH=amd64 go build \
-  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/Blackout" \
+  -ldflags="-s -w -X main.buildVersion=v1.2.7 -X main.gitRepo=2476818641/Blackout" \
   -o dist/controller-windows-amd64.exe ./cmd/controller/
 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" \
   -o dist/worker-windows-amd64.exe ./cmd/worker/
@@ -193,8 +193,18 @@ Requires: Linux + root, CLDAP server pool pre-loaded
 ### Layer 7
 | Method | Description |
 |--------|-------------|
-| `http_flood` | HTTP GET flood (random UA/path/Accept rotation, real byte accounting) |
-| `https_bypass` | HTTPS GET (TLS skip-verify + proxy rotation) |
+| `http_flood` | HTTP GET flood — raw fire-and-forget writes (never waits for responses, throughput not bound by RTT; 4 connections/thread) |
+| `post_flood` | HTTP POST flood — random body (PacketSize, default 512B), business-layer pressure (DB/log), bypasses GET-only filters |
+| `http2_flood` | HTTP/2 flood — pipelined concurrent streams (48 in-flight/thread) actually using multiplexing (h2 over TLS ALPN, or plaintext h2c for http://) |
+| `http2_reset` | **HTTP/2 Rapid Reset (CVE-2023-44487)** — repeated HEADERS+RST_STREAM on established connections, server CPU exhaustion; 4 connections/thread, auto-reconnect on failure |
+| `http2_continuation` | **CONTINUATION Flood (CVE-2024-27316 / CVE-2024-27983 / CVE-2023-45288)** — HEADERS without END_HEADERS + infinite CONTINUATION frames, memory exhaustion |
+| `http2_bomb` | **HPACK Bomb (CVE-2026-49975 / CVE-2026-47774)** — 4KB table entry amplified to ~65MB per 16KB frame; auto-gated: fingerprints target first, degrades to CONTINUATION flood if not Bomb-vulnerable |
+| `https_bypass` | HTTPS GET via proxies — **uTLS Chrome TLS fingerprint** (JA3-identical ClientHello, ALPN pinned to http/1.1) + per-client cookie sessions (`__cf_bm`/`cf_clearance` continuity) + full sec-ch-ua / sec-fetch-* header set; 3 clients/thread round-robin (own proxy + own session each), dead proxy swaps after 3 failures |
+
+> **Attack-type split**: UDP floods saturate **bandwidth**; TCP/L7 attacks (Rapid Reset, CONTINUATION,
+> game-protocol floods) saturate **target CPU/resources**. Combine both via **Combo Attack**
+> (e.g. `udp_stdhex` high threads + `http2_reset` mid threads) to pin a target's bandwidth
+> and CPU simultaneously.
 
 ### Game-Specific
 | Game | Default Port | Primary Attack |
@@ -229,6 +239,16 @@ during dispatch, offline detection (5s) re-evaluates and flips it, so tasks neve
 
 ### Language Toggle
 Click **[EN]** / **[中文]** in the header to switch between English and Chinese. Preference saved to localStorage.
+
+### L7 Recon & Attack Recommendations
+Probe a target once (lightweight: HTTP/2 ALPN/h2c support, Server/X-Powered-By headers,
+TLS issuer, CVE version tables) and get **ranked attack recommendations**:
+- Target vulnerable to **HPACK Bomb / Rapid Reset / CONTINUATION** → the matching CVE attack
+  is recommended first (bomb auto-gated server-side as a safety net)
+- Otherwise the three RTT-independent traffic floods (`http_flood` / `post_flood` / `http2_flood`)
+- Each recommendation carries a prefill (threads/duration) and a reason; one click launches
+  it through the normal confirm dialog. `http://` targets that show no h2 on :80 get one
+  extra HTTPS (443) ALPN probe so h2 CVEs are not missed for scheme-less input.
 
 ### VSE Scanner
 Scans for Source Engine (A2S_INFO) game servers. Supports:
@@ -375,7 +395,7 @@ curl -X PUT http://localhost:8080/api/update/token \
   -d '{"token":"ghp_..."}'
 
 # Upgrade everything (workers first, then controller) to a specific version
-curl -X POST "http://localhost:8080/api/update/all?version=v1.1.2" \
+curl -X POST "http://localhost:8080/api/update/all?version=v1.2.7" \
   -H "Authorization: Bearer <admin-token>"
 
 # Create TCP SYN spoof attack (Linux only)

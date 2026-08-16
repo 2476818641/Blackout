@@ -37,14 +37,14 @@ flowchart LR
 ```bash
 # Linux（主推平台）— Controller 注入版本标签与仓库地址（云更新默认目标）
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
-  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/Blackout" \
+  -ldflags="-s -w -X main.buildVersion=v1.2.7 -X main.gitRepo=2476818641/Blackout" \
   -o dist/controller-linux-amd64 ./cmd/controller/
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" \
   -o dist/worker-linux-amd64 ./cmd/worker/
 
 # Windows（功能受限：不支持 IP 欺骗，纯 Go 无需 CGO）
 GOOS=windows GOARCH=amd64 go build \
-  -ldflags="-s -w -X main.buildVersion=v1.1.2 -X main.gitRepo=2476818641/Blackout" \
+  -ldflags="-s -w -X main.buildVersion=v1.2.7 -X main.gitRepo=2476818641/Blackout" \
   -o dist/controller-windows-amd64.exe ./cmd/controller/
 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" \
   -o dist/worker-windows-amd64.exe ./cmd/worker/
@@ -196,13 +196,16 @@ Worker → [伪造源IP=受害者] → CLDAP 服务器 → [39字节查询 → 1
 ### 七层攻击
 | 方法 | 说明 |
 |--------|-------------|
-| `http_flood` | HTTP GET 洪水（UA/路径/Accept 随机轮换，统计按真实字节计） |
-| `post_flood` | POST 洪水（随机 body，大小由包大小控制，默认 512B，打业务处理层） |
-| `http2_flood` | HTTP/2 洪水（单连接多路复用，无 fd 压力，PPS 极高；http:// 用 h2c） |
-| `http2_reset` | HTTP/2 Rapid Reset（CVE-2023-44487）：HEADERS→RST 流级轰炸，绕过流并发上限；攻击前自动指纹探测（Server 头/ALPN/版本 → nginx/Apache/Envoy 脆弱性判定） |
+| `http_flood` | HTTP GET 洪水 —— RAW 连续写入（fire-and-forget，不读响应，吞吐不受 RTT 限制；每线程 4 连接并行） |
+| `post_flood` | POST 洪水（随机 body，大小由包大小控制，默认 512B，打业务处理层；同样 RAW 连续写入） |
+| `http2_flood` | HTTP/2 洪水 —— 管道化并发流（每线程 48 个在途流，真正利用多路复用；https 走 ALPN，http:// 用明文 h2c） |
+| `http2_reset` | HTTP/2 Rapid Reset（CVE-2023-44487）：HEADERS→RST 流级轰炸，**目标 CPU 消耗型**；每线程 4 连接并行，失败自动重连 |
 | `http2_continuation` | HTTP/2 CONTINUATION Flood（CVE-2024-27316/27983/45288）：未结束 header block 无限扩展，打内存累积；对修复版仍有帧处理压力 |
 | `http2_bomb` | HTTP/2 HPACK Bomb（CVE-2026-49975/47774）：动态表索引引用放大（16KB 帧 → 65MB 解压）；**自动门控**——指纹判定 IIS/未修复版本才全力 bomb，否则降级 CONTINUATION |
-| `https_bypass` | HTTPS GET（跳过 TLS 验证 + 代理轮换 + 死代理即时切换 + UA 轮换） |
+| `https_bypass` | HTTPS GET 走代理 —— **uTLS Chrome TLS 指纹**（ClientHello 与真实 Chrome 逐字节一致，JA3 对齐；ALPN 固定 http/1.1 消除 Go h2 指纹维度）+ 每客户端独立 Cookie 会话（`__cf_bm`/`cf_clearance` 连续性）+ 完整 sec-ch-ua / sec-fetch-* 头；每线程 3 客户端轮换（各自独立代理+会话），死代理 3 连败即换 |
+
+> **攻击分工**：UDP 系列打满**带宽**；TCP/L7 系列（Rapid Reset、CONTINUATION、游戏协议洪水）消耗**目标 CPU/资源**。
+> 用**组合攻击**同时上（如 `udp_stdhex` 高线程 + `http2_reset` 中线程），可把目标的带宽与 CPU 同时打满。
 
 ### 游戏专项
 | 游戏 | 默认端口 | 推荐攻击 |
@@ -236,6 +239,15 @@ Controller 在各 Worker 心跳时逐个派发；当所有在线 Worker 都已�
 
 ### 语言切换
 点击页面头部 **[EN]** / **[中文]** 按钮切换中英文界面，偏好自动保存至 localStorage。
+
+### L7 侦察与攻击推荐
+对目标做一次轻量探测（HTTP/2 ALPN/h2c 支持、Server/X-Powered-By 响应头、TLS 签发者、
+CVE 版本表），返回**按优先级排序的攻击推荐**：
+- 目标存在 **HPACK Bomb / Rapid Reset / CONTINUATION** 脆弱点 → 对应 CVE 攻击排最前
+  （bomb 有服务端自动门控兜底，误判自动降级）
+- 否则推荐三种不依赖 RTT 的流量型攻击（`http_flood` / `post_flood` / `http2_flood`）
+- 每条推荐带预填参数（线程/时长）与理由，一键发起走原有确认弹窗；
+  `http://` 目标在 80 端口探测不到 h2 时自动补一次 443 ALPN 探测，避免漏掉 h2 CVE 推荐
 
 ### VSE 扫描器
 扫描 Source Engine（A2S_INFO）游戏服务器，支持：
@@ -349,7 +361,7 @@ curl -X PUT http://localhost:8080/api/update/token \
   -d '{"token":"ghp_..."}'
 
 # 整体升级（先 Workers 后 Controller）到指定版本
-curl -X POST "http://localhost:8080/api/update/all?version=v1.1.2" \
+curl -X POST "http://localhost:8080/api/update/all?version=v1.2.7" \
   -H "Authorization: Bearer <admin-token>"
 
 # 创建 TCP SYN 伪造源IP 攻击（仅 Linux）
