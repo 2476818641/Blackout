@@ -1074,6 +1074,9 @@ function app() {
       this.dashboardStarted = true;
       this.connectWS();
       setInterval(() => { this.uptime++; this.fetchStats(); }, 1000);
+      // WS 兜底轮询：WS 推送全断（网络/代理空闲断开）时任务状态最多
+      // 延迟 15s 更新，避免"节点已打完但 UI 一直显示运行中"
+      setInterval(() => this.fetchTasks(), 15000);
       this.fetchNodes(); this.fetchTasks(); this.loadProxy(); this.loadDNSAmp(); this.loadReflectors(); this.fetchTemplates(); this.fetchLogs(); this.fetchLogStats(); this.fetchNodeGroups(); this.loadDeploy(); this.loadUpdate();
       this.loadGuard(); this.fetchAudit();
       this.$watch('nodes.length', () => {
@@ -1090,6 +1093,13 @@ function app() {
       const token = sessionStorage.getItem('token')||'';
       const proto = location.protocol==='https:'?'wss:':'ws:';
       this.ws = new WebSocket(proto+'//'+location.host+'/ws?token='+encodeURIComponent(token));
+      this.ws.onopen = () => {
+        // 重连/首次连接即全量同步：WS 断开期间的任务完成/节点变化
+        // 不会通过推送到达，必须主动拉取，否则 UI 停留在旧状态
+        // （典型：http_flood 已打完但页面一直显示运行中）
+        this.fetchTasks();
+        this.fetchNodes();
+      };
       this.ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         if (msg.type==='nodes') {
