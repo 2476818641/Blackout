@@ -516,6 +516,7 @@ func (c *Ctrl) Start() error {
 	mux.HandleFunc("/api/migrate/stop", c.authAdmin(c.handleMigrateStop))
 	mux.HandleFunc("/api/tasks/", c.authHTTP(c.handleTaskByID))
 	mux.HandleFunc("/api/scan", c.authHTTP(c.handleScan))
+	mux.HandleFunc("/api/l7/test", c.authAdmin(c.handleL7Test))
 	mux.HandleFunc("/api/stats", c.authHTTP(c.handleStats))
 	mux.HandleFunc("/api/proxy", c.authHTTP(c.handleProxy))
 	mux.HandleFunc("/api/dnsamp", c.authHTTP(c.handleDNSAmp))
