@@ -64,6 +64,21 @@
   .test-results .bad-row td { color:var(--red); opacity:0.6; }
   .manual-domain { display:flex; gap:6px; margin-top:6px; }
   .manual-domain input { flex:1; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:3px; font-size:11px; font-family:inherit; }
+  /* 移动端兼容：表格横向滚动 + 弹窗不超出视口 + 元素占满不留空 */
+  @media (max-width: 900px) {
+    .container { padding:8px; }
+    body { font-size:12px; }
+    table { display:block; overflow-x:auto; white-space:nowrap; }
+    .modal-box { min-width:0; width:94vw; max-width:94vw; padding:14px; }
+    .header { flex-wrap:wrap; gap:8px; }
+    .header h1 { font-size:14px; }
+    .login-box { width:92vw; max-width:380px; }
+    .panel { padding:10px; }
+    .manual-domain { flex-wrap:wrap; }
+    .manual-domain input { flex:1 1 100%; }
+    .tabs { flex-wrap:nowrap; }
+    .toolbar { gap:6px; }
+  }
 </style>
 </head>
 <body x-data="poolApp()" x-init="init()">
