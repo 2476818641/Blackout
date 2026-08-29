@@ -23,6 +23,7 @@ var (
 	useProxy       = flag.Bool("proxy", false, "Fetch and use L7 proxies from controller")
 	daemon         = flag.Bool("daemon", false, "Run in background (no nohup needed, for non-root servers)")
 	httpPort       = flag.String("http-port", "8080", "Controller HTTP port (dashboard/API, default 8080)")
+	noNetTune      = flag.Bool("no-net-tune", false, "Skip automatic NIC tuning (txqueuelen/ring) at startup")
 )
 
 func main() {
@@ -83,6 +84,13 @@ func main() {
 	}
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	// root 下自动网卡调优：txqueuelen 1000→10000 + ring buffer 4096，
+	// 内网高 PPS（2ms RTT）下默认发送队列极易溢出丢包、PPS 上不去。
+	// 非 root / 无 ethtool 自动跳过，失败不阻塞启动。可 -no-net-tune 关闭。
+	if !*noNetTune {
+		worker.ApplyNetTuning()
+	}
 
 	// Windows 自更新换身：带 BLACKOUT_UPDATE_PENDING 标记的进程（正从临时
 	// 路径运行）在此完成"复制到正式路径 → 拉起正式进程"的换身。
