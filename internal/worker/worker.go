@@ -321,11 +321,15 @@ WantedBy=multi-user.target
 
 	case "windows":
 		taskName := "BlackoutWorker"
-		cmd := fmt.Sprintf(
-			`schtasks /create /tn "%s" /tr "\"%s\" -c %s -token %s -http-port %s" /sc onstart /ru SYSTEM /f`,
-			taskName, exe, controllerAddr, token, httpPort,
-		)
-		output, err := exec.Command("cmd", "/c", cmd).CombinedOutput()
+		// 直接 exec.Command 传参：Go 自动做 Windows 命令行转义（含空格路径
+		// 自动加引号、引号嵌套正确编码）。此前用 cmd /c + \" 转义是错的——
+		// cmd.exe 不识别反斜杠转义，/tr 参数被引号配对拆碎，任务创建失败。
+		taskRun := fmt.Sprintf(`"%s" -c %s -token %s -http-port %s`, exe, controllerAddr, token, httpPort)
+		output, err := exec.Command("schtasks",
+			"/create", "/tn", taskName,
+			"/tr", taskRun,
+			"/sc", "onstart", "/ru", "SYSTEM", "/f",
+		).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("schtasks failed: %s: %w", string(output), err)
 		}
@@ -356,7 +360,7 @@ func InstallAutoStartHTTP(controllerAddr, token, httpPort string) error {
 	case "windows":
 		taskName := "BlackoutWorker"
 		// 安装后立即启动任务，节点立刻上线（开机自启依然生效）
-		if out, err := exec.Command("cmd", "/c", `schtasks /run /tn "`+taskName+"\"").CombinedOutput(); err != nil {
+		if out, err := exec.Command("schtasks", "/run", "/tn", taskName).CombinedOutput(); err != nil {
 			log.Printf("[install] schtasks /run failed: %v (%s)", err, string(out))
 		} else {
 			log.Println("[install] Windows scheduled task started")
@@ -1141,9 +1145,14 @@ func (w *Worker) kickSelf() {
 // 防止 worker 退出后被自动拉起而复活。
 func (w *Worker) disableAutoRestart() {
 	if runtime.GOOS == "windows" {
-		out, err := exec.Command("cmd", "/c", `schtasks /end /tn "BlackoutWorker" && schtasks /delete /tn "BlackoutWorker" /f`).CombinedOutput()
+		// 分两步直传参数（避免 cmd /c 拼接的引号/转义问题）
+		out, err := exec.Command("schtasks", "/end", "/tn", "BlackoutWorker").CombinedOutput()
 		if err != nil {
-			log.Printf("[worker] kick: schtasks cleanup failed: %v (%s)", err, strings.TrimSpace(string(out)))
+			log.Printf("[worker] kick: schtasks /end failed: %v (%s)", err, strings.TrimSpace(string(out)))
+		}
+		out, err = exec.Command("schtasks", "/delete", "/tn", "BlackoutWorker", "/f").CombinedOutput()
+		if err != nil {
+			log.Printf("[worker] kick: schtasks /delete failed: %v (%s)", err, strings.TrimSpace(string(out)))
 		} else {
 			log.Printf("[worker] kick: scheduled task removed")
 		}
