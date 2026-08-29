@@ -2,11 +2,22 @@
 
 package attack
 
-import "net"
+import (
+	"net"
+	"time"
+)
 
 func SupportsSpoofing() bool {
 	return false
 }
+
+// outboundIPv4 非 raw socket 平台 stub：返回全零（tcp_syn 回退 Dial 模式）
+func outboundIPv4() [4]byte {
+	return [4]byte{}
+}
+
+// runRawSYNFlood 非 raw socket 平台 stub（不会被执行：SupportsSpoofing()=false）
+func runRawSYNFlood(s *AttackSession, targets []string, threads int, dur time.Duration, srcIP [4]byte) {}
 
 type SpoofConn struct{}
 

