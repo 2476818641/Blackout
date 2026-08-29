@@ -21,3 +21,6 @@ cldap_amp_test.py
 *.db-wal
 .DS_Store
 Thumbs.db
+
+# 本地报告（个人使用，不入库）
+LAN_*.md
