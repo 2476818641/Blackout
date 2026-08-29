@@ -32,25 +32,26 @@ const spoofCapabilityTTL = 24 * time.Hour
 // 2. 发送伪造源 IP 的 UDP 探测包到 Controller:9091
 // 3. 轮询 result 端点获取验证结果
 // 返回 (结果, 是否可靠)。reliable=false 表示探测未能完整执行
-// （平台/权限不支持、注册失败、网络抖动等），此时不应把 false 当作
-// "验证为不支持"写入缓存。
+// （网络抖动/注册失败等），此时不应把 false 当作"验证为不支持"写入缓存。
+// 平台/权限不支持（Windows/非 root/无 raw socket）是**确定性结论**，
+// 返回 reliable=true（调用方据此标记"不支持"，不再无限重试卡"检测中"）。
 func (w *Worker) probeIPSpoofing() (bool, bool) {
 	// 如果是 Windows，直接返回 false（Windows 通常不支持原始套接字伪造）
 	if w.isWindows {
-		log.Printf("[spoof-probe] skipped: Windows does not support IP spoofing")
-		return false, false
+		log.Printf("[spoof-probe] definitive: Windows does not support IP spoofing")
+		return false, true
 	}
 
 	// 检查 attack 包是否支持伪造
 	if !attack.SupportsSpoofing() {
-		log.Printf("[spoof-probe] skipped: platform does not support spoofing")
-		return false, false
+		log.Printf("[spoof-probe] definitive: platform does not support spoofing")
+		return false, true
 	}
 
 	// raw socket 需要 root
 	if !IsRoot() {
-		log.Printf("[spoof-probe] skipped: raw socket requires root/admin privileges")
-		return false, false
+		log.Printf("[spoof-probe] definitive: raw socket requires root/admin privileges")
+		return false, true
 	}
 
 	// 生成随机 nonce（16 字节）
@@ -98,18 +99,16 @@ func (w *Worker) probeIPSpoofing() (bool, bool) {
 	log.Printf("[spoof-probe] registered: claim_ip=%s nonce=%s controller=%s", claimIP, nonce, controllerHost)
 
 	// 2. 注册成功后再发送伪造源 IP 的 UDP 探测包（保证 Controller 已就绪，消除时序竞态）。
-	// NewSpoofConn 只接受 IP（raw socket），Controller 地址为域名时必须先解析，
-	// 否则探测永远失败且每 60s 重试，反射器攻击路径被永久禁用
-	probeHost := controllerHost
-	if net.ParseIP(probeHost) == nil {
-		resolved, err := net.ResolveIPAddr("ip", probeHost)
-		if err != nil {
-			log.Printf("[spoof-probe] failed to resolve controller host %q: %v", probeHost, err)
-			return false, false
-		}
-		probeHost = resolved.IP.String()
-		log.Printf("[spoof-probe] controller host %q resolved to %s", controllerHost, probeHost)
+	// 探测目标必须用 Controller 的真实服务器 IP：域名解析（controllerHost）可能
+	// 得到 CDN/代理边缘地址（如 Cloudflare），而 CDN 不转发 UDP，探测包会被静默
+	// 丢弃导致永远验证失败、节点卡"检测中"。TCP 拨号 controller 拿到的对端 IP
+	// 一定可达（gRPC 已在用同一条网络路径）。
+	probeHost := w.resolveProbeTargetIP()
+	if probeHost == "" {
+		log.Printf("[spoof-probe] failed to resolve controller IP for UDP probe")
+		return false, false
 	}
+	log.Printf("[spoof-probe] UDP probe target: %s:9091", probeHost)
 	spoof, err := attack.NewSpoofConn(probeHost, 9091)
 	if err != nil {
 		log.Printf("[spoof-probe] failed to create raw socket: %v", err)
@@ -180,6 +179,22 @@ func (w *Worker) probeIPSpoofing() (bool, bool) {
 	}
 }
 
+// resolveProbeTargetIP 获取 UDP 探测目标 IP：TCP 拨号 controller 拿真实对端 IP。
+// 域名解析可能落到 CDN 边缘（不转发 UDP）；TCP 对端 IP 一定可达。
+func (w *Worker) resolveProbeTargetIP() string {
+	controller, _, _ := w.getConfig()
+	conn, err := net.DialTimeout("tcp", controller, 3*time.Second)
+	if err != nil {
+		log.Printf("[spoof-probe] tcp dial to controller %q failed: %v", controller, err)
+		return ""
+	}
+	defer conn.Close()
+	if ta, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+		return ta.IP.String()
+	}
+	return ""
+}
+
 // spoofProbeResult 探测结果：reliable=false 表示未获得可信结果
 type spoofProbeResult struct {
 	reliable bool
@@ -208,7 +223,7 @@ func (w *Worker) spoofProbeMaintenance() {
 		// 结果先发主循环应用（避免状态竞争），上报在此协程直接完成
 		// （HTTP 调用不能阻塞心跳主循环）
 		w.spoofResultCh <- spoofProbeResult{reliable: true, result: result}
-		w.reportSpoofStatusValue(result)
+		w.reportSpoofStatusValue(result, !IsRoot() || w.isWindows || !attack.SupportsSpoofing())
 		return
 	}
 	w.reportSpoofStatus()
@@ -281,14 +296,17 @@ func (w *Worker) queryControllerSpoofCache() (bool, bool) {
 // 使节点表的 CanSpoof/SpoofTested 反映真实能力（探测失败也会上报为 false，
 // 避免 Controller 端停留在"待检测"或乐观的默认值）。
 func (w *Worker) reportSpoofStatus() {
-	w.reportSpoofStatusValue(w.canSpoofIP.Load())
+	w.reportSpoofStatusValue(w.canSpoofIP.Load(), false)
 }
 
-// reportSpoofStatusValue 上报指定能力值（供非主循环协程使用，避免读 w.canSpoofIP 竞争）
-func (w *Worker) reportSpoofStatusValue(canSpoof bool) {
+// reportSpoofStatusValue 上报指定能力值（供非主循环协程使用，避免读 w.canSpoofIP 竞争）。
+// definitive=true 表示确定性结论（平台/权限不支持）：Controller 只更新节点表、
+// 不写按 IP 的持久化缓存——防止该节点以后以 root 重启时被旧 false 缓存命中、
+// 永远无法重新探测（同 IP 复用逻辑反而变成永久误判）。
+func (w *Worker) reportSpoofStatusValue(canSpoof bool, definitive bool) {
 	url := w.ctrlBaseURL() + "/api/worker/spoof-status"
-	body := fmt.Sprintf(`{"worker_id":"%s","can_spoof":%v}`,
-		w.assignedID, canSpoof)
+	body := fmt.Sprintf(`{"worker_id":"%s","can_spoof":%v,"definitive":%v}`,
+		w.assignedID, canSpoof, definitive)
 	req, err := http.NewRequest("POST", url, strings.NewReader(body))
 	if err != nil {
 		log.Printf("[spoof-probe] status report request create failed: %v", err)
@@ -309,7 +327,7 @@ func (w *Worker) reportSpoofStatusValue(canSpoof bool) {
 		log.Printf("[spoof-probe] status report http %d", resp.StatusCode)
 		return
 	}
-	log.Printf("[spoof-probe] reported status to controller: can_spoof=%v", canSpoof)
+	log.Printf("[spoof-probe] reported status to controller: can_spoof=%v definitive=%v", canSpoof, definitive)
 }
 
 // saveSpoofCapability 保存伪造能力到本地数据库（含探测时间戳，用于 TTL 过期）

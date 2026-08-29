@@ -228,14 +228,17 @@ func (c *Ctrl) spoofCacheSet(ip string, canSpoof bool) {
 // Worker 上报探测结果（can_spoof），更新节点表的真实伪造能力并缓存到磁盘
 // （按 IP 持久化：同 IP 的 worker 重新上线时直接打标签，无需重新探测）。
 // 探测失败/平台不支持也会上报 false，避免节点停留在"待检测"。
+// definitive=true（平台/权限确定性不支持）时只更新节点表、不写持久化缓存
+// ——防止该节点以后以 root 重启时被旧 false 缓存命中而永远无法重新探测。
 func (c *Ctrl) handleSpoofStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
 	var req struct {
-		WorkerID string `json:"worker_id"`
-		CanSpoof bool   `json:"can_spoof"`
+		WorkerID   string `json:"worker_id"`
+		CanSpoof   bool   `json:"can_spoof"`
+		Definitive bool   `json:"definitive"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid json"}`, 400)
@@ -260,12 +263,14 @@ func (c *Ctrl) handleSpoofStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	c.mu.Unlock()
 
-	// 按 IP 缓存探测结果：同 IP worker 重新上线直接复用
-	if nodeIP != "" && nodeIP != "127.0.0.1" {
+	// 按 IP 缓存探测结果：同 IP worker 重新上线直接复用。
+	// definitive 结果（平台/权限不支持）不写缓存——权限变化（如 root 重启）
+	// 后必须允许重新探测，持久化 false 会永久卡死该节点。
+	if nodeIP != "" && nodeIP != "127.0.0.1" && !req.Definitive {
 		c.spoofCacheSet(nodeIP, req.CanSpoof)
 	}
 
-	log.Printf("[spoof-probe] %s reported can_spoof=%v", req.WorkerID, req.CanSpoof)
+	log.Printf("[spoof-probe] %s reported can_spoof=%v definitive=%v", req.WorkerID, req.CanSpoof, req.Definitive)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 }

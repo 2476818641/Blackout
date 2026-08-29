@@ -506,61 +506,73 @@ func (w *Worker) Run(ctx context.Context) error {
 	defer w.deregister()
 
 	// 探测 IP 伪造能力（在注册之后执行：probe 上报的 worker_id 用最终
-	// assignedID，避免注册时 ID 冲突重分配导致 spoof 标签打到错误节点）
-	// 顺序：Controller 缓存（按 IP 持久化，同 IP 重上线直接打标签）→
-	// 本地 SQLite 缓存 → 真实探测
-	if ctrlCached, found := w.queryControllerSpoofCache(); found {
-		w.canSpoofIP.Store(ctrlCached)
+	// assignedID，避免注册时 ID 冲突重分配导致 spoof 标签打到错误节点）。
+	//
+	// 平台/权限前置判断：Windows / 非 root / 编译平台无 raw socket 是
+	// **确定性不支持**——直接标记测试完成并上报（definitive，Controller
+	// 不写持久化缓存），节点立即显示"不支持"而不是永远卡在"检测中"。
+	// 此前这些分支走 probeIPSpoofing 返回"不可靠"导致每 60s 无限重试。
+	if w.isWindows || !attack.SupportsSpoofing() || !IsRoot() {
+		w.canSpoofIP.Store(false)
 		w.spoofProbed.Store(1)
-		log.Printf("[spoof-probe] loaded controller cache: can_spoof=%v (IP-based, no probe needed)", ctrlCached)
-	} else if w.localPool != nil {
-		// 优先使用本地缓存（TTL: spoofCapabilityTTL）
-		cached, testedAt, err := w.loadSpoofCapability()
-		if err == nil && time.Since(testedAt) < spoofCapabilityTTL {
-			w.canSpoofIP.Store(cached)
+		w.reportSpoofStatusValue(false, true)
+		log.Printf("[spoof-probe] definitive: cannot spoof on this platform/privileges, marked tested")
+	} else {
+		// 顺序：Controller 缓存（按 IP 持久化，同 IP 重上线直接打标签）→
+		// 本地 SQLite 缓存 → 真实探测
+		if ctrlCached, found := w.queryControllerSpoofCache(); found {
+			w.canSpoofIP.Store(ctrlCached)
 			w.spoofProbed.Store(1)
-			log.Printf("[spoof-probe] loaded cached result: can_spoof=%v (tested %s ago)",
-				cached, time.Since(testedAt).Round(time.Minute))
-			// 缓存结果也上报（如 Controller 重启后节点状态被重置）
-			w.reportSpoofStatus()
-		} else {
-			// 无缓存、过期或读取失败，执行探测
-			log.Printf("[spoof-probe] no valid cache (err=%v), probing...", err)
-			result, reliable := w.probeIPSpoofing()
-
-			if reliable {
-				// 探测完整执行：结果可信，落盘缓存
-				w.canSpoofIP.Store(result)
-				w.spoofProbed.Store(1)
-				if err := w.saveSpoofCapability(result); err != nil {
-					log.Printf("[spoof-probe] failed to save result: %v", err)
-				}
-				w.reportSpoofStatus()
-			} else if err == nil {
-				// 探测不可靠（网络抖动/Controller 不可达）但存在过期缓存：
-				// 保守沿用旧值，避免一次抖动永久误关 IP 伪造
+			log.Printf("[spoof-probe] loaded controller cache: can_spoof=%v (IP-based, no probe needed)", ctrlCached)
+		} else if w.localPool != nil {
+			// 优先使用本地缓存（TTL: spoofCapabilityTTL）
+			cached, testedAt, err := w.loadSpoofCapability()
+			if err == nil && time.Since(testedAt) < spoofCapabilityTTL {
 				w.canSpoofIP.Store(cached)
 				w.spoofProbed.Store(1)
-				log.Printf("[spoof-probe] probe unreliable, keeping cached value: can_spoof=%v", cached)
+				log.Printf("[spoof-probe] loaded cached result: can_spoof=%v (tested %s ago)",
+					cached, time.Since(testedAt).Round(time.Minute))
+				// 缓存结果也上报（如 Controller 重启后节点状态被重置）
 				w.reportSpoofStatus()
 			} else {
-				// 无任何历史数据且探测不可靠：不急于上报 false（会把
-				// 可能支持伪造的节点误标为不支持），保持"待检测"，
-				// 由周期维护协程重试探测直到得到可靠结果。
-				log.Printf("[spoof-probe] no cache and probe unreliable, will retry periodically")
+				// 无缓存、过期或读取失败，执行探测
+				log.Printf("[spoof-probe] no valid cache (err=%v), probing...", err)
+				result, reliable := w.probeIPSpoofing()
+
+				if reliable {
+					// 探测完整执行：结果可信，落盘缓存
+					w.canSpoofIP.Store(result)
+					w.spoofProbed.Store(1)
+					if err := w.saveSpoofCapability(result); err != nil {
+						log.Printf("[spoof-probe] failed to save result: %v", err)
+					}
+					w.reportSpoofStatus()
+				} else if err == nil {
+					// 探测不可靠（网络抖动/Controller 不可达）但存在过期缓存：
+					// 保守沿用旧值，避免一次抖动永久误关 IP 伪造
+					w.canSpoofIP.Store(cached)
+					w.spoofProbed.Store(1)
+					log.Printf("[spoof-probe] probe unreliable, keeping cached value: can_spoof=%v", cached)
+					w.reportSpoofStatus()
+				} else {
+					// 无任何历史数据且探测不可靠：不急于上报 false（会把
+					// 可能支持伪造的节点误标为不支持），保持"待检测"，
+					// 由周期维护协程重试探测直到得到可靠结果。
+					log.Printf("[spoof-probe] no cache and probe unreliable, will retry periodically")
+				}
 			}
-		}
-	} else {
-		// 未启用本地池：仅做内存探测，不落盘
-		log.Printf("[spoof-probe] no local pool, probing in-memory...")
-		result, reliable := w.probeIPSpoofing()
-		w.canSpoofIP.Store(result)
-		if reliable {
-			w.spoofProbed.Store(1)
-			w.reportSpoofStatus()
 		} else {
-			// 同上：探测不可靠保持"待检测"，由周期维护协程重试
-			log.Printf("[spoof-probe] probe unreliable, will retry periodically")
+			// 未启用本地池：仅做内存探测，不落盘
+			log.Printf("[spoof-probe] no local pool, probing in-memory...")
+			result, reliable := w.probeIPSpoofing()
+			w.canSpoofIP.Store(result)
+			if reliable {
+				w.spoofProbed.Store(1)
+				w.reportSpoofStatus()
+			} else {
+				// 同上：探测不可靠保持"待检测"，由周期维护协程重试
+				log.Printf("[spoof-probe] probe unreliable, will retry periodically")
+			}
 		}
 	}
 
