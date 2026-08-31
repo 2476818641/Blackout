@@ -142,11 +142,15 @@
         </optgroup>
         <optgroup :label="t('group_l7')">
           <option value="http_flood" x-text="t('method_http')"></option>
+          <option value="head_flood" x-text="t('method_head')"></option>
+          <option value="range_flood" x-text="t('method_range')"></option>
           <option value="post_flood" x-text="t('method_post')"></option>
           <option value="http2_flood" x-text="t('method_http2')"></option>
           <option value="http2_reset" x-text="t('method_http2_reset')"></option>
           <option value="http2_continuation" x-text="t('method_http2_cont')"></option>
           <option value="http2_bomb" x-text="t('method_http2_bomb')"></option>
+          <option value="h2_ping" x-text="t('method_h2_ping')"></option>
+          <option value="tls_handshake" x-text="t('method_tls_handshake')"></option>
           <option value="slowloris" x-text="t('method_slowloris')"></option>
           <option value="slow_post" x-text="t('method_slow_post')"></option>
           <option value="https_bypass" x-text="t('method_https')"></option>
@@ -249,11 +253,15 @@
             <option value="tcp_ack">TCP ACK</option>
             <option value="tcp_connect">TCP Connect</option>
             <option value="http_flood">HTTP Flood</option>
+            <option value="head_flood">HEAD Flood</option>
+            <option value="range_flood">Range Flood</option>
             <option value="post_flood">POST Flood</option>
             <option value="http2_flood">HTTP/2 Flood</option>
             <option value="http2_reset">H2 Rapid Reset</option>
             <option value="http2_continuation">H2 Continuation</option>
             <option value="http2_bomb">H2 HPACK Bomb</option>
+            <option value="h2_ping">H2 PING Flood</option>
+            <option value="tls_handshake">TLS Handshake</option>
             <option value="slowloris">Slowloris</option>
             <option value="slow_post">Slow POST</option>
             <option value="https_bypass">HTTPS Bypass</option>
@@ -864,7 +872,7 @@ function app() {
       method_combo:'Combo Attack', method_vse:'VSE Amplification', method_vse_refl:'VSE Reflector Amp (IP Spoof)', method_dns_refl:'DNS Reflector Amp (IP Spoof)', method_cldap_refl:'CLDAP Reflector Amp (IP Spoof)',
       method_udp_stdhex:'UDP StdHex', method_udp_plain:'UDP Plain', method_udp_bypass:'UDP Bypass', method_udp_burst:'UDP Burst',
       method_tcp_syn:'TCP SYN', method_tcp_syn_spoof:'TCP SYN Spoof (Linux)', method_tcp_ack:'TCP ACK', method_tcp_connect:'TCP Connect',
-      method_http:'HTTP Flood', method_post:'POST Flood (random body)', method_http2:'HTTP/2 Flood (multiplex)', method_http2_reset:'HTTP/2 Rapid Reset (CVE-2023-44487)', method_http2_cont:'HTTP/2 CONTINUATION Flood (CVE-2024-27316)', method_http2_bomb:'HTTP/2 HPACK Bomb (CVE-2026-49975, auto-gated)', method_slowloris:'Slowloris (header stall)', method_slow_post:'Slow POST (body stall)', method_https:'HTTPS Bypass',
+      method_http:'HTTP Flood', method_head:'HEAD Flood', method_range:'Range Flood (response amp)', method_post:'POST Flood (random body)', method_http2:'HTTP/2 Flood (multiplex)', method_http2_reset:'HTTP/2 Rapid Reset (CVE-2023-44487)', method_http2_cont:'HTTP/2 CONTINUATION Flood (CVE-2024-27316)', method_http2_bomb:'HTTP/2 HPACK Bomb (CVE-2026-49975, auto-gated)', method_h2_ping:'HTTP/2 PING Flood (frame 2x)', method_tls_handshake:'TLS Handshake Storm (SSL DoS)', method_slowloris:'Slowloris (header stall)', method_slow_post:'Slow POST (body stall)', method_https:'HTTPS Bypass',
       method_mc_handshake:'Minecraft Handshake', method_mc_login:'Minecraft Login', method_game_udp:'Game UDP (ARK=smart A2S)',
       group_udp:'UDP', group_tcp:'TCP', group_l7:'L7', group_game:'Game',
       game_none:'No Game',
@@ -942,7 +950,7 @@ function app() {
       method_combo:'组合攻击', method_vse:'VSE 放大攻击', method_vse_refl:'VSE 反射放大 (IP欺骗)', method_dns_refl:'DNS 反射放大 (IP欺骗)', method_cldap_refl:'CLDAP 反射放大 (IP欺骗)',
       method_udp_stdhex:'UDP 标准Hex', method_udp_plain:'UDP 纯文本', method_udp_bypass:'UDP 绕过', method_udp_burst:'UDP 爆发',
       method_tcp_syn:'TCP SYN', method_tcp_syn_spoof:'TCP SYN 伪造源IP (Linux)', method_tcp_ack:'TCP ACK', method_tcp_connect:'TCP 连接',
-      method_http:'HTTP 洪水', method_post:'POST 洪水 (随机body)', method_http2:'HTTP/2 洪水 (多路复用)', method_http2_reset:'HTTP/2 Rapid Reset (CVE-2023-44487)', method_http2_cont:'HTTP/2 CONTINUATION 洪水 (CVE-2024-27316)', method_http2_bomb:'HTTP/2 HPACK 炸弹 (CVE-2026-49975, 自动门控)', method_slowloris:'Slowloris (请求头占坑)', method_slow_post:'Slow POST (请求体占坑)', method_https:'HTTPS 绕过',
+      method_http:'HTTP 洪水', method_head:'HEAD 洪水', method_range:'Range 洪水 (响应放大)', method_post:'POST 洪水 (随机body)', method_http2:'HTTP/2 洪水 (多路复用)', method_http2_reset:'HTTP/2 Rapid Reset (CVE-2023-44487)', method_http2_cont:'HTTP/2 CONTINUATION 洪水 (CVE-2024-27316)', method_http2_bomb:'HTTP/2 HPACK 炸弹 (CVE-2026-49975, 自动门控)', method_h2_ping:'HTTP/2 PING 洪水 (帧2x放大)', method_tls_handshake:'TLS 握手风暴 (SSL DoS)', method_slowloris:'Slowloris (请求头占坑)', method_slow_post:'Slow POST (请求体占坑)', method_https:'HTTPS 绕过',
       method_mc_handshake:'Minecraft 握手', method_mc_login:'Minecraft 登录', method_game_udp:'游戏 UDP (ARK=智能A2S)',
       group_udp:'UDP', group_tcp:'TCP', group_l7:'L7', group_game:'游戏',
       game_none:'无游戏',

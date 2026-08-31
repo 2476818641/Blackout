@@ -174,6 +174,10 @@ func subAttackMethodToFunc(cfg AttackConfig) *AttackSession {
 		return StartSpoofedTCPFloodEx(cfg)
 	case "http_flood":
 		return StartHTTPFloodEx(cfg)
+	case "head_flood":
+		return StartHEADFloodEx(cfg)
+	case "range_flood":
+		return StartRangeFloodEx(cfg)
 	case "post_flood":
 		return StartPOSTFloodEx(cfg)
 	case "http2_flood":
@@ -184,6 +188,10 @@ func subAttackMethodToFunc(cfg AttackConfig) *AttackSession {
 		return StartHTTP2ContinuationEx(cfg)
 	case "http2_bomb":
 		return StartHTTP2BombEx(cfg)
+	case "h2_ping":
+		return StartH2PingEx(cfg)
+	case "tls_handshake":
+		return StartTLSHandshakeEx(cfg)
 	case "slowloris", "slow_post":
 		return StartSlowlorisEx(cfg)
 	case "https_bypass":
