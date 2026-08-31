@@ -184,6 +184,8 @@ func subAttackMethodToFunc(cfg AttackConfig) *AttackSession {
 		return StartHTTP2ContinuationEx(cfg)
 	case "http2_bomb":
 		return StartHTTP2BombEx(cfg)
+	case "slowloris", "slow_post":
+		return StartSlowlorisEx(cfg)
 	case "https_bypass":
 		return StartHTTPSBypassEx(cfg)
 	case "minecraft_handshake", "minecraft_login":

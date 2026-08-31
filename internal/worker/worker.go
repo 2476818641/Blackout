@@ -1274,6 +1274,8 @@ func (w *Worker) startTask(task *pb.AttackTask) {
 		session = attack.StartHTTP2ContinuationEx(cfg)
 	case "http2_bomb":
 		session = attack.StartHTTP2BombEx(cfg)
+	case "slowloris", "slow_post":
+		session = attack.StartSlowlorisEx(cfg)
 	case "https_bypass":
 		session = attack.StartHTTPSBypassEx(cfg)
 	case "minecraft_handshake", "minecraft_login":
