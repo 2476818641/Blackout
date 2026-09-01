@@ -521,66 +521,7 @@ func (c *Ctrl) Start() error {
 		log.Printf("[spoof-probe] failed to start UDP listener: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/nodes", c.authHTTP(c.handleNodes))
-	mux.HandleFunc("/api/nodes/", c.authHTTP(c.handleKickNode))
-	mux.HandleFunc("/api/tasks", c.authHTTP(c.handleTasks))
-	mux.HandleFunc("/api/node-groups", c.authHTTP(c.handleNodeGroups))
-	mux.HandleFunc("/api/migrate/export", c.authAdmin(c.handleMigrateExport))
-	mux.HandleFunc("/api/migrate/import", c.authAdmin(c.handleMigrateImport))
-	mux.HandleFunc("/api/migrate/start", c.authAdmin(c.handleMigrateStart))
-	mux.HandleFunc("/api/migrate/stop", c.authAdmin(c.handleMigrateStop))
-	mux.HandleFunc("/api/tasks/", c.authHTTP(c.handleTaskByID))
-	mux.HandleFunc("/api/scan", c.authHTTP(c.handleScan))
-	mux.HandleFunc("/api/l7/test", c.authAdmin(c.handleL7Test))
-	mux.HandleFunc("/api/stats", c.authHTTP(c.handleStats))
-	mux.HandleFunc("/api/proxy", c.authHTTP(c.handleProxy))
-	mux.HandleFunc("/api/dnsamp", c.authHTTP(c.handleDNSAmp))
-	mux.HandleFunc("/api/dnsamp/domains", c.authHTTP(c.handleDNSAmpDomains))
-	mux.HandleFunc("/api/shodan/refresh", c.authHTTP(c.handleShodanRefresh))
-	mux.HandleFunc("/api/shodan/countries", c.authHTTP(c.handleShodanCountries))
-	mux.HandleFunc("/api/shodan", c.authHTTP(c.handleShodanConfig))
-	mux.HandleFunc("/api/pools", c.authHTTP(c.handlePools))
-	mux.HandleFunc("/api/pools/stats", c.authHTTP(c.handlePoolStats))
-	mux.HandleFunc("/api/pools/", c.authHTTP(c.handlePoolByGame))
-	mux.HandleFunc("/api/reflectors/all", c.authHTTP(c.handleReflectorsAll))
-	mux.HandleFunc("/api/reflectors/candidates", c.authHTTP(c.handleReflectorsCandidates))
-	mux.HandleFunc("/api/reflectors/version", c.authHTTP(c.handleReflectorsVersion))
-	mux.HandleFunc("/api/reflectors/steam", c.authHTTP(c.handleReflectorsSteam))
-	mux.HandleFunc("/api/reflectors/manual", c.authHTTP(c.handleReflectorsManual))
-	mux.HandleFunc("/api/reflectors/manual/test", c.authHTTP(c.handleReflectorsManualTest))
-	mux.HandleFunc("/api/auth", c.handleAuth)
-	mux.HandleFunc("/api/templates", c.authHTTP(c.handleTemplates))
-	mux.HandleFunc("/api/guard", c.guardHandler())
-	mux.HandleFunc("/api/audit", c.authAdmin(c.handleAudit))
-	// 轻量伪造 Worker（blackout-lw Rust 节点）接入
-	mux.HandleFunc("/api/lw/register", c.authHTTP(c.handleLWRegister))
-	mux.HandleFunc("/api/lw/heartbeat", c.authHTTP(c.handleLWHeartbeat))
-	mux.HandleFunc("/api/lw/report", c.authHTTP(c.handleLWReport))
-	mux.HandleFunc("/api/logs", c.authHTTP(c.handleLogs))
-	mux.HandleFunc("/api/logs/stats", c.authHTTP(c.handleLogStats))
-	mux.HandleFunc("/api/logs/", c.authHTTP(c.handleLogs))
-	mux.HandleFunc("/api/tokens/provision", c.authAdmin(c.handleProvisionToken))
-	mux.HandleFunc("/api/tokens/revoke", c.authAdmin(c.handleRevokeToken))
-	mux.HandleFunc("/api/deploy/config", c.authHTTP(c.handleDeployConfig))
-	mux.HandleFunc("/api/deploy/command", c.authHTTP(c.handleDeployCommand))
-	mux.HandleFunc("/api/deploy/update", c.authAdmin(c.handleDeployUpdate))
-	mux.HandleFunc("/api/deploy/version", c.authHTTP(c.handleDeployVersion))
-	mux.HandleFunc("/api/update/check", c.authHTTP(c.handleUpdateCheck))
-	mux.HandleFunc("/api/update/token", c.authAdmin(c.handleUpdateToken))
-	mux.HandleFunc("/api/update/controller", c.authAdmin(c.handleUpdateController))
-	mux.HandleFunc("/api/update/workers", c.authAdmin(c.handleUpdateWorkers))
-	mux.HandleFunc("/api/update/all", c.authAdmin(c.handleUpdateAll))
-	mux.HandleFunc("/api/worker/spoof-probe", c.authHTTP(c.handleWorkerSpoofProbe))
-	mux.HandleFunc("/api/worker/spoof-probe/result", c.authHTTP(c.handleSpoofProbeResult))
-	mux.HandleFunc("/api/worker/spoof-status", c.authHTTP(c.handleSpoofStatus))
-	mux.HandleFunc("/api/worker/spoof-cache", c.authHTTP(c.handleSpoofCacheQuery))
-	mux.HandleFunc("/api/tasks/complete", c.authHTTP(c.handleTaskComplete))
-	mux.HandleFunc("/ws", c.handleWS)
-	mux.HandleFunc("/pool", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFileFS(w, r, web.StaticFS, "pool.html")
-	})
-	mux.Handle("/", http.FileServerFS(web.StaticFS))
+	mux := c.routes()
 
 	log.Printf("HTTP server listening on %s", c.httpAddr)
 	if tlsConfig != nil {
@@ -636,6 +577,93 @@ func (c *Ctrl) workerTokenEnabled(token string) bool {
 	enabled, ok := c.workerTokens[token]
 	c.workerTokensMu.RUnlock()
 	return ok && enabled
+}
+
+// requestRole 返回请求令牌的角色：admin / worker（共享或 per-worker）/ unknown。
+// 供 handler 内做读写分级（如 /api/proxy、/api/dnsamp：GET worker 可读，
+// PUT/POST 仅 admin）。
+func (c *Ctrl) requestRole(r *http.Request) string {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	switch {
+	case token == c.adminToken:
+		return "admin"
+	case token == c.workerToken || c.workerTokenEnabled(token):
+		return "worker"
+	}
+	return "unknown"
+}
+
+// routes 构建 HTTP 路由表（独立方法便于测试）。
+//
+// 权限分级：authAdmin = 仅管理员令牌（worker 令牌一律拒绝）。
+// worker 凭据（共享 workerToken / per-worker token）只允许访问**运行必需**
+// 端点——拉反射器池、spoof 探测、完成上报、云更新轮询、lw 接入、
+// /api/proxy 与 /api/dnsamp 的 GET（拉取配置）。其余管理端点
+// （任务创建/停止、节点列表、目标保护、日志、部署命令、池管理等）
+// 一律 authAdmin，防止 worker 凭据泄露后被用于创建/停止攻击、
+// 关闭目标保护、篡改代理池、读取部署命令（含新 worker token）等滥用。
+func (c *Ctrl) routes() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/nodes", c.authAdmin(c.handleNodes))
+	mux.HandleFunc("/api/nodes/", c.authAdmin(c.handleKickNode))
+	mux.HandleFunc("/api/tasks", c.authAdmin(c.handleTasks))
+	mux.HandleFunc("/api/node-groups", c.authAdmin(c.handleNodeGroups))
+	mux.HandleFunc("/api/migrate/export", c.authAdmin(c.handleMigrateExport))
+	mux.HandleFunc("/api/migrate/import", c.authAdmin(c.handleMigrateImport))
+	mux.HandleFunc("/api/migrate/start", c.authAdmin(c.handleMigrateStart))
+	mux.HandleFunc("/api/migrate/stop", c.authAdmin(c.handleMigrateStop))
+	mux.HandleFunc("/api/tasks/", c.authAdmin(c.handleTaskByID))
+	mux.HandleFunc("/api/scan", c.authAdmin(c.handleScan))
+	mux.HandleFunc("/api/l7/test", c.authAdmin(c.handleL7Test))
+	mux.HandleFunc("/api/stats", c.authAdmin(c.handleStats))
+	mux.HandleFunc("/api/proxy", c.authHTTP(c.handleProxy))
+	mux.HandleFunc("/api/dnsamp", c.authHTTP(c.handleDNSAmp))
+	mux.HandleFunc("/api/dnsamp/domains", c.authAdmin(c.handleDNSAmpDomains))
+	mux.HandleFunc("/api/shodan/refresh", c.authAdmin(c.handleShodanRefresh))
+	mux.HandleFunc("/api/shodan/countries", c.authAdmin(c.handleShodanCountries))
+	mux.HandleFunc("/api/shodan", c.authAdmin(c.handleShodanConfig))
+	mux.HandleFunc("/api/pools", c.authAdmin(c.handlePools))
+	mux.HandleFunc("/api/pools/stats", c.authAdmin(c.handlePoolStats))
+	mux.HandleFunc("/api/pools/", c.authAdmin(c.handlePoolByGame))
+	mux.HandleFunc("/api/reflectors/all", c.authHTTP(c.handleReflectorsAll))
+	mux.HandleFunc("/api/reflectors/candidates", c.authAdmin(c.handleReflectorsCandidates))
+	mux.HandleFunc("/api/reflectors/version", c.authHTTP(c.handleReflectorsVersion))
+	mux.HandleFunc("/api/reflectors/steam", c.authAdmin(c.handleReflectorsSteam))
+	mux.HandleFunc("/api/reflectors/manual", c.authAdmin(c.handleReflectorsManual))
+	mux.HandleFunc("/api/reflectors/manual/test", c.authAdmin(c.handleReflectorsManualTest))
+	mux.HandleFunc("/api/auth", c.handleAuth)
+	mux.HandleFunc("/api/templates", c.authAdmin(c.handleTemplates))
+	mux.HandleFunc("/api/guard", c.authAdmin(c.guardHandler()))
+	mux.HandleFunc("/api/audit", c.authAdmin(c.handleAudit))
+	// 轻量伪造 Worker（blackout-lw Rust 节点）接入
+	mux.HandleFunc("/api/lw/register", c.authHTTP(c.handleLWRegister))
+	mux.HandleFunc("/api/lw/heartbeat", c.authHTTP(c.handleLWHeartbeat))
+	mux.HandleFunc("/api/lw/report", c.authHTTP(c.handleLWReport))
+	mux.HandleFunc("/api/logs", c.authAdmin(c.handleLogs))
+	mux.HandleFunc("/api/logs/stats", c.authAdmin(c.handleLogStats))
+	mux.HandleFunc("/api/logs/", c.authAdmin(c.handleLogs))
+	mux.HandleFunc("/api/tokens/provision", c.authAdmin(c.handleProvisionToken))
+	mux.HandleFunc("/api/tokens/revoke", c.authAdmin(c.handleRevokeToken))
+	mux.HandleFunc("/api/deploy/config", c.authAdmin(c.handleDeployConfig))
+	mux.HandleFunc("/api/deploy/command", c.authAdmin(c.handleDeployCommand))
+	mux.HandleFunc("/api/deploy/update", c.authAdmin(c.handleDeployUpdate))
+	mux.HandleFunc("/api/deploy/version", c.authHTTP(c.handleDeployVersion))
+	mux.HandleFunc("/api/update/check", c.authAdmin(c.handleUpdateCheck))
+	mux.HandleFunc("/api/update/token", c.authAdmin(c.handleUpdateToken))
+	mux.HandleFunc("/api/update/controller", c.authAdmin(c.handleUpdateController))
+	mux.HandleFunc("/api/update/workers", c.authAdmin(c.handleUpdateWorkers))
+	mux.HandleFunc("/api/update/all", c.authAdmin(c.handleUpdateAll))
+	mux.HandleFunc("/api/worker/spoof-probe", c.authHTTP(c.handleWorkerSpoofProbe))
+	mux.HandleFunc("/api/worker/spoof-probe/result", c.authHTTP(c.handleSpoofProbeResult))
+	mux.HandleFunc("/api/worker/spoof-status", c.authHTTP(c.handleSpoofStatus))
+	mux.HandleFunc("/api/worker/spoof-cache", c.authHTTP(c.handleSpoofCacheQuery))
+	mux.HandleFunc("/api/tasks/complete", c.authHTTP(c.handleTaskComplete))
+	mux.HandleFunc("/ws", c.handleWS)
+	mux.HandleFunc("/pool", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, web.StaticFS, "pool.html")
+	})
+	mux.Handle("/", http.FileServerFS(web.StaticFS))
+	return mux
 }
 
 // authAdmin 仅允许 adminToken 通过，用于 worker token 的签发/撤销等高权限操作
@@ -2059,6 +2087,11 @@ func (c *Ctrl) handleProxy(w http.ResponseWriter, r *http.Request) {
 		w.Write(data)
 
 	case "PUT", "POST":
+		// 写操作仅限 admin（worker 令牌只能 GET 拉取代理，不能篡改代理池）
+		if c.requestRole(r) != "admin" {
+			http.Error(w, `{"error":"admin token required"}`, 403)
+			return
+		}
 		// 上限 4MB：代理文件远超此量即为异常请求
 		data, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
 		if err != nil {
@@ -2455,6 +2488,11 @@ func (c *Ctrl) handleDNSAmp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"domain": domain, "domains": domains})
 
 	case "PUT", "POST":
+		// 写操作仅限 admin（worker 令牌只能 GET 读取放大域名配置）
+		if c.requestRole(r) != "admin" {
+			http.Error(w, `{"error":"admin token required"}`, 403)
+			return
+		}
 		var body struct {
 			Domain string `json:"domain"`
 		}
