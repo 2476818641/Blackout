@@ -194,6 +194,10 @@ func subAttackMethodToFunc(cfg AttackConfig) *AttackSession {
 		return StartTLSHandshakeEx(cfg)
 	case "slowloris", "slow_post":
 		return StartSlowlorisEx(cfg)
+	case "ws_flood":
+		return StartWSFloodEx(cfg)
+	case "ws_slow":
+		return StartWSSlowEx(cfg)
 	case "https_bypass":
 		return StartHTTPSBypassEx(cfg)
 	case "minecraft_handshake", "minecraft_login":

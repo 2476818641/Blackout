@@ -3509,6 +3509,7 @@ var validMethods = map[string]bool{
 	"tcp_syn": true, "tcp_ack": true, "tcp_connect": true, "tcp_tcpbypass": true,
 	"tcp_syn_spoof": true, "http_flood": true, "head_flood": true, "range_flood": true, "post_flood": true, "http2_flood": true, "http2_reset": true, "http2_continuation": true, "http2_bomb": true, "h2_ping": true, "tls_handshake": true, "https_bypass": true,
 	"slowloris": true, "slow_post": true,
+	"ws_flood": true, "ws_slow": true,
 	"minecraft_handshake": true, "minecraft_login": true, "game_udp": true,
 	"combo": true,
 }

@@ -16,6 +16,7 @@ func TestValidMethodsComplete(t *testing.T) {
 		"http2_flood", "http2_reset", "http2_continuation", "http2_bomb",
 		"h2_ping", "tls_handshake",
 		"slowloris", "slow_post",
+		"ws_flood", "ws_slow",
 		"https_bypass",
 		"minecraft_handshake", "minecraft_login", "game_udp",
 		"combo",
