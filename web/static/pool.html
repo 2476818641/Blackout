@@ -8,11 +8,13 @@
 <style>
   :root { --bg:#0a0e14; --panel:#131820; --border:#1e2836; --text:#b0b8c4; --green:#0c6; --red:#f44; --yellow:#fa0; --cyan:#0cc; --accent:#3b82f6; }
   * { box-sizing:border-box; margin:0; padding:0; }
-  body { background:var(--bg); color:var(--text); font-family:'SF Mono','Consolas',monospace; font-size:13px; }
+  /* 系统 UI 字体 + 14px 基准（高分屏可读性） */
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei','PingFang SC','Noto Sans SC',sans-serif; font-size:14px; }
+  code, pre, textarea, .mono { font-family:'Cascadia Code',Consolas,'Courier New',monospace; }
   .header { background:var(--panel); border-bottom:1px solid var(--border); padding:12px 20px; display:flex; justify-content:space-between; align-items:center; }
   .header h1 { color:var(--cyan); font-size:16px; }
   .header a { color:var(--accent); text-decoration:none; font-size:12px; }
-  .lang-btn { background:transparent; border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:11px; font-family:inherit; }
+  .lang-btn { background:transparent; border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px; font-family:inherit; }
   .lang-btn:hover { border-color:var(--accent); color:var(--cyan); }
   .lang-btn.active { border-color:var(--accent); color:var(--cyan); background:var(--accent); color:#fff; }
   .container { max-width:1200px; margin:0 auto; padding:12px; }
@@ -20,13 +22,13 @@
   .tab { padding:8px 16px; cursor:pointer; border:none; background:transparent; color:var(--text); font-size:12px; font-family:inherit; border-bottom:2px solid transparent; margin-bottom:-2px; white-space:nowrap; }
   .tab:hover { color:var(--cyan); }
   .tab.active { color:var(--cyan); border-bottom-color:var(--accent); }
-  .tab .cnt { font-size:10px; opacity:0.6; }
+  .tab .cnt { font-size:12px; opacity:0.6; }
   .panel { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:16px; }
   table { width:100%; border-collapse:collapse; }
-  th, td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--border); font-size:11px; }
+  th, td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--border); font-size:12px; }
   th { color:var(--text); opacity:0.7; font-weight:normal; }
-  .btn { background:var(--accent); color:#fff; border:none; padding:5px 12px; border-radius:4px; cursor:pointer; font-size:11px; font-family:inherit; }
-  .btn.sm { padding:3px 8px; font-size:10px; }
+  .btn { background:var(--accent); color:#fff; border:none; padding:5px 12px; border-radius:4px; cursor:pointer; font-size:12px; font-family:inherit; }
+  .btn.sm { padding:3px 8px; font-size:12px; }
   .btn.danger { background:var(--red); }
   .btn.warn { background:var(--yellow); color:#000; }
   .btn.steam { background:#1a9fff; }
@@ -34,7 +36,7 @@
   .btn:disabled { opacity:0.4; cursor:default; }
   textarea { background:var(--bg); border:1px solid var(--border); color:var(--text); padding:8px; border-radius:4px; font-size:12px; font-family:inherit; width:100%; resize:vertical; min-height:120px; }
   textarea:focus { outline:none; border-color:var(--accent); }
-  .status-line { font-size:11px; margin:6px 0; min-height:18px; }
+  .status-line { font-size:12px; margin:6px 0; min-height:18px; }
   .status-line.ok { color:var(--cyan); }
   .status-line.err { color:var(--red); }
   .table-wrap { max-height:400px; overflow-y:auto; }
@@ -52,10 +54,10 @@
   .modal-box { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:20px; min-width:500px; max-width:700px; max-height:80vh; overflow-y:auto; }
   .modal-box h3 { color:var(--cyan); margin-bottom:12px; font-size:14px; }
   .domain-presets { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
-  .domain-presets .btn { font-size:10px; padding:3px 8px; }
+  .domain-presets .btn { font-size:12px; padding:3px 8px; }
   .domain-presets .btn.on { background:var(--green); }
   .domain-chk { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px; }
-  .domain-chk label { font-size:11px; display:flex; align-items:center; gap:3px; cursor:pointer; padding:2px 6px; border:1px solid var(--border); border-radius:3px; }
+  .domain-chk label { font-size:12px; display:flex; align-items:center; gap:3px; cursor:pointer; padding:2px 6px; border:1px solid var(--border); border-radius:3px; }
   .domain-chk label:hover { border-color:var(--accent); }
   .domain-chk label .on { color:var(--green); }
   .test-results { margin-top:10px; }
@@ -63,7 +65,7 @@
   .test-results .best-row td { color:var(--green); font-weight:bold; }
   .test-results .bad-row td { color:var(--red); opacity:0.6; }
   .manual-domain { display:flex; gap:6px; margin-top:6px; }
-  .manual-domain input { flex:1; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:3px; font-size:11px; font-family:inherit; }
+  .manual-domain input { flex:1; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:3px; font-size:12px; font-family:inherit; }
   /* 移动端兼容：表格横向滚动 + 弹窗不超出视口 + 元素占满不留空 */
   @media (max-width: 900px) {
     .container { padding:8px; }
@@ -111,9 +113,9 @@
       <div class="panel" style="padding:12px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
           <span style="color:var(--cyan);font-size:12px;font-weight:bold" x-text="h.game + ' (' + h.total + ')'"></span>
-          <span style="font-size:10px;opacity:0.7" x-text="'S:'+h.steam+' M:'+h.manual+' Sh:'+h.shodan"></span>
+          <span style="font-size:12px;opacity:0.7" x-text="'S:'+h.steam+' M:'+h.manual+' Sh:'+h.shodan"></span>
         </div>
-        <div style="display:flex;gap:14px;font-size:11px;margin-bottom:6px">
+        <div style="display:flex;gap:14px;font-size:12px;margin-bottom:6px">
           <span><span style="opacity:0.6">Score</span> <span style="color:var(--accent)" x-text="h.avg_score.toFixed(1)"></span></span>
           <span><span style="opacity:0.6">Success</span>
             <span :style="'color:' + (h.success_rate >= 60 ? 'var(--green)' : (h.success_rate >= 30 ? 'var(--yellow)' : 'var(--red)'))" x-text="h.success_rate.toFixed(1) + '%'"></span>
@@ -122,11 +124,11 @@
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:4px">
           <template x-for="c in (h.countries||[]).slice(0,6)" :key="c.country">
-            <span style="font-size:10px;background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:1px 6px">
+            <span style="font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:1px 6px">
               <span x-text="c.country"></span> <span style="opacity:0.6" x-text="c.count"></span>
             </span>
           </template>
-          <span x-show="!(h.countries||[]).length" style="font-size:10px;opacity:0.4" x-text="t('no_geo')"></span>
+          <span x-show="!(h.countries||[]).length" style="font-size:12px;opacity:0.4" x-text="t('no_geo')"></span>
         </div>
       </div>
     </template>
@@ -154,7 +156,7 @@
           x-show="p.game === 'dns'"></button>
         <button class="btn warn" @click="poolTest(p.game)" :disabled="poolTesting===p.game"
           x-text="poolTesting===p.game ? t('testing') : t('test_clean')"></button>
-        <span style="font-size:11px;opacity:0.7">
+        <span style="font-size:12px;opacity:0.7">
           <span x-text="t('steam_label')"></span>: <span x-text="p.steam_count"></span> | <span x-text="t('shodan_label')"></span>: <span x-text="p.shodan_count"></span> | <span x-text="t('manual_label')"></span>: <span x-text="p.manual_count"></span>
         </span>
       </div>
@@ -166,20 +168,20 @@
       <div class="table-wrap" style="margin-top:12px">
 
         <div class="filter-row" style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap">
-          <select x-show="p.game==='dns'" x-model="getFilter(p.game).domain" @change="page[p.game]=1" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:11px;font-family:inherit;max-width:160px">
+          <select x-show="p.game==='dns'" x-model="getFilter(p.game).domain" @change="page[p.game]=1" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px;font-family:inherit;max-width:160px">
             <option value="">-- All Domains --</option>
             <template x-for="d in getUniqueDomains(p.game)" :key="d">
               <option :value="d" x-text="d"></option>
             </template>
           </select>
-          <select x-model="getFilter(p.game).country" @change="page[p.game]=1" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:11px;font-family:inherit;max-width:120px">
+          <select x-model="getFilter(p.game).country" @change="page[p.game]=1" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px;font-family:inherit;max-width:120px">
             <option value="">-- All Countries --</option>
             <template x-for="c in getUniqueCountries(p.game)" :key="c">
               <option :value="c" x-text="c"></option>
             </template>
           </select>
-          <button class="btn sm" @click="clearFilters(p.game)" style="font-size:10px" x-show="getFilter(p.game).domain || getFilter(p.game).country">Clear Filters</button>
-          <span style="font-size:10px;opacity:0.6;margin-left:auto" x-text="getFilteredEntries(p.game).length+' entries'"></span>
+          <button class="btn sm" @click="clearFilters(p.game)" style="font-size:12px" x-show="getFilter(p.game).domain || getFilter(p.game).country">Clear Filters</button>
+          <span style="font-size:12px;opacity:0.6;margin-left:auto" x-text="getFilteredEntries(p.game).length+' entries'"></span>
         </div>
 
         <table>
@@ -197,7 +199,7 @@
                 <td x-text="r.game||'-'"></td>
                 <td x-text="r.response_size+'B'"></td>
                 <template x-if="p.game==='dns' || p.game==='cldap'">
-                  <td x-text="r.amp_domain||'-'" style="color:var(--cyan);font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></td>
+                  <td x-text="r.amp_domain||'-'" style="color:var(--cyan);font-size:12px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></td>
                 </template>
                 <template x-if="p.game==='dns' || p.game==='cldap'">
                   <td><span x-text="(r.amp_ratio||0).toFixed(1)+'x'"></span></td>
@@ -207,9 +209,9 @@
                   <span x-show="!r.has_challenge" style="color:var(--green)">OK</span>
                 </td>
                 <td x-text="(r.score||0).toFixed(1)"></td>
-                <td style="font-size:10px;opacity:0.7;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="r.server_name||'-'"></td>
+                <td style="font-size:12px;opacity:0.7;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="r.server_name||'-'"></td>
                 <td><span class="source-tag" :class="r.source" x-text="r.source"></span></td>
-                <td x-text="r.country||'-'" style="font-size:10px;opacity:0.7"></td>
+                <td x-text="r.country||'-'" style="font-size:12px;opacity:0.7"></td>
                 <td style="white-space:nowrap">
                   <button x-show="p.game==='dns' || p.game==='cldap'" class="btn sm" @click="openTestDialog(r, p.game)" x-text="t('test_btn')" style="margin-right:4px"></button>
                   <button x-show="r.source==='manual'" class="btn danger sm" @click="poolDelete(p.game, r)" x-text="t('del')"></button>
@@ -223,7 +225,7 @@
           <button class="btn sm" @click="prevPage(p.game)" :disabled="(page[p.game]||1)<=1">← Prev</button>
           <span>Page <span x-text="page[p.game]||1" style="color:var(--accent)"></span> / <span x-text="getTotalPages(p.game)"></span></span>
           <button class="btn sm" @click="nextPage(p.game)" :disabled="(page[p.game]||1)>=getTotalPages(p.game)">Next →</button>
-          <select x-model="perPage" @change="page[p.game]=1" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 6px;border-radius:4px;font-size:11px;font-family:inherit;margin-left:12px">
+          <select x-model="perPage" @change="page[p.game]=1" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 6px;border-radius:4px;font-size:12px;font-family:inherit;margin-left:12px">
             <option value="30">30/page</option>
             <option value="50">50/page</option>
             <option value="100">100/page</option>
@@ -245,7 +247,7 @@
       <button class="btn sm" :class="shodanConfig.enabled?'on':''" @click="toggleShodan()"
         x-text="shodanConfig.enabled ? 'ON' : 'OFF'"
         :style="shodanConfig.enabled ? 'background:var(--green)' : 'background:var(--red)'"></button>
-      <span style="font-size:10px;opacity:0.6" x-show="shodanConfig.enabled">Every 7 days</span>
+      <span style="font-size:12px;opacity:0.6" x-show="shodanConfig.enabled">Every 7 days</span>
     </div>
     <div style="margin-bottom:10px">
       <label style="font-size:12px;display:block;margin-bottom:4px">API Key</label>
@@ -253,7 +255,7 @@
         :placeholder="shodanConfig.masked ? 'Current: '+shodanConfig.masked : 'Enter Shodan API Key'">
     </div>
     <button class="btn" @click="saveShodanConfig()" x-text="shodanSaving ? 'Saving...' : 'Save'"></button>
-    <span style="font-size:11px;margin-left:10px" :style="{color:shodanStatusErr?'var(--red)':'var(--cyan)'}" x-text="shodanStatusMsg"></span>
+    <span style="font-size:12px;margin-left:10px" :style="{color:shodanStatusErr?'var(--red)':'var(--cyan)'}" x-text="shodanStatusMsg"></span>
   </div>
 </div>
 
@@ -275,7 +277,7 @@
     <div style="margin-top:10px">
       <button class="btn" @click="shodanRefresh()" :disabled="shodanRefreshing"
         x-text="shodanRefreshing ? t('refreshing') : 'Start Refresh'"></button>
-      <span style="font-size:11px;margin-left:10px" :style="{color:shodanStatusErr?'var(--red)':'var(--cyan)'}" x-text="shodanStatusMsg"></span>
+      <span style="font-size:12px;margin-left:10px" :style="{color:shodanStatusErr?'var(--red)':'var(--cyan)'}" x-text="shodanStatusMsg"></span>
     </div>
   </div>
 </div>
@@ -306,7 +308,7 @@
         x-text="testDialog.running ? t('test_running') : t('start_test')"></button>
     </div>
     <div class="test-results" x-show="testDialog.results.length>0">
-      <div style="margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:11px">
+      <div style="margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:12px">
         <div x-show="testDialog.bestRatio>0" style="color:var(--green)">
           ✓ Best: <span x-text="testDialog.bestDomain"></span> → <span x-text="testDialog.bestRatio.toFixed(1)+'x'"></span> amplification
         </div>
