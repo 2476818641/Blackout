@@ -266,6 +266,9 @@ func (c *Ctrl) handleLWReport(w http.ResponseWriter, r *http.Request) {
 					st.BytesSent = req.Bytes
 					st.Errors = req.Errors
 					st.CurrentPPS = req.PPS
+					if req.PPS > st.PeakPPS {
+						st.PeakPPS = req.PPS
+					}
 				}
 			}
 			c.mu.Unlock()
@@ -286,14 +289,12 @@ func (c *Ctrl) handleLWReport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"error": "worker not assigned to task"})
 		return
 	}
-	task.Workers[req.NodeID] = &TaskStats{
-		WorkerID:    req.NodeID,
-		PacketsSent: req.Packets,
-		BytesSent:   req.Bytes,
-		Errors:      req.Errors,
-		CurrentPPS:  req.PPS,
-		Finished:    true,
-	}
+	task.Workers[req.NodeID] = taskStatsUpdate(
+		task.Workers[req.NodeID], req.NodeID,
+		req.Packets, req.Bytes, req.Errors,
+		req.PPS, 0, 0,
+		true, "",
+	)
 	if task.Status == "cancelling" {
 		// 取消流程中：与 Go worker 的 ReportStats 对齐——已停止的节点记为
 		// 已确认取消，全部确认后由 finishCancellingTask 收尾（重派或完成）。

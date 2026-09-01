@@ -120,9 +120,25 @@ type TaskStats struct {
 	Errors      uint64  `json:"errors"`
 	CurrentPPS  uint64  `json:"current_pps"`
 	CurrentBPS  uint64  `json:"current_bps"`
-	Elapsed     float64 `json:"elapsed_seconds"`
-	Finished    bool    `json:"finished"`
-	ErrorMsg    string  `json:"error_msg,omitempty"`
+	// PeakPPS 上报历史中观测到的峰值瞬时 PPS（任务详情弹窗用）
+	PeakPPS  uint64  `json:"peak_pps"`
+	Elapsed  float64 `json:"elapsed_seconds"`
+	Finished bool    `json:"finished"`
+	ErrorMsg string  `json:"error_msg,omitempty"`
+}
+
+// taskStatsUpdate 覆盖式上报统计时保留历史峰值：
+// 返回新 TaskStats（PeakPPS = max(旧峰值, 当前 PPS)）
+func taskStatsUpdate(prev *TaskStats, workerID string, packets, bytes, errs, pps, bps uint64, elapsed float64, finished bool, errMsg string) *TaskStats {
+	peak := pps
+	if prev != nil && prev.PeakPPS > peak {
+		peak = prev.PeakPPS
+	}
+	return &TaskStats{
+		WorkerID: workerID, PacketsSent: packets, BytesSent: bytes,
+		Errors: errs, CurrentPPS: pps, CurrentBPS: bps,
+		PeakPPS: peak, Elapsed: elapsed, Finished: finished, ErrorMsg: errMsg,
+	}
 }
 
 type WSClient struct {
@@ -1069,17 +1085,12 @@ func (c *Ctrl) ReportStats(stream pb.NodeService_ReportStatsServer) error {
 				c.mu.Unlock()
 				continue
 			}
-			task.Workers[msg.WorkerId] = &TaskStats{
-				WorkerID:    msg.WorkerId,
-				PacketsSent: msg.PacketsSent,
-				BytesSent:   msg.BytesSent,
-				Errors:      msg.Errors,
-				CurrentPPS:  msg.CurrentPps,
-				CurrentBPS:  msg.CurrentBps,
-				Elapsed:     msg.ElapsedSeconds,
-				Finished:    msg.Finished,
-				ErrorMsg:    msg.ErrorMsg,
-			}
+			task.Workers[msg.WorkerId] = taskStatsUpdate(
+				task.Workers[msg.WorkerId], msg.WorkerId,
+				msg.PacketsSent, msg.BytesSent, msg.Errors,
+				msg.CurrentPps, msg.CurrentBps, msg.ElapsedSeconds,
+				msg.Finished, msg.ErrorMsg,
+			)
 			if msg.Finished {
 				if task.Status == "cancelling" {
 					// 取消流程中：把已停止的 worker 记为已确认取消。
@@ -1916,16 +1927,12 @@ func (c *Ctrl) handleTaskComplete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	task.Workers[req.WorkerID] = &TaskStats{
-		WorkerID:    req.WorkerID,
-		PacketsSent: req.Packets,
-		BytesSent:   req.Bytes,
-		Errors:      req.Errors,
-		CurrentPPS:  req.PPS,
-		CurrentBPS:  req.BPS,
-		Elapsed:     req.Elapsed,
-		Finished:    true,
-	}
+	task.Workers[req.WorkerID] = taskStatsUpdate(
+		task.Workers[req.WorkerID], req.WorkerID,
+		req.Packets, req.Bytes, req.Errors,
+		req.PPS, req.BPS, req.Elapsed,
+		true, "",
+	)
 	if task.Status == "cancelling" {
 		// 与 ReportStats 一致：取消中的任务以确认方式收尾，
 		// 超时重试的取消才能转 pending 重新派发

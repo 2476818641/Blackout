@@ -569,15 +569,86 @@
             </td>
             <td>
               <div style="display:flex;gap:4px">
+                <button class="btn sm" @click="openTaskDetail(t.task_id)" x-text="t('detail')" style="padding:3px 8px"></button>
                 <button x-show="t.status=='running'" class="btn danger sm" @click="stopTask(t.task_id)" x-text="t('stop')"></button>
                 <button x-show="t.status=='completed'||t.status=='failed'" class="btn sm" @click="rerunTask(t)" x-text="t('retry')" style="padding:3px 8px"></button>
               </div>
-              <div x-show="(t.repeat_count||0)>1" style="font-size:9px;opacity:0.6;margin-top:2px" x-text="'↻ ' + (t.repeat_left||0) + '/' + (t.repeat_count-1) + ' left'"></div>
+              <div x-show="(t.repeat_count||0)>1" style="font-size:12px;opacity:0.6;margin-top:2px" x-text="'↻ ' + (t.repeat_left||0) + '/' + (t.repeat_count-1) + ' left'"></div>
             </td>
           </tr>
         </template>
       </tbody>
     </table>
+  </div>
+
+  <!-- 任务详情弹窗 -->
+  <div x-show="taskDetail.open" class="modal-overlay" @click.self="taskDetail.open=false">
+    <div class="modal" style="width:640px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h3 x-text="t('task_detail') + ' — ' + (taskDetail.task ? taskDetail.task.task_id.slice(-8) : '')"></h3>
+        <button type="button" class="btn sm" @click="taskDetail.open=false" x-text="'✕'"></button>
+      </div>
+
+      <template x-if="taskDetail.task">
+        <div style="font-size:12px;overflow-y:auto;max-height:70vh">
+          <!-- 基本信息 -->
+          <div style="border:1px solid var(--border);border-radius:4px;padding:8px;margin-bottom:8px">
+            <div style="display:flex;gap:12px;flex-wrap:wrap">
+              <span><span style="opacity:0.6" x-text="t('col_method')+': '"></span><b x-text="taskDetail.task.method"></b></span>
+              <span><span style="opacity:0.6">Status: </span><b x-text="taskDetail.task.status"></b></span>
+              <span x-show="(taskDetail.task.retry_count||0)>0"><span style="opacity:0.6">Retries: </span><b x-text="taskDetail.task.retry_count"></b></span>
+              <span x-show="(taskDetail.task.threads||0)>0"><span style="opacity:0.6">Threads: </span><b x-text="taskDetail.task.threads"></b></span>
+              <span x-show="(taskDetail.task.duration||0)>0"><span style="opacity:0.6">Duration: </span><b x-text="taskDetail.task.duration + 's'"></b></span>
+            </div>
+            <div style="margin-top:4px"><span style="opacity:0.6" x-text="t('col_target')+': '"></span><b x-text="taskDetail.task.target"></b></div>
+            <!-- 攻击时间段（精确到秒） -->
+            <div style="margin-top:4px;color:var(--cyan)" x-text="taskDetail.timeRange()"></div>
+          </div>
+
+          <!-- 汇总统计 -->
+          <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-bottom:8px">
+            <div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;text-align:center">
+              <div style="font-size:14px;font-weight:bold;color:var(--cyan)" x-text="formatNum(taskDetail.totalPackets())"></div>
+              <div style="font-size:10px;opacity:0.6" x-text="t('total_packets')"></div>
+            </div>
+            <div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;text-align:center">
+              <div style="font-size:14px;font-weight:bold;color:var(--cyan)" x-text="taskDetail.totalMB()"></div>
+              <div style="font-size:10px;opacity:0.6">MB</div>
+            </div>
+            <div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;text-align:center">
+              <div style="font-size:14px;font-weight:bold;color:var(--yellow)" x-text="formatNum(taskDetail.peakPPS())"></div>
+              <div style="font-size:10px;opacity:0.6" x-text="t('peak_pps')"></div>
+            </div>
+            <div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;text-align:center">
+              <div style="font-size:14px;font-weight:bold;color:var(--yellow)" x-text="formatNum(taskDetail.avgPPS())"></div>
+              <div style="font-size:10px;opacity:0.6" x-text="t('avg_pps')"></div>
+            </div>
+          </div>
+
+          <!-- 节点明细 -->
+          <div style="font-size:11px;color:var(--cyan);margin-bottom:4px" x-text="t('node_breakdown')"></div>
+          <table>
+            <thead><tr><th x-text="t('col_id')"></th><th x-text="t('col_packets')"></th><th>MB</th><th x-text="t('col_peak_pps')"></th><th>Avg PPS</th><th>Err</th><th x-text="t('col_status')"></th></tr></thead>
+            <tbody>
+              <template x-for="w in taskDetail.workerList()" :key="w.worker_id">
+                <tr>
+                  <td style="color:var(--cyan)" x-text="w.worker_id"></td>
+                  <td x-text="formatNum(w.packets_sent||0)"></td>
+                  <td x-text="((w.bytes_sent||0)/1048576).toFixed(1)"></td>
+                  <td x-text="formatNum(w.peak_pps||0)"></td>
+                  <td x-text="formatNum(taskDetail.nodeAvgPPS(w))"></td>
+                  <td x-text="w.errors||0"></td>
+                  <td x-text="w.finished ? t('completed') : '…'"></td>
+                </tr>
+              </template>
+              <tr x-show="!taskDetail.workerList().length">
+                <td colspan="7" style="text-align:center;opacity:0.5" x-text="t('no_workers_warn')"></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+    </div>
   </div>
 
   <!-- CLDAP Reflector Scanner -->
@@ -969,6 +1040,7 @@ function app() {
       attack_logs:'Attack Logs', all_methods:'All Methods', export_csv:'Export CSV',
       col_id:'ID', col_ip:'IP', col_os:'OS', col_cpu:'CPU', col_mem:'Memory', col_location:'Location', col_status:'Status',
       col_target:'Target', col_method:'Method', col_time:'Time', col_packets:'Packets', col_peak_pps:'Peak PPS',
+      detail:'Detail', task_detail:'Task Detail', peak_pps:'Peak PPS', avg_pps:'Avg PPS', node_breakdown:'Per-Node Breakdown',
       stop:'Stop', completed:'Completed', fallback_udp:'Auto UDP fallback',
     },
     zh: {
@@ -1055,6 +1127,7 @@ function app() {
       attack_logs:'攻击日志', all_methods:'所有方法', export_csv:'导出CSV',
       col_id:'ID', col_ip:'IP', col_os:'系统', col_cpu:'CPU', col_mem:'内存', col_location:'位置', col_status:'状态',
       col_target:'目标', col_method:'方法', col_time:'时间', col_packets:'发包量', col_peak_pps:'峰值PPS',
+      detail:'详情', task_detail:'任务详情', peak_pps:'巅峰PPS', avg_pps:'平均PPS', node_breakdown:'节点明细',
       stop:'停止', completed:'已完成', fallback_udp:'自动UDP回退',
     }
   };
@@ -1074,6 +1147,39 @@ function app() {
     auditLogs:[], auditAction:'',
     templates:[], selectedTemplate:'',
     logs:[], logTotal:0, logFilter:'', logStats:null,
+    taskDetail:{ open:false, task:null,
+      timeRange() {
+        const t = this.task; if (!t) return '';
+        const fmt = (ts) => { if (!ts) return '-'; const d = new Date(ts); const p = (n)=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds()); };
+        const start = fmt(t.start_time);
+        const end = t.finished_at ? fmt(t.finished_at) : '…';
+        let dur = '';
+        if (t.start_time) {
+          const endMs = t.finished_at ? new Date(t.finished_at).getTime() : Date.now();
+          const secs = Math.max(0, Math.round((endMs - new Date(t.start_time).getTime())/1000));
+          dur = ' (' + secs + 's)';
+        }
+        return '🕐 ' + start + ' → ' + end + dur;
+      },
+      workerList() { return Object.values(this.task?.workers || {}); },
+      totalPackets() { let n=0; for (const w of this.workerList()) n += w.packets_sent||0; return n; },
+      totalMB() { let b=0; for (const w of this.workerList()) b += w.bytes_sent||0; return (b/1048576).toFixed(1); },
+      peakPPS() { let n=0; for (const w of this.workerList()) n += w.peak_pps||0; return n; },
+      avgPPS() {
+        const t = this.task; if (!t) return 0;
+        const endMs = t.finished_at ? new Date(t.finished_at).getTime() : Date.now();
+        const startMs = t.start_time ? new Date(t.start_time).getTime() : 0;
+        const secs = Math.max(1, (endMs - startMs)/1000);
+        return Math.round(this.totalPackets() / secs);
+      },
+      nodeAvgPPS(w) {
+        const t = this.task; if (!t) return 0;
+        const endMs = t.finished_at ? new Date(t.finished_at).getTime() : Date.now();
+        const startMs = t.start_time ? new Date(t.start_time).getTime() : 0;
+        const secs = Math.max(1, (endMs - startMs)/1000);
+        return Math.round((w.packets_sent||0) / secs);
+      },
+    },
     nodeGroups:{}, newGroupName:'',
     migrateHTTP:'', migrateAdminToken:'', migrateGRPC:'', migrateMsg:'', migrating:false, migrateMode:false,
     scan:{ startIP:'', endIP:'', port:27015, results:[], scanning:false, error:'' },
@@ -1316,6 +1422,17 @@ function app() {
     },
 
     async stopTask(id) { await fetch('/api/tasks/'+id+'/stop',{method:'POST',headers:this.getAuthHeaders()}); this.fetchTasks(); },
+
+    // —— 任务详情弹窗 ——
+    async openTaskDetail(id) {
+      try {
+        const r = await fetch('/api/tasks/'+encodeURIComponent(id),{headers:this.getAuthHeaders()});
+        const d = await r.json();
+        if (!r.ok || d.error) { alert((d&&d.error)||('HTTP '+r.status)); return; }
+        this.taskDetail.task = d;
+        this.taskDetail.open = true;
+      } catch(e) { alert('Network error: '+e.message); }
+    },
 
     addSubAttack() {
       if (!this.form.sub_attacks) this.form.sub_attacks = [];
