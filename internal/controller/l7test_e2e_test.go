@@ -66,12 +66,12 @@ func TestL7TestEndpoint(t *testing.T) {
 		return recs, d.Fingerprint.Vulnerable, d.Fingerprint.ContinuationVuln, d.Fingerprint.BombVuln, d.Fingerprint.Notes
 	}
 
-	// nginx 1.25.2：三个 CVE 命中，bomb/reset/continuation 在前
+	// nginx 1.25.2：三个 CVE 命中 + h2_ping + tls_handshake（https 目标）+ 流量型
 	recs, vuln, cont, bomb, _ := probe(ngx.URL)
 	if !vuln || !cont || !bomb {
 		t.Fatalf("nginx 1.25.2 should hit all CVEs: vuln=%v cont=%v bomb=%v", vuln, cont, bomb)
 	}
-	want := []string{"http2_bomb", "http2_reset", "http2_continuation", "http_flood", "post_flood", "http2_flood"}
+	want := []string{"http2_bomb", "http2_reset", "http2_continuation", "h2_ping", "tls_handshake", "http_flood", "post_flood", "http2_flood"}
 	if len(recs) != len(want) {
 		t.Fatalf("nginx recs=%v want %v", recs, want)
 	}
@@ -87,12 +87,12 @@ func TestL7TestEndpoint(t *testing.T) {
 		t.Fatalf("IIS bomb first expected, got %v (bomb=%v)", recs, bomb)
 	}
 
-	// nginx 1.27.0：无 CVE → 三种流量型
+	// nginx 1.27.0：无 CVE → h2_ping + tls_handshake（能力型）+ 流量型
 	recs, vuln, cont, bomb, _ = probe(patched.URL)
 	if vuln || cont || bomb {
 		t.Fatalf("nginx 1.27.0 should not hit CVEs")
 	}
-	want = []string{"http_flood", "post_flood", "http2_flood"}
+	want = []string{"h2_ping", "tls_handshake", "http_flood", "post_flood", "http2_flood"}
 	if len(recs) != len(want) {
 		t.Fatalf("patched recs=%v want %v", recs, want)
 	}

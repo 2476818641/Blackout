@@ -37,18 +37,18 @@ func TestBuildL7Recommendations(t *testing.T) {
 		t.Fatalf("IIS: expected http2_bomb first, got %v", methods(recs))
 	}
 
-	// nginx 1.25.2：三个 CVE 全命中
+	// nginx 1.25.2：三个 CVE 全命中 + h2_ping 补充（帧级，优先级 70）
 	ngx := &attack.L7Fingerprint{HTTP2: true, Vulnerable: true, ContinuationVuln: true, BombVuln: true}
 	recs = buildL7Recommendations(ngx)
-	want := []string{"http2_bomb", "http2_reset", "http2_continuation", "http_flood", "post_flood", "http2_flood"}
+	want := []string{"http2_bomb", "http2_reset", "http2_continuation", "h2_ping", "http_flood", "post_flood", "http2_flood"}
 	if !eq(methods(recs), want) {
 		t.Fatalf("nginx vuln: expected %v, got %v", want, methods(recs))
 	}
 
-	// 已修复目标 + h2：无 CVE，流量型兜底
+	// 已修复目标 + h2：无 CVE，h2_ping + 流量型兜底
 	patched := &attack.L7Fingerprint{HTTP2: true}
 	recs = buildL7Recommendations(patched)
-	want = []string{"http_flood", "post_flood", "http2_flood"}
+	want = []string{"h2_ping", "http_flood", "post_flood", "http2_flood"}
 	if !eq(methods(recs), want) {
 		t.Fatalf("patched h2: expected %v, got %v", want, methods(recs))
 	}
@@ -81,5 +81,52 @@ func TestBuildL7Recommendations(t *testing.T) {
 	recs = buildL7Recommendations(nil)
 	if len(recs) != 3 {
 		t.Fatalf("nil fingerprint should still get 3 traffic recs, got %d", len(recs))
+	}
+
+	// 能力型推荐：https + WS + 慢速适用 + 静态资源 → 对应方法全部出现
+	capFP := &attack.L7Fingerprint{
+		Target: "https://example.com", HTTP2: true,
+		WS: true, SlowApplicable: true, StaticRange: true,
+	}
+	recs = buildL7Recommendations(capFP)
+	got := methods(recs)
+	for _, wantMethod := range []string{"tls_handshake", "ws_slow", "ws_flood", "slowloris", "slow_post", "range_flood"} {
+		found := false
+		for _, m := range got {
+			if m == wantMethod {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("capability fp missing recommendation %s (got %v)", wantMethod, got)
+		}
+	}
+	// 能力型在流量型之前（优先级更高）
+	if len(recs) < 8 || recs[0].Method == "http_flood" {
+		t.Fatalf("capability recommendations should outrank generic traffic: %v", got)
+	}
+}
+
+// TestBuildL7Combo：一键组合按能力组装且方法全部合法
+func TestBuildL7Combo(t *testing.T) {
+	combo := buildL7Combo(&attack.L7Fingerprint{
+		Target: "https://example.com", HTTP2: true, WS: true, SlowApplicable: true, StaticRange: true,
+	})
+	if len(combo) < 5 {
+		t.Fatalf("combo too small: %d", len(combo))
+	}
+	for _, sub := range combo {
+		if !isValidMethod(sub.Method) || sub.Method == "combo" {
+			t.Fatalf("combo sub method %q invalid", sub.Method)
+		}
+		if sub.Threads < 1 {
+			t.Fatalf("combo sub %s threads=%d", sub.Method, sub.Threads)
+		}
+	}
+	// 基本目标：无能力 → 带宽+CPU(无)+连接兜底
+	basic := buildL7Combo(&attack.L7Fingerprint{Target: "http://x"})
+	if len(basic) < 2 {
+		t.Fatalf("basic combo too small: %d", len(basic))
 	}
 }
