@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#232e3e"/>
+      <stop offset="1" stop-color="#11171f"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#7adfff" stop-opacity="0.7"/>
+      <stop offset="0.5" stop-color="#0cc" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#0cc" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 背景 -->
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#bg)" stroke="#2a3648" stroke-width="4"/>
+
+  <!-- 残光：主光点收敛 + 若干小光点（被上层雾盖住下半，只漏一点） -->
+  <g>
+    <circle cx="150" cy="112" r="28" fill="url(#glow)"/>
+    <circle cx="150" cy="112" r="11" fill="#0cc" opacity="0.28"/>
+    <circle cx="150" cy="112" r="4.5" fill="#7adfff"/>
+    <!-- 小光点 1 -->
+    <circle cx="88" cy="124" r="10" fill="url(#glow)" opacity="0.55"/>
+    <circle cx="88" cy="124" r="3" fill="#7adfff" opacity="0.85"/>
+    <!-- 小光点 2 -->
+    <circle cx="204" cy="128" r="9" fill="url(#glow)" opacity="0.5"/>
+    <circle cx="204" cy="128" r="2.5" fill="#0cc" opacity="0.75"/>
+    <!-- 小光点 3 -->
+    <circle cx="176" cy="116" r="7" fill="url(#glow)" opacity="0.45"/>
+    <circle cx="176" cy="116" r="2" fill="#7adfff" opacity="0.6"/>
+  </g>
+
+  <!-- 吞噬雾：上层雾盖住各光点下半部（漏出上半） -->
+  <g fill="#0a1019">
+    <ellipse cx="150" cy="134" rx="36" ry="16"/>
+    <ellipse cx="88"  cy="144" rx="24" ry="13"/>
+    <ellipse cx="204" cy="148" rx="26" ry="14"/>
+    <ellipse cx="176" cy="136" rx="22" ry="12"/>
+  </g>
+
+  <!-- 大雾团：从底部蔓延 -->
+  <g fill="#0a1019">
+    <ellipse cx="128" cy="222" rx="116" ry="56"/>
+    <ellipse cx="64"  cy="196" rx="62" ry="42"/>
+    <ellipse cx="194" cy="202" rx="68" ry="48"/>
+    <ellipse cx="126" cy="172" rx="54" ry="33"/>
+    <ellipse cx="178" cy="154" rx="32" ry="19"/>
+    <ellipse cx="94"  cy="150" rx="28" ry="16"/>
+  </g>
+
+  <!-- 雾缘青色微光（比上版收敛，配合减弱的光源） -->
+  <g fill="none" stroke-linecap="round">
+    <path d="M40 196 C 60 180, 84 172, 100 174" stroke="#0cc" stroke-width="3.5" opacity="0.35"/>
+    <path d="M112 142 C 126 134, 142 132, 156 136 C 172 140, 190 146, 206 152" stroke="#0cc" stroke-width="3.5" opacity="0.5"/>
+    <path d="M96 136 C 104 131, 118 130, 128 134" stroke="#0cc" stroke-width="3" opacity="0.4"/>
+    <path d="M160 138 C 172 134, 186 138, 198 148" stroke="#0cc" stroke-width="2.5" opacity="0.28"/>
+  </g>
+
+  <!-- 飘散小雾团 -->
+  <g fill="#1a2534">
+    <ellipse cx="210" cy="114" rx="17" ry="9" opacity="0.7"/>
+    <ellipse cx="46"  cy="126" rx="13" ry="7" opacity="0.6"/>
+    <ellipse cx="232" cy="156" rx="11" ry="6" opacity="0.5"/>
+    <ellipse cx="22"  cy="168" rx="15" ry="8" opacity="0.55"/>
+  </g>
+</svg>

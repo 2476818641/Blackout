@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="/blackout.svg">
 <title>Blackout Dashboard</title>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
@@ -102,7 +103,7 @@
 <template x-if="authed">
 <div>
 <div class="header">
-  <h1>Blackout Dashboard</h1>
+  <h1 style="display:flex;align-items:center;gap:8px"><img src="/blackout.svg" style="width:22px;height:22px;border-radius:5px" alt="">Blackout Dashboard</h1>
   <div style="display:flex;gap:12px;align-items:center">
     <button class="lang-btn" :class="{active:lang==='en'}" @click="setLang('en')">EN</button>
     <button class="lang-btn" :class="{active:lang==='zh'}" @click="setLang('zh')">中文</button>
