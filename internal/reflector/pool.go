@@ -180,11 +180,14 @@ func getDB() *sql.DB {
 				peak_bps INTEGER DEFAULT 0,
 				total_errors INTEGER DEFAULT 0,
 				worker_count INTEGER DEFAULT 0,
-				status TEXT NOT NULL DEFAULT 'running'
+				status TEXT NOT NULL DEFAULT 'running',
+				workers_json TEXT
 			);
 			CREATE INDEX IF NOT EXISTS idx_logs_time ON attack_logs(start_time DESC);
 			CREATE INDEX IF NOT EXISTS idx_logs_method ON attack_logs(method);
 		`)
+		// 老库迁移：补 workers_json 列（已存在时 ALTER 报错，忽略即可）
+		db.Exec(`ALTER TABLE attack_logs ADD COLUMN workers_json TEXT`)
 		initPreparedStmts()
 	})
 	return db
@@ -674,6 +677,16 @@ func (p *Pool) queryEntries(query string, args ...interface{}) []Reflector {
 	return entries
 }
 
+// LogWorkerStat 攻击日志中的单节点统计（随日志落库，任务从内存清理后仍可查）
+type LogWorkerStat struct {
+	WorkerID    string `json:"worker_id"`
+	PacketsSent uint64 `json:"packets_sent"`
+	BytesSent   uint64 `json:"bytes_sent"`
+	Errors      uint64 `json:"errors"`
+	PeakPPS     uint64 `json:"peak_pps"`
+	Finished    bool   `json:"finished"`
+}
+
 type AttackLog struct {
 	ID           int    `json:"id"`
 	TaskID       string `json:"task_id"`
@@ -689,16 +702,44 @@ type AttackLog struct {
 	TotalErrors  int64  `json:"total_errors"`
 	WorkerCount  int    `json:"worker_count"`
 	Status       string `json:"status"`
+	// Workers 节点明细（JSON 落库于 workers_json 列）
+	Workers []LogWorkerStat `json:"workers,omitempty"`
+}
+
+// marshalLogWorkers 把节点明细序列化为 DB 列值（空时返回 NULL）
+func marshalLogWorkers(ws []LogWorkerStat) interface{} {
+	if len(ws) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(ws)
+	if err != nil {
+		return nil
+	}
+	return string(data)
+}
+
+// unmarshalLogWorkers 解析 DB 列值到节点明细
+func unmarshalLogWorkers(raw interface{}) []LogWorkerStat {
+	s, ok := raw.(string)
+	if !ok || s == "" {
+		return nil
+	}
+	var ws []LogWorkerStat
+	if err := json.Unmarshal([]byte(s), &ws); err != nil {
+		return nil
+	}
+	return ws
 }
 
 func LogAttack(log AttackLog) error {
 	d := getDB()
 	_, err := d.Exec(`
 		INSERT INTO attack_logs (task_id, target, method, duration, start_time, end_time,
-			total_packets, total_bytes, peak_pps, peak_bps, total_errors, worker_count, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			total_packets, total_bytes, peak_pps, peak_bps, total_errors, worker_count, status, workers_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, log.TaskID, log.Target, log.Method, log.Duration, log.StartTime, log.EndTime,
-		log.TotalPackets, log.TotalBytes, log.PeakPPS, log.PeakBPS, log.TotalErrors, log.WorkerCount, log.Status)
+		log.TotalPackets, log.TotalBytes, log.PeakPPS, log.PeakBPS, log.TotalErrors, log.WorkerCount, log.Status,
+		marshalLogWorkers(log.Workers))
 	return err
 }
 
@@ -728,7 +769,7 @@ func GetLogs(method, status string, page, limit int) ([]AttackLog, int) {
 
 	rows, err := d.Query(`
 		SELECT id, task_id, target, method, duration, start_time, end_time,
-			total_packets, total_bytes, peak_pps, peak_bps, total_errors, worker_count, status
+			total_packets, total_bytes, peak_pps, peak_bps, total_errors, worker_count, status, workers_json
 		FROM attack_logs `+where+` ORDER BY start_time DESC LIMIT ? OFFSET ?
 	`, append(args, limit, offset)...)
 	if err != nil {
@@ -739,9 +780,11 @@ func GetLogs(method, status string, page, limit int) ([]AttackLog, int) {
 	var logs []AttackLog
 	for rows.Next() {
 		var l AttackLog
+		var workersRaw interface{}
 		rows.Scan(&l.ID, &l.TaskID, &l.Target, &l.Method, &l.Duration,
 			&l.StartTime, &l.EndTime, &l.TotalPackets, &l.TotalBytes,
-			&l.PeakPPS, &l.PeakBPS, &l.TotalErrors, &l.WorkerCount, &l.Status)
+			&l.PeakPPS, &l.PeakBPS, &l.TotalErrors, &l.WorkerCount, &l.Status, &workersRaw)
+		l.Workers = unmarshalLogWorkers(workersRaw)
 		logs = append(logs, l)
 	}
 	return logs, total

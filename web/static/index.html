@@ -892,7 +892,7 @@
     </div>
     <div style="max-height:280px;overflow-y:auto">
       <table>
-        <thead><tr><th x-text="t('col_time')"></th><th x-text="t('col_target')"></th><th x-text="t('col_method')"></th><th>W</th><th x-text="t('col_packets')"></th><th x-text="t('col_peak_pps')"></th><th x-text="t('col_status')"></th></tr></thead>
+        <thead><tr><th x-text="t('col_time')"></th><th x-text="t('col_target')"></th><th x-text="t('col_method')"></th><th>W</th><th x-text="t('col_packets')"></th><th x-text="t('col_peak_pps')"></th><th x-text="t('col_status')"></th><th></th></tr></thead>
         <tbody>
           <template x-for="l in logs" :key="l.id">
             <tr>
@@ -905,6 +905,9 @@
               <td>
                 <span :class="'status ' + l.status"></span>
                 <span x-text="l.status"></span>
+              </td>
+              <td>
+                <button class="btn sm" @click="openLogDetail(l)" x-text="t('detail')" style="padding:3px 8px"></button>
               </td>
             </tr>
           </template>
@@ -1432,6 +1435,20 @@ function app() {
         this.taskDetail.task = d;
         this.taskDetail.open = true;
       } catch(e) { alert('Network error: '+e.message); }
+    },
+    // 攻击日志详情：日志已落库（含节点明细），任务可能已从内存清理——
+    // 把日志数据转换为弹窗结构直接展示，历史任务永久可查
+    openLogDetail(l) {
+      const workers = {};
+      (l.workers||[]).forEach(w => { workers[w.worker_id] = w; });
+      this.taskDetail.task = {
+        task_id: l.task_id, method: l.method, target: l.target,
+        status: l.status, duration: l.duration,
+        start_time: new Date(l.start_time*1000).toISOString(),
+        finished_at: l.end_time ? new Date(l.end_time*1000).toISOString() : null,
+        workers,
+      };
+      this.taskDetail.open = true;
     },
 
     addSubAttack() {

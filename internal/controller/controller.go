@@ -3692,7 +3692,8 @@ func (c *Ctrl) handleLogStats(w http.ResponseWriter, r *http.Request) {
 func (c *Ctrl) buildTaskLog(task *TaskInfo) reflector.AttackLog {
 	workers := 0
 	var totalPkts, totalBytes, totalErrs, peakPPS, peakBPS uint64
-	for _, w := range task.Workers {
+	var workerStats []reflector.LogWorkerStat
+	for wid, w := range task.Workers {
 		workers++
 		totalPkts += w.PacketsSent
 		totalBytes += w.BytesSent
@@ -3703,6 +3704,11 @@ func (c *Ctrl) buildTaskLog(task *TaskInfo) reflector.AttackLog {
 		if w.CurrentBPS > peakBPS {
 			peakBPS = w.CurrentBPS
 		}
+		// 节点明细随日志落库：任务从内存清理后仍可在攻击日志查看详情
+		workerStats = append(workerStats, reflector.LogWorkerStat{
+			WorkerID: wid, PacketsSent: w.PacketsSent, BytesSent: w.BytesSent,
+			Errors: w.Errors, PeakPPS: w.PeakPPS, Finished: w.Finished,
+		})
 	}
 	return reflector.AttackLog{
 		TaskID: task.TaskID, Target: task.Target, Method: task.Method,
@@ -3711,6 +3717,7 @@ func (c *Ctrl) buildTaskLog(task *TaskInfo) reflector.AttackLog {
 		TotalBytes: int64(totalBytes), PeakPPS: int64(peakPPS),
 		PeakBPS: int64(peakBPS), TotalErrors: int64(totalErrs),
 		WorkerCount: workers, Status: task.Status,
+		Workers: workerStats,
 	}
 }
 
