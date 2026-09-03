@@ -268,12 +268,14 @@ type udpConnPool struct {
 	conns chan *net.UDPConn
 	addr  *net.UDPAddr
 	mu    sync.Mutex
+	size  int
 }
 
 func newUDPConnPool(addr *net.UDPAddr, size int) *udpConnPool {
 	p := &udpConnPool{
 		conns: make(chan *net.UDPConn, size),
 		addr:  addr,
+		size:  size,
 	}
 	for i := 0; i < size; i++ {
 		conn, err := net.DialUDP("udp", nil, addr)
@@ -286,12 +288,20 @@ func newUDPConnPool(addr *net.UDPAddr, size int) *udpConnPool {
 }
 
 func (p *udpConnPool) acquire() *net.UDPConn {
+	// 先尝试非阻塞获取
 	select {
 	case conn := <-p.conns:
 		return conn
 	default:
-		// 池空（如 fd 耗尽导致 DialUDP 全部失败）：临时新建连接，
-		// 避免永久阻塞使 Stop() 挂死
+	}
+
+	// 池空时短暂等待（10ms），让其他 goroutine 有机会归还连接，
+	// 避免在池未真正耗尽时就创建临时连接
+	select {
+	case conn := <-p.conns:
+		return conn
+	case <-time.After(10 * time.Millisecond):
+		// 等待超时，创建临时连接（fd 耗尽或真正高并发）
 		conn, err := net.DialUDP("udp", nil, p.addr)
 		if err != nil {
 			return nil
@@ -301,11 +311,14 @@ func (p *udpConnPool) acquire() *net.UDPConn {
 }
 
 func (p *udpConnPool) release(conn *net.UDPConn) {
+	if conn == nil {
+		return
+	}
 	select {
 	case p.conns <- conn:
+		// 成功归还
 	default:
-		// 池已满（连接由 acquire 在池空时临时新建，超出池容量）：
-		// 直接关闭，避免 release 阻塞导致发送线程卡死
+		// 池已满：这是临时连接，直接关闭
 		conn.Close()
 	}
 }

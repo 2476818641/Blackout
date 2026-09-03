@@ -88,21 +88,27 @@ func (h *HotReflectorPool) HealthCheck() {
 	defer h.mu.Unlock()
 
 	replaced := 0
-	for i, reflector := range h.active {
-		failCount := h.failed[reflector]
+	// 只检查有失败记录的反射器，避免遍历全部 active
+	for reflector, failCount := range h.failed {
 		if failCount >= 10 {
-			// 从 backup 中取一个替换
-			if len(h.backup) > 0 {
-				newReflector := h.backup[0]
-				h.backup = h.backup[1:]
+			// 查找该反射器在 active 中的位置
+			for i, active := range h.active {
+				if active == reflector {
+					// 从 backup 中取一个替换
+					if len(h.backup) > 0 {
+						newReflector := h.backup[0]
+						h.backup = h.backup[1:]
 
-				h.active[i] = newReflector
-				h.replaced[reflector] = newReflector
-				delete(h.failed, reflector)
+						h.active[i] = newReflector
+						h.replaced[reflector] = newReflector
+						delete(h.failed, reflector)
 
-				replaced++
-				log.Printf("[hot_pool] replaced failed reflector: %s -> %s (fails=%d)",
-					reflector, newReflector, failCount)
+						replaced++
+						log.Printf("[hot_pool] replaced failed reflector: %s -> %s (fails=%d)",
+							reflector, newReflector, failCount)
+					}
+					break
+				}
 			}
 		}
 	}

