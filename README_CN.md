@@ -343,6 +343,11 @@ CSP **不允许任何外部脚本源**：前端依赖已自托管（`web/static/
 - **不要**对 `/api/*` 开 "Cache Everything"；为静态资源写 Cache Rule 时让源站头优先。
   按上面的响应头，发版无需 purge；但如果配置了"忽略源站头 + Cache Everything"，
   则需 purge `/` 与 `/pool`。
+- **WAF 必须放行机器流量**：对非浏览器 UA 做挑战（面板常见加固）会同时拦掉经 CDN
+  域名接入的 worker 与 lw 节点。请让 `/api/lw/*`、`/api/deploy/*`、
+  `/api/reflectors/*`、`/api/worker/*`、`/api/tasks/complete`、`/api/pools`、
+  `/api/proxy`、`/api/dnsamp`、`/ws` 免于托管挑战，否则 `blackout-lw` 节点会静默
+  注册/心跳/上报失败。
 
 ---
 

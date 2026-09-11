@@ -382,6 +382,12 @@ Cloudflare settings that match this setup:
 - Do **not** enable "Cache Everything" for `/api/*`; if you add a Cache Rule for static
   assets, let origin headers win. With the headers above, deploying needs no purge —
   but if you ever run "Cache Everything + ignore origin headers", purge `/` and `/pool`.
+- **WAF must exempt machine traffic.** A rule that challenges non-browser user agents
+  (a common hardening for a panel) will also block workers and lw nodes that reach the
+  controller through the CDN hostname. Keep `/api/lw/*`, `/api/deploy/*`,
+  `/api/reflectors/*`, `/api/worker/*`, `/api/tasks/complete`, `/api/pools`,
+  `/api/proxy`, `/api/dnsamp` and `/ws` exempt from managed challenges — otherwise
+  `blackout-lw` nodes silently fail to register/heartbeat/report.
 
 ---
 
