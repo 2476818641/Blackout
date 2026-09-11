@@ -5,7 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" type="image/svg+xml" href="/blackout.svg">
 <title>Blackout Dashboard</title>
-<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<!-- Alpine.js 自托管（v3.14.9, MIT，见 /vendor/README.md）：
+     不再从公网 CDN 加载——内网/断网可用、无第三方供应链风险、
+     同源可长期缓存（Cloudflare immutable）、CSP 可收紧到 script-src 'self'。
+     ?v= 为内容版本：升级时同步递增以击穿边缘/浏览器长缓存。 -->
+<script defer src="/vendor/alpine.min.js?v=3.14.9"></script>
 <style>
   :root { --bg:#0a0e14; --panel:#131820; --border:#1e2836; --text:#b0b8c4; --green:#0c6; --red:#f44; --yellow:#fa0; --cyan:#0cc; --accent:#3b82f6; }
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -102,6 +106,14 @@
 <!-- Dashboard -->
 <template x-if="authed">
 <div>
+<!-- 全局轻提示：统一反馈成功/失败（替代原生 alert 与静默失败） -->
+<template x-if="toast.show">
+  <div style="position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:9999;max-width:80vw;
+              padding:8px 16px;border-radius:6px;font-size:13px;box-shadow:0 4px 18px rgba(0,0,0,0.45);
+              border:1px solid var(--border);background:var(--panel)"
+       :style="toast.kind==='error' ? 'border-color:var(--red);color:var(--red)' : (toast.kind==='ok' ? 'border-color:var(--green);color:var(--green)' : 'color:var(--text)')"
+       x-text="toast.msg" @click="toast.show=false"></div>
+</template>
 <div class="header">
   <h1 style="display:flex;align-items:center;gap:8px"><img src="/blackout.svg" style="width:22px;height:22px;border-radius:5px" alt="">Blackout Dashboard</h1>
   <div style="display:flex;gap:12px;align-items:center">
@@ -316,7 +328,9 @@
       </select>
     </div>
     <div style="display:flex;gap:6px;margin-top:4px">
-      <button class="btn" @click="startAttack()" :disabled="!form.target" style="flex:1" x-text="t('start_attack')"></button>
+      <button class="btn" @click="startAttack()" :disabled="!form.target || submitting"
+              :style="submitting ? 'opacity:0.5;cursor:default' : ''"
+              x-text="submitting ? t('starting') : t('start_attack')" style="flex:1"></button>
       <select x-model="selectedTemplate" @change="loadTemplate()" style="width:auto;flex:0;min-width:100px;margin:0">
         <option value="" x-text="t('templates')"></option>
         <template x-for="t in templates">
@@ -880,7 +894,7 @@
       </div>
     </div>
     <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
-      <select x-model="logFilter" @change="fetchLogs()" style="width:auto;margin:0">
+      <select x-model="logFilter" @change="setLogFilter()" style="width:auto;margin:0">
         <option value="" x-text="t('all_methods')"></option>
         <option value="vse">VSE</option>
         <option value="vse_reflector">VSE Refl</option>
@@ -915,6 +929,15 @@
           </template>
         </tbody>
       </table>
+    </div>
+    <!-- 历史日志分页：服务端返回 total，前端按页拉取（此前只能看到最新 50 条） -->
+    <div class="pager" x-show="logTotal > logPageSize">
+      <button class="btn sm" :disabled="logPage<=1" @click="logPagePrev()" x-text="t('page_prev')"></button>
+      <template x-for="p in pageNumbers()" :key="p">
+        <button class="btn sm" :style="p===logPage ? 'opacity:1' : 'opacity:0.55'" @click="logPage=p; fetchLogs()" x-text="p"></button>
+      </template>
+      <button class="btn sm" :disabled="logPage>=logTotalPages" @click="logPageNext()" x-text="t('page_next')"></button>
+      <span x-text="t('page_info').replace('{0}', logPage).replace('{1}', logTotalPages)"></span>
     </div>
   </div>
 
@@ -980,6 +1003,11 @@ function app() {
       pps_limit:'PPS Limit (0=off)', bps_limit:'BPS Limit (0=off)',
       burst:'Burst', mix_queries:'Mix Queries', jitter_ms:'Jitter ms',
       start_attack:'Start Attack', attack_failed:'Attack failed:', templates:'Templates', save:'Save', delete:'Del',
+      starting:'Starting...', attack_started:'Attack started',
+      err_target_required:'Target is required', err_duration_range:'Duration must be 1-86400s',
+      err_threads_range:'Threads must be 1-65535', err_packet_range:'Packet size must be 1-65507',
+      err_rate_negative:'Rate limits cannot be negative', err_combo_empty:'Combo needs at least one sub-attack',
+      logs_load_failed:'Failed to load attack logs',
       repeat_count_ph:'Repeat (1=once)', repeat_interval_ph:'Interval (s)', priority_normal:'Normal', priority_high:'High',
       attack_confirm:'Start attack?\n{0} → {1}\nduration {2}s | threads {3} | repeat {4}',
       guard:'Target Guard', guard_enabled:'Enabled', guard_block_private:'Block private/reserved ranges', guard_resolve_hosts:'Resolve hosts & check IPs',
@@ -1070,6 +1098,11 @@ function app() {
       pps_limit:'PPS限制 (0=关闭)', bps_limit:'BPS限制 (0=关闭)',
       burst:'爆发', mix_queries:'混合查询', jitter_ms:'抖动(ms)',
       start_attack:'开始攻击', attack_failed:'攻击启动失败:', templates:'模板', save:'保存', delete:'删除',
+      starting:'启动中...', attack_started:'攻击已启动',
+      err_target_required:'请填写攻击目标', err_duration_range:'时长需在 1-86400 秒之间',
+      err_threads_range:'线程数需在 1-65535 之间', err_packet_range:'包大小需在 1-65507 之间',
+      err_rate_negative:'限速值不能为负数', err_combo_empty:'组合攻击至少需要一个子攻击',
+      logs_load_failed:'攻击日志加载失败',
       repeat_count_ph:'重复次数 (1=单次)', repeat_interval_ph:'间隔(秒)', priority_normal:'普通', priority_high:'高优先级',
       attack_confirm:'发起攻击？\n{0} → {1}\n时长 {2}s | 线程 {3} | 重复 {4}',
       guard:'目标保护', guard_enabled:'启用', guard_block_private:'禁止内网/保留段', guard_resolve_hosts:'域名解析后校验 IP',
@@ -1158,7 +1191,11 @@ function app() {
     guard:{ enabled:true, block_private:true, resolve_hosts:true }, guardText:{}, guardMsg:'',
     auditLogs:[], auditAction:'',
     templates:[], selectedTemplate:'',
-    logs:[], logTotal:0, logFilter:'', logStats:null,
+    logs:[], logTotal:0, logFilter:'', logStats:null, logPage:1, logPageSize:50,
+    // 全局轻提示：替代散落的 alert/静默 catch（静默失败会让用户以为"没反应"）
+    toast:{ show:false, msg:'', kind:'info', timer:null },
+    // 提交互斥：攻击/重发/升级等动作进行中时禁止重复点击
+    submitting:false,
     taskDetail:{ open:false, task:null,
       timeRange() {
         const t = this.task; if (!t) return '';
@@ -1215,6 +1252,12 @@ function app() {
     },
 
     init() {
+      // 未捕获的 Promise 失败必须有可见反馈：面板里大量 async 动作
+      // （升级/迁移/扫描等）此前静默失败，用户只看到"点了没反应"。
+      window.addEventListener('unhandledrejection', (ev) => {
+        const r = ev && ev.reason;
+        this.notify((r && r.message) ? r.message : String(r || 'unhandled error'), 'error');
+      });
       const t = sessionStorage.getItem('token');
       if (t) { this.token = t; this.doLogin(); }
     },
@@ -1304,6 +1347,11 @@ function app() {
     },
 
     async startAttack() {
+      // 互斥：攻击创建请求在途时忽略重复点击（连点 N 次会创建 N 个任务）
+      if (this.submitting) return;
+      // 客户端校验：明显非法的参数不必占用服务端与节点
+      const bad = this.validateAttackForm();
+      if (bad) { this.notify(bad, 'error'); return; }
       // 红色确认弹窗：展示攻击参数摘要（与服务端目标保护配合的安全网）
       const firstTarget = (this.form.target||'').split('\n')[0] || '';
       if (!confirm(this.t('attack_confirm')
@@ -1316,6 +1364,9 @@ function app() {
       const lines = (payload.target||'').split('\n').filter(l=>l.trim());
       if (lines.length>1) { payload.targets = lines.map(l=>l.trim()).filter(l=>l); delete payload.target; }
       if (payload.method==='combo') payload.sub_attacks = payload.sub_attacks||[];
+      if (payload.method==='combo' && !(payload.sub_attacks||[]).length) {
+        this.notify(this.t('err_combo_empty'), 'error'); return;
+      }
       payload.repeat_count = this.form.repeat_count || 1;
       payload.repeat_interval = this.form.repeat_interval || 0;
       payload.priority = this.form.priority || 0;
@@ -1323,17 +1374,54 @@ function app() {
       if (this.selectedNodes && this.selectedNodes.length !== this.nodes.length) {
         payload.workers = this.selectedNodes;
       }
+      this.submitting = true;
       try {
         const r = await fetch('/api/tasks',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify(payload)});
-        const d = await r.json();
-        if (!r.ok) { alert(d.error || ('HTTP '+r.status)); return; }
-        if (d.error) { alert(d.error); return; }
+        const d = await r.json().catch(()=>({}));
+        if (!r.ok || d.error) { this.notify((d&&d.error) || ('HTTP '+r.status), 'error'); return; }
+        this.notify(this.t('attack_started'), 'ok');
         this.fetchTasks();
-      } catch(e) { alert(this.t('attack_failed')+' '+e.message); }
+      } catch(e) {
+        this.notify(this.t('attack_failed')+' '+(e && e.message ? e.message : e), 'error');
+      } finally {
+        this.submitting = false;
+      }
+    },
+
+    // validateAttackForm 返回错误文案（空串 = 通过）。
+    // 服务端仍会做同样的校验（含目标保护），客户端校验只为快速反馈与
+    // 避免无效请求占用节点。
+    validateAttackForm() {
+      const f = this.form;
+      if (!(f.target||'').trim()) return this.t('err_target_required');
+      const dur = Number(f.duration);
+      if (!Number.isFinite(dur) || dur < 1 || dur > 86400) return this.t('err_duration_range');
+      const th = Number(f.threads);
+      if (!Number.isFinite(th) || th < 1 || th > 65535) return this.t('err_threads_range');
+      const ps = Number(f.packet_size);
+      if (f.packet_size !== '' && f.packet_size !== null && (!Number.isFinite(ps) || ps < 1 || ps > 65507)) {
+        return this.t('err_packet_range');
+      }
+      const pps = Number(f.rate_limit_pps||0);
+      if (pps < 0) return this.t('err_rate_negative');
+      const bps = Number(f.rate_limit_bps||0);
+      if (bps < 0) return this.t('err_rate_negative');
+      return '';
+    },
+
+    // notify 轻提示（3.5s 自动消失；同类提示复用同一定时器）
+    notify(msg, kind) {
+      if (!msg) return;
+      this.toast.msg = msg;
+      this.toast.kind = kind || 'info';
+      this.toast.show = true;
+      if (this.toast.timer) clearTimeout(this.toast.timer);
+      this.toast.timer = setTimeout(() => { this.toast.show = false; }, 3500);
     },
 
     // 重发：一键用历史任务的参数再打一次（单次，不延续重复序列）
     async rerunTask(t) {
+      if (this.submitting) return;
       const firstTarget = (t.target||'').split('\n')[0] || '';
       if (!confirm(this.t('attack_confirm')
         .replace('{0}', t.method)
@@ -1351,12 +1439,18 @@ function app() {
       };
       if (t.sub_attacks && t.sub_attacks.length) payload.sub_attacks = t.sub_attacks;
       if (t.selected_workers && t.selected_workers.length) payload.workers = t.selected_workers;
+      this.submitting = true;
       try {
         const r = await fetch('/api/tasks',{method:'POST',headers:this.getAuthHeaders(),body:JSON.stringify(payload)});
-        const d = await r.json();
-        if (!r.ok || d.error) { alert((d&&d.error) || ('HTTP '+r.status)); return; }
+        const d = await r.json().catch(()=>({}));
+        if (!r.ok || d.error) { this.notify((d&&d.error) || ('HTTP '+r.status), 'error'); return; }
+        this.notify(this.t('attack_started'), 'ok');
         this.fetchTasks();
-      } catch(e) { alert(this.t('attack_failed')+' '+e.message); }
+      } catch(e) {
+        this.notify(this.t('attack_failed')+' '+(e && e.message ? e.message : e), 'error');
+      } finally {
+        this.submitting = false;
+      }
     },
 
     // 目标保护规则
@@ -1418,6 +1512,21 @@ function app() {
     },
     get nodeTotalPages() { return Math.max(1, Math.ceil(this.regionFilteredNodes.length / this.nodePageSize)); },
     get pagedNodes() { return this.regionFilteredNodes.slice((this.nodePage-1)*this.nodePageSize, this.nodePage*this.nodePageSize); },
+    // 攻击日志分页（服务端支持 page/limit 并返回 total；此前固定只取最新 50 条，
+    // 更早的历史在界面上完全看不到）
+    get logTotalPages() { return Math.max(1, Math.ceil(this.logTotal / this.logPageSize)); },
+    logPagePrev() { if (this.logPage > 1) { this.logPage--; this.fetchLogs(); } },
+    logPageNext() { if (this.logPage < this.logTotalPages) { this.logPage++; this.fetchLogs(); } },
+    setLogFilter() { this.logPage = 1; this.fetchLogs(); },
+    pageNumbers() {
+      const total = this.logTotalPages, cur = this.logPage;
+      // 当前页附近最多 5 个页码（首尾恒可见），避免页码按钮撑爆面板
+      const out = [];
+      const start = Math.max(1, Math.min(cur - 2, total - 4));
+      const end = Math.min(total, start + 4);
+      for (let p = start; p <= end; p++) out.push(p);
+      return out;
+    },
     get filteredNodes() {
       const q = (this.nodeSearch||'').toLowerCase().trim();
       if (!q) return this.nodes;
@@ -1716,8 +1825,17 @@ function app() {
       } catch(e) { alert('Export error: '+e.message); }
     },
 
-    async fetchLogs() { try { const params = new URLSearchParams({limit:50}); if (this.logFilter) params.set('method',this.logFilter);
-      const r = await fetch('/api/logs?'+params.toString(),{headers:this.getAuthHeaders()}); const d = await r.json(); this.logs = d.logs||[]; this.logTotal = d.total||0; } catch(e) {} },
+    async fetchLogs() {
+      try {
+        const params = new URLSearchParams({limit:this.logPageSize, page:this.logPage});
+        if (this.logFilter) params.set('method',this.logFilter);
+        const r = await fetch('/api/logs?'+params.toString(),{headers:this.getAuthHeaders()});
+        const d = await r.json();
+        this.logs = d.logs||[]; this.logTotal = d.total||0;
+        // 页码越界（例如过滤后总数变小）时回退到最后一页
+        if (this.logPage > this.logTotalPages) { this.logPage = this.logTotalPages; }
+      } catch(e) { this.notify(this.t('logs_load_failed'), 'error'); }
+    },
     async fetchLogStats() {
       try { const r = await fetch('/api/logs/stats?days=7',{headers:this.getAuthHeaders()}); this.logStats = await r.json(); } catch(e) {}
     },

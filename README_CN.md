@@ -313,6 +313,28 @@ GitHub Release（按平台选二进制：worker-linux-amd64 / worker-windows-amd
 - **测试清理**：UDP 验证手动条目，自动剔除失效服务器
 - 向"其他"池添加条目可自动按游戏类型分类
 
+### 部署在 CDN / Cloudflare 之后
+
+面板已内置显式缓存策略，边缘缓存既不会返回过期界面，也不会缓存带权限的数据：
+
+| 路径 | `Cache-Control` | 原因 |
+|---|---|---|
+| `/`、`/pool`（HTML） | `no-cache` + 强 `ETag` | 每次回源校验（命中即 304，几百字节），发布新版本后刷新页面立即生效，**无需清缓存** |
+| `/vendor/*?v=…`（带内容版本） | `public, max-age=31536000, immutable` | URL 即内容标识，可长期缓存 |
+| 其他静态资源（`/blackout.svg` 等） | `public, max-age=86400, stale-while-revalidate=86400` | 边缘长缓存 + 后台刷新 |
+| `/api/*`、`/ws` | `no-store` + `Vary: Authorization` | 按 token 区分权限的响应绝不能被共享缓存保存 |
+
+所有响应同时带上 `Content-Security-Policy`、`X-Content-Type-Options: nosniff`、
+`Referrer-Policy: no-referrer`、`Permissions-Policy`、`X-Frame-Options: DENY`。
+CSP **不允许任何外部脚本源**：前端依赖已自托管（`web/static/vendor/`，见其 README），
+不再从公网 CDN 拉取——内网/断网可用、无第三方供应链风险、同源可长缓存。
+
+与 Cloudflare 的配合：*Caching → Cache Level* 保持 **Standard**（或在 Cache Rule 里
+选 *Respect Existing Headers*）；**不要**对 `/api/*` 开 "Cache Everything"；如果为
+静态资源单独写 Cache Rule，务必让源站响应头优先。因为 HTML 是 `no-cache`，发布新
+Controller 版本无需 purge；若确实配置了"忽略源站头 + Cache Everything"，则需
+purge `/` 与 `/pool`。
+
 ---
 
 ## CLI 模式

@@ -347,6 +347,30 @@ Separate page for managing game-specific reflector pools. Each game tab (ARK / C
 - **Test & Clean**: validates manual entries via UDP, removes dead servers
 - Add entries to the **Other** pool for auto-classification by game type
 
+### Running Behind a CDN / Cloudflare
+
+The dashboard ships with explicit cache headers so an edge cache (Cloudflare, or any
+reverse proxy) neither serves a stale UI nor caches privileged data:
+
+| Path | `Cache-Control` | Why |
+|---|---|---|
+| `/`, `/pool` (HTML) | `no-cache` + strong `ETag` | Page always revalidates with a 304 (a few hundred bytes), so a new release is live on the next refresh — no CDN purge needed |
+| `/vendor/*?v=…` (versioned assets) | `public, max-age=31536000, immutable` | URL carries the content version, safe to cache forever |
+| other static assets (`/blackout.svg`, …) | `public, max-age=86400, stale-while-revalidate=86400` | Long edge cache with background refresh |
+| `/api/*`, `/ws` | `no-store` + `Vary: Authorization` | Per-token responses must never be stored by a shared cache |
+
+All responses also carry `Content-Security-Policy`, `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer`, `Permissions-Policy` and `X-Frame-Options: DENY`.
+The CSP allows no external script origins: frontend dependencies are **self-hosted**
+(`web/static/vendor/`, see its README) instead of a public CDN — better availability on
+isolated networks, no third-party supply chain, and cacheable from your own origin.
+
+Cloudflare settings that match this setup: keep *Caching → Cache Level* on **Standard**
+(or *Respect Existing Headers* in a Cache Rule), do **not** enable "Cache Everything"
+for `/api/*`, and if you add a Cache Rule for static assets, let the origin headers win.
+Because HTML is `no-cache`, deploying a new controller version needs no purge — but if
+you ever run with "Cache Everything" + ignore origin headers, purge `/` and `/pool`.
+
 ---
 
 ## CLI Mode
