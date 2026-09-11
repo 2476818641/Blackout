@@ -1,11 +1,40 @@
 package attack
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+// probeLocal 对本地测试服务器做指纹探测，带重试：
+// 本机回环端口耗尽（Windows 上跑完整套件时常见）会让探测连不上，
+// 此时结果反映的是本机网络栈状态而非被测逻辑。生产代码已对瞬时错误
+// 重试（isTransientNetErr），这里再兜一层；持续失败则跳过并说明原因，
+// 避免用环境噪声制造假失败。
+func probeLocal(t *testing.T, url string) *L7Fingerprint {
+	t.Helper()
+	var fp *L7Fingerprint
+	for attempt := 0; attempt < 5; attempt++ {
+		fp = FingerprintL7Target(url, 3*time.Second)
+		if fp.ServerHeader != "" || !notesHaveTransientError(fp.Notes) {
+			return fp
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Skipf("loopback probe unavailable (transient local socket error): notes=%v", fp.Notes)
+	return nil
+}
+
+func notesHaveTransientError(notes []string) bool {
+	for _, n := range notes {
+		if isTransientNetErr(errors.New(n)) {
+			return true
+		}
+	}
+	return false
+}
 
 // TestFingerprintVulnerable nginx 1.25.2 → CVE-2023-44487 脆弱判定
 func TestFingerprintVulnerable(t *testing.T) {
@@ -15,7 +44,7 @@ func TestFingerprintVulnerable(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	fp := FingerprintL7Target(srv.URL, 3*time.Second)
+	fp := probeLocal(t, srv.URL)
 	if fp.Product != "nginx" {
 		t.Fatalf("product = %q, want nginx", fp.Product)
 	}
@@ -36,7 +65,7 @@ func TestFingerprintPatched(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	fp := FingerprintL7Target(srv.URL, 3*time.Second)
+	fp := probeLocal(t, srv.URL)
 	if fp.Vulnerable {
 		t.Fatalf("nginx 1.25.3 should be patched, notes=%v", fp.Notes)
 	}
@@ -50,7 +79,7 @@ func TestFingerprintApache(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	fp := FingerprintL7Target(srv.URL, 3*time.Second)
+	fp := probeLocal(t, srv.URL)
 	if fp.Product != "apache" || !fp.Vulnerable {
 		t.Fatalf("apache 2.4.57 should be VULNERABLE, got product=%q vulnerable=%v notes=%v", fp.Product, fp.Vulnerable, fp.Notes)
 	}
@@ -94,7 +123,7 @@ func TestFingerprintContinuation(t *testing.T) {
 		w.Header().Set("Server", "nginx/1.25.3")
 		w.WriteHeader(200)
 	}))
-	fp := FingerprintL7Target(srv.URL, 3*time.Second)
+	fp := probeLocal(t, srv.URL)
 	srv.Close()
 	if fp.Vulnerable {
 		t.Errorf("nginx 1.25.3 should NOT be Rapid-Reset vulnerable")
@@ -108,7 +137,7 @@ func TestFingerprintContinuation(t *testing.T) {
 		w.Header().Set("Server", "nginx/1.25.4")
 		w.WriteHeader(200)
 	}))
-	fp2 := FingerprintL7Target(srv2.URL, 3*time.Second)
+	fp2 := probeLocal(t, srv2.URL)
 	srv2.Close()
 	if fp2.Vulnerable || fp2.ContinuationVuln {
 		t.Errorf("nginx 1.25.4 should be fully patched: %+v", fp2)
@@ -119,7 +148,7 @@ func TestFingerprintContinuation(t *testing.T) {
 		w.Header().Set("Server", "Apache/2.4.58 (Debian)")
 		w.WriteHeader(200)
 	}))
-	fp3 := FingerprintL7Target(srv3.URL, 3*time.Second)
+	fp3 := probeLocal(t, srv3.URL)
 	srv3.Close()
 	if fp3.Vulnerable {
 		t.Errorf("apache 2.4.58 should NOT be Rapid-Reset vulnerable")
@@ -133,7 +162,7 @@ func TestFingerprintContinuation(t *testing.T) {
 		w.Header().Set("Server", "Microsoft-IIS/10.0")
 		w.WriteHeader(200)
 	}))
-	fp4 := FingerprintL7Target(srv4.URL, 3*time.Second)
+	fp4 := probeLocal(t, srv4.URL)
 	srv4.Close()
 	if !fp4.BombVuln {
 		t.Errorf("IIS SHOULD be HPACK Bomb vulnerable: %+v", fp4)

