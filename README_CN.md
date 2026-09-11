@@ -21,9 +21,9 @@ flowchart LR
 
 > **如果你的节点是路由器、软路由等低性能设备，请使用 [blackout-lw](https://github.com/2476818641/lw-worker)（Rust 独立版本）**，不要使用本仓库的 Go worker。
 
-- **blackout-lw**（Rust，单二进制 <750KB）：为 OpenWrt 路由器/低性能设备设计，仅执行 **DNS 反射放大**（UDP 伪源），支持 x86_64 / armv7 / aarch64 / **mipsel**（MT7620/MT7628 等）
+- **blackout-lw**（Rust，单二进制 <750KB）：为 OpenWrt 路由器/低性能设备设计，执行 **DNS 反射放大**（UDP 伪源，优先）与 **伪源 TCP SYN 洪水**（无反射任务可派时回退），支持 x86_64 / armv7 / aarch64 / **mipsel**（MT7620/MT7628 等）
 - 通过 HTTP 轮询接入 Controller（仪表盘节点列表可切换 **Go / LW** 视图，LW 节点带 ⚡ 标记）
-- 与 Go worker **混布互补**：常规任务只派 Go 节点，反射任务双方并行执行
+- 与 Go worker **混布互补**：LW 节点只承接其支持的任务（反射 → TCP SYN），常规任务只派 Go 节点
 
 ---
 
@@ -37,14 +37,14 @@ flowchart LR
 ```bash
 # Linux（主推平台）— Controller 注入版本标签与仓库地址（云更新默认目标）
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
-  -ldflags="-s -w -X main.buildVersion=v1.2.7 -X main.gitRepo=2476818641/Blackout" \
+  -ldflags="-s -w -X main.buildVersion=v1.4.0 -X main.gitRepo=2476818641/Blackout" \
   -o dist/controller-linux-amd64 ./cmd/controller/
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" \
   -o dist/worker-linux-amd64 ./cmd/worker/
 
 # Windows（功能受限：不支持 IP 欺骗，纯 Go 无需 CGO）
 GOOS=windows GOARCH=amd64 go build \
-  -ldflags="-s -w -X main.buildVersion=v1.2.7 -X main.gitRepo=2476818641/Blackout" \
+  -ldflags="-s -w -X main.buildVersion=v1.4.0 -X main.gitRepo=2476818641/Blackout" \
   -o dist/controller-windows-amd64.exe ./cmd/controller/
 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" \
   -o dist/worker-windows-amd64.exe ./cmd/worker/
@@ -361,7 +361,7 @@ curl -X PUT http://localhost:8080/api/update/token \
   -d '{"token":"ghp_..."}'
 
 # 整体升级（先 Workers 后 Controller）到指定版本
-curl -X POST "http://localhost:8080/api/update/all?version=v1.2.7" \
+curl -X POST "http://localhost:8080/api/update/all?version=v1.4.0" \
   -H "Authorization: Bearer <admin-token>"
 
 # 创建 TCP SYN 伪造源IP 攻击（仅 Linux）

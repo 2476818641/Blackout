@@ -21,9 +21,9 @@ flowchart LR
 
 > **For routers and low-end devices, use [blackout-lw](https://github.com/2476818641/lw-worker) (standalone Rust build) instead of the Go worker in this repo.**
 
-- **blackout-lw** (Rust, single static binary <750KB): built for OpenWrt routers / low-end devices, executes **DNS reflector amplification** (spoofed UDP) only; targets x86_64 / armv7 / aarch64 / **mipsel** (MT7620/MT7628 etc.)
+- **blackout-lw** (Rust, single static binary <750KB): built for OpenWrt routers / low-end devices; executes **DNS reflector amplification** (spoofed UDP, preferred) and **spoofed TCP SYN flood** (fallback when no reflector task is queued); targets x86_64 / armv7 / aarch64 / **mipsel** (MT7620/MT7628 etc.)
 - Connects to the Controller via HTTP polling (dashboard node list has **Go / LW** switcher, LW nodes marked ⚡)
-- **Coexists with Go workers**: regular tasks go to Go nodes only, reflector tasks run on both in parallel
+- **Coexists with Go workers**: LW nodes only take tasks they support (reflector → TCP SYN), regular tasks go to Go nodes only
 
 ---
 
@@ -37,14 +37,14 @@ flowchart LR
 ```bash
 # Linux (primary target) — controller version tag + repo are injected for cloud updates
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
-  -ldflags="-s -w -X main.buildVersion=v1.2.7 -X main.gitRepo=2476818641/Blackout" \
+  -ldflags="-s -w -X main.buildVersion=v1.4.0 -X main.gitRepo=2476818641/Blackout" \
   -o dist/controller-linux-amd64 ./cmd/controller/
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" \
   -o dist/worker-linux-amd64 ./cmd/worker/
 
 # Windows (limited: no IP spoofing)
 GOOS=windows GOARCH=amd64 go build \
-  -ldflags="-s -w -X main.buildVersion=v1.2.7 -X main.gitRepo=2476818641/Blackout" \
+  -ldflags="-s -w -X main.buildVersion=v1.4.0 -X main.gitRepo=2476818641/Blackout" \
   -o dist/controller-windows-amd64.exe ./cmd/controller/
 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" \
   -o dist/worker-windows-amd64.exe ./cmd/worker/
@@ -395,7 +395,7 @@ curl -X PUT http://localhost:8080/api/update/token \
   -d '{"token":"ghp_..."}'
 
 # Upgrade everything (workers first, then controller) to a specific version
-curl -X POST "http://localhost:8080/api/update/all?version=v1.2.7" \
+curl -X POST "http://localhost:8080/api/update/all?version=v1.4.0" \
   -H "Authorization: Bearer <admin-token>"
 
 # Create TCP SYN spoof attack (Linux only)
