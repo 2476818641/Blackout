@@ -131,9 +131,9 @@
       <select x-model="form.method">
         <option value="combo" x-text="'🎯 '+t('method_combo')"></option>
         <option value="vse" x-text="t('method_vse')"></option>
-        <option value="vse_reflector" x-text="t('method_vse_refl')"></option>
-        <option value="dns_reflector" x-text="t('method_dns_refl')"></option>
-        <option value="cldap_reflector" x-text="t('method_cldap_refl')"></option>
+        <option value="vse_reflector" x-text="t('method_vse_reflector')"></option>
+        <option value="dns_reflector" x-text="t('method_dns_reflector')"></option>
+        <option value="cldap_reflector" x-text="t('method_cldap_reflector')"></option>
         <optgroup :label="t('group_udp')">
           <option value="udp_stdhex" x-text="t('method_udp_stdhex')"></option>
           <option value="udp_plain" x-text="t('method_udp_plain')"></option>
@@ -145,15 +145,16 @@
           <option value="tcp_syn_spoof" x-text="t('method_tcp_syn_spoof')"></option>
           <option value="tcp_ack" x-text="t('method_tcp_ack')"></option>
           <option value="tcp_connect" x-text="t('method_tcp_connect')"></option>
+          <option value="tcp_tcpbypass" x-text="t('method_tcp_tcpbypass')"></option>
         </optgroup>
         <optgroup :label="t('group_l7')">
-          <option value="http_flood" x-text="t('method_http')"></option>
-          <option value="head_flood" x-text="t('method_head')"></option>
-          <option value="range_flood" x-text="t('method_range')"></option>
-          <option value="post_flood" x-text="t('method_post')"></option>
-          <option value="http2_flood" x-text="t('method_http2')"></option>
+          <option value="http_flood" x-text="t('method_http_flood')"></option>
+          <option value="head_flood" x-text="t('method_head_flood')"></option>
+          <option value="range_flood" x-text="t('method_range_flood')"></option>
+          <option value="post_flood" x-text="t('method_post_flood')"></option>
+          <option value="http2_flood" x-text="t('method_http2_flood')"></option>
           <option value="http2_reset" x-text="t('method_http2_reset')"></option>
-          <option value="http2_continuation" x-text="t('method_http2_cont')"></option>
+          <option value="http2_continuation" x-text="t('method_http2_continuation')"></option>
           <option value="http2_bomb" x-text="t('method_http2_bomb')"></option>
           <option value="h2_ping" x-text="t('method_h2_ping')"></option>
           <option value="tls_handshake" x-text="t('method_tls_handshake')"></option>
@@ -161,11 +162,11 @@
           <option value="slow_post" x-text="t('method_slow_post')"></option>
           <option value="ws_flood" x-text="t('method_ws_flood')"></option>
           <option value="ws_slow" x-text="t('method_ws_slow')"></option>
-          <option value="https_bypass" x-text="t('method_https')"></option>
+          <option value="https_bypass" x-text="t('method_https_bypass')"></option>
         </optgroup>
         <optgroup :label="t('group_game')">
-          <option value="minecraft_handshake" x-text="t('method_mc_handshake')"></option>
-          <option value="minecraft_login" x-text="t('method_mc_login')"></option>
+          <option value="minecraft_handshake" x-text="t('method_minecraft_handshake')"></option>
+          <option value="minecraft_login" x-text="t('method_minecraft_login')"></option>
           <option value="game_udp" x-text="t('method_game_udp')"></option>
         </optgroup>
       </select>
@@ -260,6 +261,7 @@
             <option value="tcp_syn_spoof">SYN Spoof</option>
             <option value="tcp_ack">TCP ACK</option>
             <option value="tcp_connect">TCP Connect</option>
+            <option value="tcp_tcpbypass">TCP Bypass</option>
             <option value="http_flood">HTTP Flood</option>
             <option value="head_flood">HEAD Flood</option>
             <option value="range_flood">Range Flood</option>
@@ -842,8 +844,6 @@
     </div>
   </div>
 
-</div>
-
   <!-- Audit Logs -->
   <div class="panel full">
     <h2 x-text="t('attack_logs') + ' (' + logTotal + ')'"></h2>
@@ -954,6 +954,7 @@
       <div x-show="!auditLogs.length" style="padding:12px;text-align:center;opacity:0.5;font-size:12px">—</div>
     </div>
   </div>
+  </div>
 </div>
 </template>
 
@@ -965,11 +966,11 @@ function app() {
       logout:'Logout', nodes_count:'Nodes: {0} | Tasks: {1}',
       live_stats:'Live Stats', packets_sec:'PACKETS/SEC', mb_sec:'MB/SEC', total_packets:'TOTAL PACKETS', active_online:'ACTIVE / {0} ONLINE',
       new_attack:'New Attack',
-      method_combo:'Combo Attack', method_vse:'VSE Amplification', method_vse_refl:'VSE Reflector Amp (IP Spoof)', method_dns_refl:'DNS Reflector Amp (IP Spoof)', method_cldap_refl:'CLDAP Reflector Amp (IP Spoof)',
+      method_combo:'Combo Attack', method_vse:'VSE Amplification', method_vse_reflector:'VSE Reflector Amp (IP Spoof)', method_dns_reflector:'DNS Reflector Amp (IP Spoof)', method_cldap_reflector:'CLDAP Reflector Amp (IP Spoof)',
       method_udp_stdhex:'UDP StdHex', method_udp_plain:'UDP Plain', method_udp_bypass:'UDP Bypass', method_udp_burst:'UDP Burst',
       method_tcp_syn:'TCP SYN', method_tcp_syn_spoof:'TCP SYN Spoof (Linux)', method_tcp_ack:'TCP ACK', method_tcp_connect:'TCP Connect',
-      method_http:'HTTP Flood', method_head:'HEAD Flood', method_range:'Range Flood (response amp)', method_post:'POST Flood (random body)', method_http2:'HTTP/2 Flood (multiplex)', method_http2_reset:'HTTP/2 Rapid Reset (CVE-2023-44487)', method_http2_cont:'HTTP/2 CONTINUATION Flood (CVE-2024-27316)', method_http2_bomb:'HTTP/2 HPACK Bomb (CVE-2026-49975, auto-gated)', method_h2_ping:'HTTP/2 PING Flood (frame 2x)', method_tls_handshake:'TLS Handshake Storm (SSL DoS)', method_slowloris:'Slowloris (header stall)', method_slow_post:'Slow POST (body stall)', method_ws_flood:'WebSocket Flood (msg+PING)', method_ws_slow:'WebSocket Slow (conn hold)', method_https:'HTTPS Bypass',
-      method_mc_handshake:'Minecraft Handshake', method_mc_login:'Minecraft Login', method_game_udp:'Game UDP (ARK=smart A2S)',
+      method_http_flood:'HTTP Flood', method_head_flood:'HEAD Flood', method_range_flood:'Range Flood (response amp)', method_post_flood:'POST Flood (random body)', method_http2_flood:'HTTP/2 Flood (multiplex)', method_http2_reset:'HTTP/2 Rapid Reset (CVE-2023-44487)', method_http2_continuation:'HTTP/2 CONTINUATION Flood (CVE-2024-27316)', method_http2_bomb:'HTTP/2 HPACK Bomb (CVE-2026-49975, auto-gated)', method_h2_ping:'HTTP/2 PING Flood (frame 2x)', method_tls_handshake:'TLS Handshake Storm (SSL DoS)', method_slowloris:'Slowloris (header stall)', method_slow_post:'Slow POST (body stall)', method_ws_flood:'WebSocket Flood (msg+PING)', method_ws_slow:'WebSocket Slow (conn hold)', method_https_bypass:'HTTPS Bypass',
+      method_minecraft_handshake:'Minecraft Handshake', method_minecraft_login:'Minecraft Login', method_game_udp:'Game UDP (ARK=smart A2S)',
       group_udp:'UDP', group_tcp:'TCP', group_l7:'L7', group_game:'Game',
       game_none:'No Game',
       target_placeholder:'Target (1.2.3.4:27015 or URL) — one per line for multi-target',
@@ -991,6 +992,10 @@ function app() {
       start_ip:'Start IP', end_ip:'End IP', scan:'Scan', scanning:'Scanning...', attack:'Attack',
       add_to_pool:'Add to Pool', add_all_to_pool:'Add all to DNS pool', add_all_to_cldap:'Add all to CLDAP pool', resolvers_found:'resolvers found', reflectors_found:'reflectors found',
       fofa_tips:'FOFA / Shodan query tips', cldap_export_tip:'Export as IP:Port list, paste to CLDAP pool page for batch add & auto-verify',
+      fofa_export_tip:'Export as IP:Port list and paste into the DNS/CLDAP pool page for batch add',
+      node_groups:'Groups (click to select)', no_groups:'No groups yet', group_name_ph:'Group name', save_group:'Save Selection',
+      group_name_required:'Enter a group name', group_del_confirm:'Delete group {0}?',
+      method_tcp_tcpbypass:'TCP Bypass Flood',
       worker_nodes:'Worker Nodes', tasks:'Tasks', steam_pool:'Steam Master Pool', manual_pool:'Manual Pool',
       page_prev:'‹ Prev', page_next:'Next ›', page_info:'Page {0} / {1}',
       st_tasks:'Tasks (7d)', st_success:'Success', st_packets:'Packets (7d)', st_traffic:'Traffic (7d)', st_peak:'Peak PPS', st_by_method:'By Method',
@@ -1051,11 +1056,11 @@ function app() {
       logout:'退出', nodes_count:'节点: {0} | 任务: {1}',
       live_stats:'实时统计', packets_sec:'包/秒', mb_sec:'MB/秒', total_packets:'总发包量', active_online:'活跃 {0} / 在线 {1}',
       new_attack:'发起攻击',
-      method_combo:'组合攻击', method_vse:'VSE 放大攻击', method_vse_refl:'VSE 反射放大 (IP欺骗)', method_dns_refl:'DNS 反射放大 (IP欺骗)', method_cldap_refl:'CLDAP 反射放大 (IP欺骗)',
+      method_combo:'组合攻击', method_vse:'VSE 放大攻击', method_vse_reflector:'VSE 反射放大 (IP欺骗)', method_dns_reflector:'DNS 反射放大 (IP欺骗)', method_cldap_reflector:'CLDAP 反射放大 (IP欺骗)',
       method_udp_stdhex:'UDP 标准Hex', method_udp_plain:'UDP 纯文本', method_udp_bypass:'UDP 绕过', method_udp_burst:'UDP 爆发',
       method_tcp_syn:'TCP SYN', method_tcp_syn_spoof:'TCP SYN 伪造源IP (Linux)', method_tcp_ack:'TCP ACK', method_tcp_connect:'TCP 连接',
-      method_http:'HTTP 洪水', method_head:'HEAD 洪水', method_range:'Range 洪水 (响应放大)', method_post:'POST 洪水 (随机body)', method_http2:'HTTP/2 洪水 (多路复用)', method_http2_reset:'HTTP/2 Rapid Reset (CVE-2023-44487)', method_http2_cont:'HTTP/2 CONTINUATION 洪水 (CVE-2024-27316)', method_http2_bomb:'HTTP/2 HPACK 炸弹 (CVE-2026-49975, 自动门控)', method_h2_ping:'HTTP/2 PING 洪水 (帧2x放大)', method_tls_handshake:'TLS 握手风暴 (SSL DoS)', method_slowloris:'Slowloris (请求头占坑)', method_slow_post:'Slow POST (请求体占坑)', method_ws_flood:'WebSocket 洪水 (消息+PING)', method_ws_slow:'WebSocket 慢速 (连接占坑)', method_https:'HTTPS 绕过',
-      method_mc_handshake:'Minecraft 握手', method_mc_login:'Minecraft 登录', method_game_udp:'游戏 UDP (ARK=智能A2S)',
+      method_http_flood:'HTTP 洪水', method_head_flood:'HEAD 洪水', method_range_flood:'Range 洪水 (响应放大)', method_post_flood:'POST 洪水 (随机body)', method_http2_flood:'HTTP/2 洪水 (多路复用)', method_http2_reset:'HTTP/2 Rapid Reset (CVE-2023-44487)', method_http2_continuation:'HTTP/2 CONTINUATION 洪水 (CVE-2024-27316)', method_http2_bomb:'HTTP/2 HPACK 炸弹 (CVE-2026-49975, 自动门控)', method_h2_ping:'HTTP/2 PING 洪水 (帧2x放大)', method_tls_handshake:'TLS 握手风暴 (SSL DoS)', method_slowloris:'Slowloris (请求头占坑)', method_slow_post:'Slow POST (请求体占坑)', method_ws_flood:'WebSocket 洪水 (消息+PING)', method_ws_slow:'WebSocket 慢速 (连接占坑)', method_https_bypass:'HTTPS 绕过',
+      method_minecraft_handshake:'Minecraft 握手', method_minecraft_login:'Minecraft 登录', method_game_udp:'游戏 UDP (ARK=智能A2S)',
       group_udp:'UDP', group_tcp:'TCP', group_l7:'L7', group_game:'游戏',
       game_none:'无游戏',
       target_placeholder:'目标 (1.2.3.4:27015 或 URL) — 每行一个用于多目标',
@@ -1077,6 +1082,8 @@ function app() {
       start_ip:'起始IP', end_ip:'结束IP', scan:'扫描', scanning:'扫描中...', attack:'攻击',
       add_to_pool:'加入池', add_all_to_pool:'全部加入DNS池', add_all_to_cldap:'全部加入CLDAP池', resolvers_found:'个解析器发现', reflectors_found:'个反射器发现',
       fofa_tips:'FOFA / Shodan 查询提示', cldap_export_tip:'导出格式选 IP:Port 列表，粘贴到 CLDAP 池页面批量添加并自动验证',
+      fofa_export_tip:'导出为 IP:Port 列表，粘贴到 DNS/CLDAP 池页面批量添加',
+      method_tcp_tcpbypass:'TCP 绕过洪水',
       worker_nodes:'工作节点', tasks:'任务', steam_pool:'Steam 主池', manual_pool:'手动池',
       page_prev:'‹ 上一页', page_next:'下一页 ›', page_info:'第 {0} / {1} 页',
       st_tasks:'任务数(7天)', st_success:'成功率', st_packets:'发包量(7天)', st_traffic:'流量(7天)', st_peak:'峰值PPS', st_by_method:'按方法分布',

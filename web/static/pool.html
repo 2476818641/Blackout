@@ -150,10 +150,10 @@
     <div x-show="tab===p.game">
       <div class="toolbar">
         <button class="btn steam" @click="poolRefresh(p.game)" :disabled="poolRefreshing===p.game"
-          x-text="poolRefreshing===p.game ? t('refreshing') : '↻ '+t('steam_refresh')"
+          x-text="poolRefreshing===p.game ? t('refreshes') : '↻ '+t('steam_refresh')"
           x-show="p.game !== 'other' && p.game !== 'dns'"></button>
         <button class="btn steam" @click="shodanRefreshOpen()" :disabled="shodanRefreshing"
-          x-text="shodanRefreshing ? t('refreshing') : '↻ Shodan Refresh'"
+          x-text="shodanRefreshing ? t('refreshes') : '↻ Shodan Refresh'"
           x-show="p.game === 'dns'"></button>
         <button class="btn warn" @click="poolTest(p.game)" :disabled="poolTesting===p.game"
           x-text="poolTesting===p.game ? t('testing') : t('test_clean')"></button>
@@ -277,7 +277,7 @@
     </div>
     <div style="margin-top:10px">
       <button class="btn" @click="shodanRefresh()" :disabled="shodanRefreshing"
-        x-text="shodanRefreshing ? t('refreshing') : 'Start Refresh'"></button>
+        x-text="shodanRefreshing ? t('refreshes') : 'Start Refresh'"></button>
       <span style="font-size:12px;margin-left:10px" :style="{color:shodanStatusErr?'var(--red)':'var(--cyan)'}" x-text="shodanStatusMsg"></span>
     </div>
   </div>
