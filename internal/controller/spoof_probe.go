@@ -154,6 +154,10 @@ func (c *Ctrl) handleSpoofProbeResult(w http.ResponseWriter, r *http.Request) {
 	// 数据竞态（此前 RLock 释放后锁外读 probe.Verified/Timestamp）
 	spoofProbesMu.Lock()
 	probe, exists := spoofProbes[nonce]
+	probeWorkerID := ""
+	if probe != nil {
+		probeWorkerID = probe.WorkerID // 锁内快照，锁外不再触碰 probe
+	}
 	resp := map[string]interface{}{}
 
 	if !exists {
@@ -179,9 +183,12 @@ func (c *Ctrl) handleSpoofProbeResult(w http.ResponseWriter, r *http.Request) {
 	// 探测结果（成功或失败）都更新节点的真实伪造能力。
 	// 仅在返回明确 can_spoof 结果时更新（pending 分支没有该字段，跳过，
 	// 避免 UDP 包尚未到达时误把节点标记为不支持）。
-	if verified, hasResult := resp["can_spoof"].(bool); hasResult && probe != nil && probe.WorkerID != "" {
+	// 注意：probe.WorkerID 必须在锁内复制到局部变量后使用——probe 对象
+	// 指向共享 map 中的记录，UDP 监听 goroutine 会并发写其 Verified 字段，
+	// 锁外读取是数据竞争（go race 可复现）。
+	if verified, hasResult := resp["can_spoof"].(bool); hasResult && probeWorkerID != "" {
 		c.mu.Lock()
-		if node, exists := c.nodes[probe.WorkerID]; exists {
+		if node, exists := c.nodes[probeWorkerID]; exists {
 			if verified {
 				node.CanSpoof = true
 				node.SpoofTested = true
