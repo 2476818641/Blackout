@@ -18,27 +18,28 @@ import (
 // L7Fingerprint 目标 Web 组件指纹（L7 攻击前探测用）：
 // 提取 Server/X-Powered-By 响应头、HTTP/2 支持（ALPN）、TLS 证书信息，
 // 并对照 HTTP/2 DoS 版本表给出三套判定：
-//   Vulnerable        — CVE-2023-44487 Rapid Reset
-//   ContinuationVuln  — CVE-2024-27316 / CVE-2024-27983 / CVE-2023-45288 CONTINUATION Flood
-//   BombVuln          — CVE-2026-49975 / CVE-2026-47774 HPACK Bomb（IIS 内核态无修复，恒脆弱）
+//
+//	Vulnerable        — CVE-2023-44487 Rapid Reset
+//	ContinuationVuln  — CVE-2024-27316 / CVE-2024-27983 / CVE-2023-45288 CONTINUATION Flood
+//	BombVuln          — CVE-2026-49975 / CVE-2026-47774 HPACK Bomb（IIS 内核态无修复，恒脆弱）
 type L7Fingerprint struct {
-	Target     string   `json:"target"`
-	Product    string   `json:"product"`      // nginx / apache / envoy / iis / ...
-	Version    string   `json:"version"`      // 1.25.2
-	ServerHeader string `json:"server_header"`
-	XPoweredBy string   `json:"x_powered_by"`
-	HTTP2      bool     `json:"http2"`        // 目标是否支持 HTTP/2
-	HTTP2C     bool     `json:"http2c"`       // 明文 h2c（仅 http:// 目标）
-	TLSIssuer  string   `json:"tls_issuer,omitempty"`
-	Vulnerable     bool `json:"vulnerable"`       // Rapid Reset
-	ContinuationVuln bool `json:"continuation_vuln"` // CONTINUATION Flood
-	BombVuln       bool `json:"bomb_vuln"`         // HPACK Bomb
+	Target           string `json:"target"`
+	Product          string `json:"product"` // nginx / apache / envoy / iis / ...
+	Version          string `json:"version"` // 1.25.2
+	ServerHeader     string `json:"server_header"`
+	XPoweredBy       string `json:"x_powered_by"`
+	HTTP2            bool   `json:"http2"`  // 目标是否支持 HTTP/2
+	HTTP2C           bool   `json:"http2c"` // 明文 h2c（仅 http:// 目标）
+	TLSIssuer        string `json:"tls_issuer,omitempty"`
+	Vulnerable       bool   `json:"vulnerable"`        // Rapid Reset
+	ContinuationVuln bool   `json:"continuation_vuln"` // CONTINUATION Flood
+	BombVuln         bool   `json:"bomb_vuln"`         // HPACK Bomb
 	// 能力探测（推荐扩展方法用）
-	WS            bool   `json:"ws"`              // WebSocket 支持（Upgrade 返回 101）
-	SlowApplicable bool  `json:"slow_applicable"` // 慢速适用：请求头无快速超时（>2s 不断开）
-	StaticRange   bool   `json:"static_range"`    // 支持 Range 请求（静态资源/CDN）
-	BodySize      int    `json:"body_size"`       // 首页响应体大小（bytes）
-	Notes      []string `json:"notes"`
+	WS             bool     `json:"ws"`              // WebSocket 支持（Upgrade 返回 101）
+	SlowApplicable bool     `json:"slow_applicable"` // 慢速适用：请求头无快速超时（>2s 不断开）
+	StaticRange    bool     `json:"static_range"`    // 支持 Range 请求（静态资源/CDN）
+	BodySize       int      `json:"body_size"`       // 首页响应体大小（bytes）
+	Notes          []string `json:"notes"`
 }
 
 // fingerprintClient 探测用 HTTP 客户端（短超时，跳过证书校验）
@@ -127,8 +128,9 @@ func FingerprintL7Target(target string, timeout time.Duration) *L7Fingerprint {
 func (fp *L7Fingerprint) probeCapabilities(u *url.URL, host string, timeout time.Duration) {
 	base := u.Scheme + "://" + host
 
-	// 1. WebSocket 支持（探测常见挂载路径；101 = 支持）
-	wsPaths := []string{"/", "/ws", "/websocket", "/socket.io/"}
+	// 1. WebSocket 支持（探测常见挂载路径；101 = 支持）。
+	// 只探 / 与 /ws：路径越多连接越多，对受限环境（源端口/连接数）压力越大。
+	wsPaths := []string{"/", "/ws"}
 	for _, p := range wsPaths {
 		req, err := http.NewRequest("GET", base+p, nil)
 		if err != nil {
@@ -152,7 +154,7 @@ func (fp *L7Fingerprint) probeCapabilities(u *url.URL, host string, timeout time
 		}
 	}
 
-	// 2. Range/静态资源 + 响应大小
+	// 2. Range/静态资源 + 首页响应体大小（合并为一次 GET，减少连接数）
 	req, err := http.NewRequest("GET", base+"/", nil)
 	if err == nil {
 		req.Header.Set("Range", "bytes=0-1023")
@@ -163,7 +165,9 @@ func (fp *L7Fingerprint) probeCapabilities(u *url.URL, host string, timeout time
 				fp.StaticRange = true
 				fp.Notes = append(fp.Notes, "supports Range requests (static/CDN content)")
 			}
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 			resp.Body.Close()
+			fp.BodySize = len(body)
 		}
 	}
 
@@ -192,18 +196,6 @@ func (fp *L7Fingerprint) probeCapabilities(u *url.URL, host string, timeout time
 			// 2s 无响应：请求头等待中，slowloris/slow_post 适用
 			fp.SlowApplicable = true
 			fp.Notes = append(fp.Notes, "server holds partial headers (slowloris/slow POST applicable)")
-		}
-	}
-
-	// 4. 首页响应体大小（复用第一次 GET 的结果，此处单独取一次）
-	req2, err := http.NewRequest("GET", base+"/", nil)
-	if err == nil {
-		req2.Header.Set("User-Agent", "Blackout-Fingerprint/1.0")
-		resp, err := fingerprintClient.Do(req2)
-		if err == nil {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
-			resp.Body.Close()
-			fp.BodySize = len(body)
 		}
 	}
 }

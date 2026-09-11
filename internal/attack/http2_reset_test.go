@@ -58,7 +58,10 @@ func TestFingerprintApache(t *testing.T) {
 
 // TestVersionLess 版本比较
 func TestVersionLess(t *testing.T) {
-	cases := []struct{ a, b string; want bool }{
+	cases := []struct {
+		a, b string
+		want bool
+	}{
 		{"1.25.2", "1.25.3", true},
 		{"1.25.3", "1.25.2", false},
 		{"1.25.3", "1.25.3", false},
@@ -80,10 +83,11 @@ func TestVersionLess(t *testing.T) {
 }
 
 // TestFingerprintContinuation 三套判定：
-//   nginx/1.25.3 → RapidReset patched 但 CONTINUATION 脆弱
-//   nginx/1.25.4 → 全部修复
-//   apache/2.4.58 → CONTINUATION 脆弱
-//   IIS → HPACK Bomb 恒脆弱
+//
+//	nginx/1.25.3 → RapidReset patched 但 CONTINUATION 脆弱
+//	nginx/1.25.4 → 全部修复
+//	apache/2.4.58 → CONTINUATION 脆弱
+//	IIS → HPACK Bomb 恒脆弱
 func TestFingerprintContinuation(t *testing.T) {
 	// nginx 1.25.3：Rapid Reset 已修，CONTINUATION 仍脆弱
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

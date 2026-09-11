@@ -180,10 +180,10 @@ func newBypassClient(proxyStr string) *http.Client {
 	tr := &http.Transport{
 		DialTLSContext: utlsDialContext,
 		// 空 map = 禁用所有 h2 升级（含 ALPN 协商后的 h2）
-		TLSNextProto:      map[string]func(authority string, c *tls.Conn) http.RoundTripper{},
-		MaxIdleConns:      100,
+		TLSNextProto:        map[string]func(authority string, c *tls.Conn) http.RoundTripper{},
+		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:   30 * time.Second,
+		IdleConnTimeout:     30 * time.Second,
 	}
 	if proxyStr != "" {
 		if u, err := url.Parse(proxyStr); err == nil {

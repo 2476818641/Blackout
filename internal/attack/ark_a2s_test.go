@@ -42,9 +42,10 @@ func TestBuildA2SQuery(t *testing.T) {
 }
 
 // mockA2SServer 模拟 A2S 服务器行为：
-//   mode "challenge" → 对裸查返回 0x41+challenge；带正确 challenge 返回 0x44 数据
-//   mode "direct"    → 对裸查直接返回 0x44 数据（免 challenge）
-//   mode "silent"    → 不响应
+//
+//	mode "challenge" → 对裸查返回 0x41+challenge；带正确 challenge 返回 0x44 数据
+//	mode "direct"    → 对裸查直接返回 0x44 数据（免 challenge）
+//	mode "silent"    → 不响应
 func mockA2SServer(t *testing.T, mode string, challenge uint32) (addr string, closeFn func()) {
 	t.Helper()
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
