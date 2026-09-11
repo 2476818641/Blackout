@@ -27,6 +27,10 @@ func loadNodeGroups(path string) map[string][]string {
 
 // persistNodeGroups 落盘分组（调用方不得持有 nodeGroupsMu）
 func (c *Ctrl) persistNodeGroups() {
+	if c.nodeGroupsFile == "" {
+		// 未配置文件路径（如单测手工构造的 Ctrl）：不落盘。
+		return
+	}
 	c.nodeGroupsMu.RLock()
 	data, err := json.Marshal(c.nodeGroups)
 	c.nodeGroupsMu.RUnlock()

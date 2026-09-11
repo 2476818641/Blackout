@@ -14,7 +14,7 @@ import (
 // AuditEntry 操作审计条目：谁（角色/token）、何时、做了什么。
 type AuditEntry struct {
 	Time    int64  `json:"time"`
-	Role    string `json:"role"`    // admin / worker
+	Role    string `json:"role"`     // admin / worker
 	TokenID string `json:"token_id"` // token 前 8 位（用于区分不同 worker，不泄露完整凭据）
 	Action  string `json:"action"`
 	Detail  string `json:"detail"`

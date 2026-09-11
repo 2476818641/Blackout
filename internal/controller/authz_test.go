@@ -12,11 +12,11 @@ import (
 // 管理端点（任务创建/停止、节点、保护规则、代理写、日志、部署命令等）必须拒绝。
 func TestWorkerTokenLeastPrivilege(t *testing.T) {
 	c := &Ctrl{
-		adminToken:    "admin-tok",
-		workerToken:   "shared-worker-tok",
-		workerTokens:  map[string]bool{"per-worker-1": true},
+		adminToken:     "admin-tok",
+		workerToken:    "shared-worker-tok",
+		workerTokens:   map[string]bool{"per-worker-1": true},
 		workerTokensMu: sync.RWMutex{},
-		auditLog:      NewAuditLog("", 200),
+		auditLog:       NewAuditLog("", 200),
 	}
 	mux := c.routes()
 

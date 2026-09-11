@@ -186,8 +186,10 @@ func (c *Ctrl) handleMigrateImport(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMigrateStart POST /api/migrate/start（在旧 controller 上操作）
+//
 // body: {"target_http":"http://2.2.2.2:8080","target_admin_token":"...",
-//        "target_grpc":"2.2.2.2:9090","worker_token":""}
+// "target_grpc":"2.2.2.2:9090","worker_token":""}
+//
 // 1. 导出本机数据 → 推送到新 controller 导入
 // 2. 进入迁移模式：心跳携带新地址，worker 逐个自动切换
 func (c *Ctrl) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
@@ -196,10 +198,10 @@ func (c *Ctrl) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		TargetHTTP      string `json:"target_http"`
+		TargetHTTP       string `json:"target_http"`
 		TargetAdminToken string `json:"target_admin_token"`
-		TargetGRPC      string `json:"target_grpc"`
-		WorkerToken     string `json:"worker_token"`
+		TargetGRPC       string `json:"target_grpc"`
+		WorkerToken      string `json:"worker_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, map[string]string{"error": "invalid json"})
@@ -266,9 +268,9 @@ func (c *Ctrl) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[migrate] migration mode ON: %d online workers will switch to %s", workerCount, req.TargetGRPC)
 	c.auditAction(r, "migrate_start", req.TargetGRPC)
 	writeJSON(w, map[string]interface{}{
-		"ok":           true,
-		"migrating":    true,
-		"target_grpc":  req.TargetGRPC,
+		"ok":             true,
+		"migrating":      true,
+		"target_grpc":    req.TargetGRPC,
 		"online_workers": workerCount,
 	})
 }

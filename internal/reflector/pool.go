@@ -817,17 +817,17 @@ func ExportLogsCSV() string {
 
 // LogStats 任务历史统计（按时间窗口聚合）
 type LogStats struct {
-	TotalTasks    int64 `json:"total_tasks"`
-	SuccessTasks  int64 `json:"success_tasks"`
-	FailedTasks   int64 `json:"failed_tasks"`
-	TotalPackets  int64 `json:"total_packets"`
-	TotalBytes    int64 `json:"total_bytes"`
-	TotalDuration int64 `json:"total_duration"` // 秒
-	PeakPPS       int64 `json:"peak_pps"`
-	PeakBPS       int64 `json:"peak_bps"`
+	TotalTasks    int64            `json:"total_tasks"`
+	SuccessTasks  int64            `json:"success_tasks"`
+	FailedTasks   int64            `json:"failed_tasks"`
+	TotalPackets  int64            `json:"total_packets"`
+	TotalBytes    int64            `json:"total_bytes"`
+	TotalDuration int64            `json:"total_duration"` // 秒
+	PeakPPS       int64            `json:"peak_pps"`
+	PeakBPS       int64            `json:"peak_bps"`
 	ByMethod      []LogStatsBucket `json:"by_method"`
 	ByTarget      []LogStatsBucket `json:"by_target"`
-	Daily         []LogStatsDay   `json:"daily"`
+	Daily         []LogStatsDay    `json:"daily"`
 }
 
 type LogStatsBucket struct {

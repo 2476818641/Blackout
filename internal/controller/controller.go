@@ -926,9 +926,9 @@ func (c *Ctrl) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 			rem = append(rem, tid)
 			continue
 		}
-		// lw 节点只参与反射任务（非反射任务跳过；lw 走 HTTP 心跳，此处为保险）。
+		// lw 节点只参与其支持的任务（反射 / tcp_syn，其他跳过；lw 走 HTTP 心跳，此处为保险）。
 		// 注意：此处已持有 c.mu 写锁，必须用 isLWNodeLocked（isLWNode 会 RLock 死锁）
-		if !isReflectorTaskMethod(t.Method) {
+		if !lwCapableMethod(t.Method) {
 			if wn, ok := c.nodes[req.WorkerId]; ok && isLWNodeLocked(wn) {
 				rem = append(rem, tid)
 				continue
@@ -1333,19 +1333,18 @@ func (c *Ctrl) listNodesLocked() []*NodeInfo {
 // 返回 true 表示当前所有在线（非 OFFLINE）目标 Worker 都已领取该 task，
 // 即 pending 派发窗口已覆盖全部可用 Worker，可翻转为 running。
 // 任务指定 SelectedWorkers 时只统计选中节点；未指定时统计全部在线节点。
-// 反射任务包含 lw 节点（lw 只参与反射）；非反射任务排除 lw 节点。
+// lw 支持的任务（反射 / tcp_syn）包含 lw 节点；其余任务排除 lw 节点。
 // 若当前没有任何在线目标 Worker，则要求 task 至少已派给一个 Worker 才算完成
 // （避免在零在线节点时把刚创建、还没派发的 task 直接翻转）。
 func (c *Ctrl) onlineWorkersAllAssigned(t *TaskInfo) bool {
-	reflectorTask := isReflectorTaskMethod(t.Method)
 	onlineCount := 0
 	for id, n := range c.nodes {
 		if n.Status == "OFFLINE" {
 			continue
 		}
-		// 非反射任务：lw 节点不参与（lw 只跑反射）。
+		// lw 支持范围外的方法：lw 节点不参与（见 lwCapableMethod）。
 		// 注意：调用方已持有 c.mu 写锁，必须用 isLWNodeLocked（避免 RLock 死锁）
-		if !reflectorTask && isLWNodeLocked(n) {
+		if !lwCapableMethod(t.Method) && isLWNodeLocked(n) {
 			continue
 		}
 		// 任务指定了参与节点：只统计选中的
@@ -1468,6 +1467,11 @@ func (c *Ctrl) persistNodes() {
 		return
 	}
 
+	if c.nodesFile == "" {
+		// 未配置节点文件路径（如单测手工构造的 Ctrl）：不落盘，
+		// 否则会写出 cwd 下的游离 ".tmp" 文件。
+		return
+	}
 	tmp := c.nodesFile + ".tmp"
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		log.Printf("[node] persist write error: %v", err)

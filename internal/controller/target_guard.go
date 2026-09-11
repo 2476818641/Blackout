@@ -17,14 +17,14 @@ import (
 // 判定顺序：白名单（精确/CIDR/域名后缀）→ 黑名单（精确/CIDR/域名后缀）
 // → 内网保留段（BlockPrivate）→ 放行。
 type TargetGuard struct {
-	Enabled       bool     `json:"enabled"`        // 总开关（默认 true）
-	BlockPrivate  bool     `json:"block_private"`  // 禁止内网/保留地址段（默认 true）
-	ResolveHosts  bool     `json:"resolve_hosts"`  // 域名目标解析后校验 IP（防 DNS 指向内网），默认 true
-	BlockedIPs    []string `json:"blocked_ips"`    // 精确 IP 黑名单
-	BlockedCIDR   []string `json:"blocked_cidr"`   // CIDR 黑名单
+	Enabled        bool     `json:"enabled"`         // 总开关（默认 true）
+	BlockPrivate   bool     `json:"block_private"`   // 禁止内网/保留地址段（默认 true）
+	ResolveHosts   bool     `json:"resolve_hosts"`   // 域名目标解析后校验 IP（防 DNS 指向内网），默认 true
+	BlockedIPs     []string `json:"blocked_ips"`     // 精确 IP 黑名单
+	BlockedCIDR    []string `json:"blocked_cidr"`    // CIDR 黑名单
 	BlockedDomains []string `json:"blocked_domains"` // 域名黑名单（子串匹配，如 "gov.cn"）
-	AllowedIPs    []string `json:"allowed_ips"`    // 精确 IP 白名单（优先于黑名单/私有段）
-	AllowedCIDR   []string `json:"allowed_cidr"`   // CIDR 白名单
+	AllowedIPs     []string `json:"allowed_ips"`     // 精确 IP 白名单（优先于黑名单/私有段）
+	AllowedCIDR    []string `json:"allowed_cidr"`    // CIDR 白名单
 	AllowedDomains []string `json:"allowed_domains"` // 域名后缀白名单（如 "example.com"；为空 = 不限制）
 }
 
@@ -55,6 +55,11 @@ func loadTargetGuard(path string) TargetGuard {
 }
 
 func (c *Ctrl) persistTargetGuard() {
+	if c.guardFile == "" {
+		// 未配置文件路径（如单测手工构造的 Ctrl）：不落盘，
+		// 否则会写出 cwd 下的游离 ".tmp" 文件。
+		return
+	}
 	c.guardMu.RLock()
 	data, err := json.MarshalIndent(c.guard, "", "  ")
 	c.guardMu.RUnlock()
