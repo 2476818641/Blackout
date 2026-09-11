@@ -4,3 +4,6 @@
 *.sh text eol=lf
 *.yml text eol=lf
 *.md text eol=lf
+# 自托管的前端依赖必须逐字节保持原样（vendor/README.md 记录了 SHA-256，
+# 且换行转换会改变文件哈希与内容版本号的含义）
+web/static/vendor/* -text
