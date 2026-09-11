@@ -40,11 +40,15 @@ func (w *Worker) applyUpdateWindows(exeAbs, tmp, targetVersion string) error {
 
 	w.preUpdateShutdown()
 
-	cmd := exec.Command(tmp, os.Args[1:]...)
+	// 用当前生效配置的参数启动换身进程（而非原始命令行）：迁移后 -c/-token
+	// 已变，原始参数会把新进程带回旧 Controller。
+	args := w.restartArgs()
+	cmd := exec.Command(tmp, args...)
 	cmd.Env = append(os.Environ(),
 		"BLACKOUT_UPDATE_PENDING=1",
 		"BLACKOUT_UPDATE_TARGET="+exeAbs,
-		"BLACKOUT_UPDATE_VERSION="+targetVersion)
+		"BLACKOUT_UPDATE_VERSION="+targetVersion,
+		"BLACKOUT_UPDATE_ARGS="+encodeRestartArgs(args))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -83,7 +87,7 @@ func FinishWindowsUpdate() bool {
 	deadline := time.Now().Add(60 * time.Second)
 	var copyErr error
 	for time.Now().Before(deadline) {
-		if copyErr = copyFile(self, target); copyErr == nil {
+		if copyErr = replaceFileAtomic(self, target); copyErr == nil {
 			break
 		}
 		// 目标文件仍被旧进程锁定（Access is denied）：等待后重试
@@ -109,7 +113,7 @@ func FinishWindowsUpdate() bool {
 		}
 		env = append(env, e)
 	}
-	cmd := exec.Command(target, os.Args[1:]...)
+	cmd := exec.Command(target, restartArgsFromEnv()...)
 	cmd.Env = env
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -123,7 +127,7 @@ func FinishWindowsUpdate() bool {
 	return true
 }
 
-// CleanupUpdateTemp 清理 Windows 换身流程遗留的 .update 临时文件
+// CleanupUpdateTemp 清理 Windows 换身流程遗留的 .update / .new 临时文件
 // （正式路径进程启动时调用）。若当前进程自身正从 .update 路径运行
 // （换身失败降级），跳过自删。
 func CleanupUpdateTemp() {
@@ -135,24 +139,24 @@ func CleanupUpdateTemp() {
 		return
 	}
 	os.Remove(exe + ".update")
+	os.Remove(exe + ".new")
 }
 
-// copyFile 复制文件（用于运行中二进制→正式路径的换身；源文件可读不受锁影响）
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
+// replaceFileAtomic 以"新文件 + 原子改名"覆盖 dst：
+// 直接 O_TRUNC 覆盖正在运行的二进制时，换身中途进程被杀 / 磁盘写满 / 复制
+// 失败都会把正式路径的 exe 截断成残文件——下次启动直接坏掉，且旧版本已
+// 无从恢复。改为先写同目录的 dst+".new"，fsync 后再 os.Rename 覆盖
+// （Windows 上 Go 使用 MOVEFILE_REPLACE_EXISTING；目标被运行中的进程占用
+// 时报错，dst 原内容不受影响，可安全重试）。
+func replaceFileAtomic(src, dst string) error {
+	tmp := dst + ".new"
+	if err := copyFileTo(src, tmp); err != nil {
+		os.Remove(tmp)
 		return err
 	}
-	defer in.Close()
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-	if err != nil {
+	if err := os.Rename(tmp, dst); err != nil {
+		os.Remove(tmp)
 		return err
 	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Sync()
+	return nil
 }

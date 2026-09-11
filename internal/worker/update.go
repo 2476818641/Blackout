@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -208,16 +209,22 @@ func (w *Worker) applyUpdate(url, targetVersion, sha256 string, requireSHA256 bo
 		return w.applyUpdateWindows(exeAbs, tmp, targetVersion)
 	}
 
-	// 5. 原子替换：备份旧文件 → 新文件 rename 到位
+	// 5. 原子替换：先备份（硬链接，不移动 exe 路径——任何后续失败都不会
+	//    出现"exe 路径不存在"的窗口，服务重启不会因缺文件而失败），
+	//    再把新文件 rename 到位（同目录 rename 为原子操作，运行中的进程
+	//    继续持有旧 inode 不受影响）。
 	backup := exeAbs + ".bak"
 	os.Remove(backup)
-	if err := os.Rename(exeAbs, backup); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("backup: %w", err)
+	if err := os.Link(exeAbs, backup); err != nil {
+		// 跨设备/文件系统不支持硬链接：退回复制（失败仅意味着没有备份）
+		log.Printf("[update] hard-link backup failed (%v), copying instead", err)
+		if err := copyFileTo(exeAbs, backup); err != nil {
+			os.Remove(tmp)
+			return fmt.Errorf("backup: %w", err)
+		}
 	}
 	if err := os.Rename(tmp, exeAbs); err != nil {
-		// 替换失败：回滚备份
-		os.Rename(backup, exeAbs)
+		// 替换失败：exe 仍是原文件（硬链接备份同时保留），直接报错重试
 		os.Remove(tmp)
 		return fmt.Errorf("replace: %w", err)
 	}
@@ -317,13 +324,111 @@ func verifyBinary(path string) error {
 	return nil
 }
 
+// replaceFlagValue 把 args 中的 -flag value / -flag=value / --flag 等形式
+// 统一改写为 -flag=value；args 中不存在该 flag 时追加。
+// 只做参数级替换，不经过 shell（值里的空格/引号不会被解释）。
+func replaceFlagValue(args []string, name, value string) []string {
+	if value == "" {
+		return args
+	}
+	out := make([]string, 0, len(args)+1)
+	replaced := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		trimmed := strings.TrimLeft(arg, "-")
+		if eq := strings.IndexByte(trimmed, '='); eq >= 0 {
+			if trimmed[:eq] == name {
+				out = append(out, "-"+name+"="+value)
+				replaced = true
+				continue
+			}
+			out = append(out, arg)
+			continue
+		}
+		if trimmed == name {
+			out = append(out, "-"+name+"="+value)
+			replaced = true
+			if i+1 < len(args) {
+				i++ // 跳过原值
+			}
+			continue
+		}
+		out = append(out, arg)
+	}
+	if !replaced {
+		out = append(out, "-"+name+"="+value)
+	}
+	return out
+}
+
+// restartArgs 返回重启自身时使用的参数：-c/-token 用**当前生效**的连接配置
+// 覆盖原始命令行值。
+// 否则环境迁移（handleReconfigure 写了 worker.conf）之后的自重启会带着
+// 启动时的旧 -c/-token 回来——而 main 里命令行优先于 worker.conf，
+// 于是刚迁移/刚更新完的节点又连回旧 Controller。
+func (w *Worker) restartArgs() []string {
+	controller, token, _ := w.getConfig()
+	args := replaceFlagValue(append([]string(nil), os.Args[1:]...), "c", controller)
+	args = replaceFlagValue(args, "token", token)
+	return args
+}
+
+// copyFileTo 复制文件到 dst（dst 若已存在会被截断，仅用于临时文件/备份，
+// 绝不用于覆盖正在运行的二进制——那必须走"新文件 + rename"）。
+func copyFileTo(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// encodeRestartArgs 把重启参数编码为单条环境变量值（JSON 数组）：
+// Windows 换身流程由新进程（临时路径）最终拉起正式路径进程，
+// 该进程拿不到原进程内存里的配置，只能靠 env 传递"当前生效"的 -c/-token。
+func encodeRestartArgs(args []string) string {
+	b, err := json.Marshal(args)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// restartArgsFromEnv 解析 encodeRestartArgs 写入的参数；
+// 缺失/损坏时回退到本进程的命令行参数。
+func restartArgsFromEnv() []string {
+	raw := os.Getenv("BLACKOUT_UPDATE_ARGS")
+	if raw == "" {
+		return os.Args[1:]
+	}
+	var args []string
+	if err := json.Unmarshal([]byte(raw), &args); err != nil || len(args) == 0 {
+		return os.Args[1:]
+	}
+	return args
+}
+
 // restartSelf 重启自身进程：
 // Linux 用 syscall.Exec 直接替换镜像（保持 PID，systemd/daemon 场景最干净）；
 // Windows 无法 exec，启动新进程后退出当前进程。
 // exec 与 spawn 均失败时返回错误（调用方保留 .bak 供人工恢复，且不写版本文件，
 // 下次轮询可重试——避免"版本已记录但旧二进制仍在跑"的永久跳过）。
 func (w *Worker) restartSelf(exe string) error {
-	args := os.Args[1:]
+	args := w.restartArgs()
 	env := os.Environ()
 
 	if runtime.GOOS != "windows" {
