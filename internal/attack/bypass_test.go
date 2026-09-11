@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,11 +15,15 @@ import (
 //  2. Cookie jar 会话保持（Set-Cookie 后后续请求携带）
 //  3. Chrome 特征头齐全（Sec-Ch-Ua / Sec-Fetch-* / Chrome UA）
 func TestBypassClientFingerprint(t *testing.T) {
+	// handler 在服务端 goroutine 里写入、测试侧读取，必须加锁（-race 下为真实数据竞争）
+	var mu sync.Mutex
 	var negotiated string
 	var cookies []string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		negotiated = r.TLS.NegotiatedProtocol
 		cookies = append(cookies, r.Header.Get("Cookie"))
+		mu.Unlock()
 		w.Header().Set("Set-Cookie", "cf_clearance=abc123; Path=/; Max-Age=3600")
 		w.WriteHeader(200)
 	}))
@@ -26,21 +31,23 @@ func TestBypassClientFingerprint(t *testing.T) {
 
 	client := newBypassClient("")
 	for i := 0; i < 2; i++ {
-		resp, err := client.Get(srv.URL)
-		if err != nil {
-			t.Fatalf("request %d failed: %v", i, err)
-		}
+		resp := getWithRetry(t, client, srv.URL)
 		resp.Body.Close()
 	}
 
-	if negotiated != "http/1.1" {
-		t.Fatalf("ALPN negotiated %q, want http/1.1", negotiated)
+	mu.Lock()
+	gotNegotiated := negotiated
+	gotCookies := append([]string(nil), cookies...)
+	mu.Unlock()
+
+	if gotNegotiated != "http/1.1" {
+		t.Fatalf("ALPN negotiated %q, want http/1.1", gotNegotiated)
 	}
-	if len(cookies) < 2 || cookies[1] == "" {
-		t.Fatalf("cookie not persisted across requests: %v", cookies)
+	if len(gotCookies) < 2 || gotCookies[1] == "" {
+		t.Fatalf("cookie not persisted across requests: %v", gotCookies)
 	}
-	if !strings.Contains(cookies[1], "cf_clearance=abc123") {
-		t.Fatalf("unexpected cookie value: %q", cookies[1])
+	if !strings.Contains(gotCookies[1], "cf_clearance=abc123") {
+		t.Fatalf("unexpected cookie value: %q", gotCookies[1])
 	}
 }
 

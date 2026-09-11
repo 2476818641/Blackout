@@ -29,14 +29,18 @@ func TestL7TestEndpoint(t *testing.T) {
 	defer iis.Close()
 	patched := mkServer("nginx/1.27.0")
 	defer patched.Close()
-	dead := mkServer("") // 立即关闭的探测失败场景
-	dead.Close()
 
 	c := &Ctrl{adminToken: "admintok", workerToken: "workertok", auditLog: NewAuditLog("", 200)}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c.handleL7Test(w, r)
 	}))
 	defer srv.Close()
+
+	// 死目标用固定不可达端口（127.0.0.1:1）：此前用"起一个 httptest 再 Close"，
+	// 但释放的临时端口随后可能被本测试自己的 API server（或同包其他测试）
+	// 重新占用 —— 端口一旦被占，能力探测的 TCP 拨号就会成功并把目标判成
+	// "存活但无 CVE"，测试随端口分配随机失败（-race 下已复现）。
+	const deadTarget = "http://127.0.0.1:1"
 
 	probe := func(target string) (recs []string, vuln, cont, bomb bool, notes []string) {
 		req, _ := http.NewRequest("POST", srv.URL, strings.NewReader(fmt.Sprintf(`{"target":%q}`, target)))
@@ -98,7 +102,7 @@ func TestL7TestEndpoint(t *testing.T) {
 	}
 
 	// 死端口：探测失败也要有流量型兜底（notes 有失败说明）
-	recs, _, _, _, notes := probe(dead.URL)
+	recs, _, _, _, notes := probe(deadTarget)
 	if len(recs) != 3 {
 		t.Fatalf("dead target should still get 3 traffic recs, got %v", recs)
 	}
