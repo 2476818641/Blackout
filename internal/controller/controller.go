@@ -540,16 +540,21 @@ func (c *Ctrl) Start() error {
 			}
 			corsMiddleware(mux).ServeHTTP(w, r)
 		})
-		return serveAutoTLS(c.httpAddr, tlsConfig, handler)
+		return serveAutoTLS(c.httpAddr, tlsConfig, securityHeaders(handler))
 	}
-	return http.ListenAndServe(c.httpAddr, corsMiddleware(mux))
+	return http.ListenAndServe(c.httpAddr, securityHeaders(corsMiddleware(mux)))
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
+		// CORS 仅对 API 有意义（面板与 API 同源，本就不需要 CORS）。
+		// 不再对静态资源与页面回 ACAO:*，避免把内部接口暴露成
+		// 任意站点可预检读取的形态。
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
+		}
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(200)
 			return
@@ -659,10 +664,16 @@ func (c *Ctrl) routes() *http.ServeMux {
 	mux.HandleFunc("/api/worker/spoof-cache", c.authHTTP(c.handleSpoofCacheQuery))
 	mux.HandleFunc("/api/tasks/complete", c.authHTTP(c.handleTaskComplete))
 	mux.HandleFunc("/ws", c.handleWS)
+	// 静态资源：内置 ETag/缓存策略/安全头（见 static.go）
+	assets := newStaticAssets(web.StaticFS)
 	mux.HandleFunc("/pool", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFileFS(w, r, web.StaticFS, "pool.html")
+		if name := assets.resolve("/pool.html"); name != "" {
+			assets.serve(w, r, name)
+			return
+		}
+		http.NotFound(w, r)
 	})
-	mux.Handle("/", http.FileServerFS(web.StaticFS))
+	mux.Handle("/", assets)
 	return mux
 }
 
