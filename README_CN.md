@@ -315,25 +315,34 @@ GitHub Release（按平台选二进制：worker-linux-amd64 / worker-windows-amd
 
 ### 部署在 CDN / Cloudflare 之后
 
-面板已内置显式缓存策略，边缘缓存既不会返回过期界面，也不会缓存带权限的数据：
+面板已内置显式缓存策略，边缘缓存既不会返回过期界面，也不会缓存带权限的数据。
+浏览器维度（`Cache-Control`）与边缘维度（`CDN-Cache-Control`，RFC 9211）分别声明：
 
-| 路径 | `Cache-Control` | 原因 |
+| 路径 | `Cache-Control`（浏览器） | `CDN-Cache-Control`（边缘） |
 |---|---|---|
-| `/`、`/pool`（HTML） | `no-cache` + 强 `ETag` | 每次回源校验（命中即 304，几百字节），发布新版本后刷新页面立即生效，**无需清缓存** |
-| `/vendor/*?v=…`（带内容版本） | `public, max-age=31536000, immutable` | URL 即内容标识，可长期缓存 |
-| 其他静态资源（`/blackout.svg` 等） | `public, max-age=86400, stale-while-revalidate=86400` | 边缘长缓存 + 后台刷新 |
-| `/api/*`、`/ws` | `no-store` + `Vary: Authorization` | 按 token 区分权限的响应绝不能被共享缓存保存 |
+| `/`、`/pool`（HTML） | `no-cache` + 强 `ETag` | `no-store` |
+| `/vendor/*?v=…`（带内容版本） | `public, max-age=31536000, immutable` | `public, max-age=31536000` |
+| 其他静态资源 | `public, max-age=86400, stale-while-revalidate=86400` | `public, max-age=604800` |
+| `404` | `no-store` | `no-store` |
+| `/api/*`、`/ws` | `no-store` + `Vary: Authorization` | `no-store` |
+
+HTML 行意味着发布新版本后刷新页面立即生效、**无需清边缘缓存**（命中 304 只需几百字节）。
+404 行是实战教训：Cloudflare 默认会把 404 也缓存数小时，某个资源在新版本部署前被访问过
+（例如 `/vendor/*`），部署后客户端仍会持续拿到被缓存的 404。
 
 所有响应同时带上 `Content-Security-Policy`、`X-Content-Type-Options: nosniff`、
 `Referrer-Policy: no-referrer`、`Permissions-Policy`、`X-Frame-Options: DENY`。
 CSP **不允许任何外部脚本源**：前端依赖已自托管（`web/static/vendor/`，见其 README），
 不再从公网 CDN 拉取——内网/断网可用、无第三方供应链风险、同源可长缓存。
 
-与 Cloudflare 的配合：*Caching → Cache Level* 保持 **Standard**（或在 Cache Rule 里
-选 *Respect Existing Headers*）；**不要**对 `/api/*` 开 "Cache Everything"；如果为
-静态资源单独写 Cache Rule，务必让源站响应头优先。因为 HTML 是 `no-cache`，发布新
-Controller 版本无需 purge；若确实配置了"忽略源站头 + Cache Everything"，则需
-purge `/` 与 `/pool`。
+与 Cloudflare 的配合：
+- **Caching → Configuration → Caching Level** 选 *Standard*（API 值即 `aggressive`），
+  查询串仍参与缓存键，`?v=` 版本化有效；
+- **Browser Cache TTL** 选 *Respect Existing Headers*，或选一个**大于**源站 `max-age`
+  的值（CF 只在源站值更短或缺失时才覆盖）。默认 4 小时对本项目资源没有影响；
+- **不要**对 `/api/*` 开 "Cache Everything"；为静态资源写 Cache Rule 时让源站头优先。
+  按上面的响应头，发版无需 purge；但如果配置了"忽略源站头 + Cache Everything"，
+  则需 purge `/` 与 `/pool`。
 
 ---
 

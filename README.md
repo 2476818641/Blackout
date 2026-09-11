@@ -350,14 +350,22 @@ Separate page for managing game-specific reflector pools. Each game tab (ARK / C
 ### Running Behind a CDN / Cloudflare
 
 The dashboard ships with explicit cache headers so an edge cache (Cloudflare, or any
-reverse proxy) neither serves a stale UI nor caches privileged data:
+reverse proxy) neither serves a stale UI nor caches privileged data. Both the browser
+(`Cache-Control`) and the edge (`CDN-Cache-Control`, RFC 9211) are declared explicitly:
 
-| Path | `Cache-Control` | Why |
+| Path | `Cache-Control` (browser) | `CDN-Cache-Control` (edge) |
 |---|---|---|
-| `/`, `/pool` (HTML) | `no-cache` + strong `ETag` | Page always revalidates with a 304 (a few hundred bytes), so a new release is live on the next refresh — no CDN purge needed |
-| `/vendor/*?v=…` (versioned assets) | `public, max-age=31536000, immutable` | URL carries the content version, safe to cache forever |
-| other static assets (`/blackout.svg`, …) | `public, max-age=86400, stale-while-revalidate=86400` | Long edge cache with background refresh |
-| `/api/*`, `/ws` | `no-store` + `Vary: Authorization` | Per-token responses must never be stored by a shared cache |
+| `/`, `/pool` (HTML) | `no-cache` + strong `ETag` | `no-store` |
+| `/vendor/*?v=…` (versioned) | `public, max-age=31536000, immutable` | `public, max-age=31536000` |
+| other static assets | `public, max-age=86400, stale-while-revalidate=86400` | `public, max-age=604800` |
+| `404` | `no-store` | `no-store` |
+| `/api/*`, `/ws` | `no-store` + `Vary: Authorization` | `no-store` |
+
+The HTML row means a new release is live on the next refresh — no edge purge needed —
+while a 304 revalidation costs a few hundred bytes. The `404` row matters in practice:
+Cloudflare otherwise caches a 404 for hours, so a missing asset (for example a
+`/vendor/*` file requested before the new build is deployed) would keep failing for
+clients long after the deploy.
 
 All responses also carry `Content-Security-Policy`, `X-Content-Type-Options: nosniff`,
 `Referrer-Policy: no-referrer`, `Permissions-Policy` and `X-Frame-Options: DENY`.
@@ -365,11 +373,15 @@ The CSP allows no external script origins: frontend dependencies are **self-host
 (`web/static/vendor/`, see its README) instead of a public CDN — better availability on
 isolated networks, no third-party supply chain, and cacheable from your own origin.
 
-Cloudflare settings that match this setup: keep *Caching → Cache Level* on **Standard**
-(or *Respect Existing Headers* in a Cache Rule), do **not** enable "Cache Everything"
-for `/api/*`, and if you add a Cache Rule for static assets, let the origin headers win.
-Because HTML is `no-cache`, deploying a new controller version needs no purge — but if
-you ever run with "Cache Everything" + ignore origin headers, purge `/` and `/pool`.
+Cloudflare settings that match this setup:
+- **Caching → Configuration → Caching Level**: *Standard* (the API value `aggressive`);
+  query strings stay part of the cache key, so `?v=` versioning works.
+- **Browser Cache TTL**: either *Respect Existing Headers*, or any value **larger** than
+  the origin `max-age` (Cloudflare only overrides the origin header when it is shorter
+  than the setting, or missing). The default 4h is fine for the assets above.
+- Do **not** enable "Cache Everything" for `/api/*`; if you add a Cache Rule for static
+  assets, let origin headers win. With the headers above, deploying needs no purge —
+  but if you ever run "Cache Everything + ignore origin headers", purge `/` and `/pool`.
 
 ---
 

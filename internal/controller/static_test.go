@@ -38,6 +38,26 @@ func TestStaticCacheControlPolicy(t *testing.T) {
 	}
 }
 
+// TestStaticEdgeCachePolicy CDN-Cache-Control 必须独立声明边缘策略：
+// HTML/404 绝不进边缘缓存（实测：源站不发 Cache-Control 时 Cloudflare 会把
+// 404 缓存 4 小时，部署新资源后被缓存的 404 会让页面加载失败）。
+func TestStaticEdgeCachePolicy(t *testing.T) {
+	cases := []struct {
+		name, query, wantEdge string
+	}{
+		{"index.html", "", "no-store"},
+		{"pool.html", "", "no-store"},
+		{"vendor/alpine.min.js", "v=3.14.9", "public, max-age=31536000"},
+		{"blackout.svg", "", "public, max-age=604800"},
+	}
+	for _, tc := range cases {
+		_, edge := staticCachePolicy(tc.name, tc.query)
+		if edge != tc.wantEdge {
+			t.Errorf("staticCachePolicy(%q, %q) edge = %q, want %q", tc.name, tc.query, edge, tc.wantEdge)
+		}
+	}
+}
+
 // TestStaticServesWithValidators 首页必须带上 ETag 与安全头，
 // 且 If-None-Match 命中时返回 304（边缘/浏览器复验几乎零流量）。
 func TestStaticServesWithValidators(t *testing.T) {
@@ -57,6 +77,9 @@ func TestStaticServesWithValidators(t *testing.T) {
 	}
 	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
 		t.Fatalf("index.html Cache-Control = %q, want no-cache", cc)
+	}
+	if cdn := rec.Header().Get("CDN-Cache-Control"); cdn != "no-store" {
+		t.Fatalf("index.html CDN-Cache-Control = %q, want no-store (edge must never cache the panel)", cdn)
 	}
 	if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
 		t.Fatalf("missing CSP on static response: %q", csp)
@@ -124,6 +147,9 @@ func TestStaticNotFoundNoStore(t *testing.T) {
 		if rec.Code == http.StatusNotFound {
 			if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 				t.Fatalf("GET %s Cache-Control = %q, want no-store", p, cc)
+			}
+			if cdn := rec.Header().Get("CDN-Cache-Control"); cdn != "no-store" {
+				t.Fatalf("GET %s CDN-Cache-Control = %q, want no-store (Cloudflare otherwise caches 404s)", p, cdn)
 			}
 		}
 	}

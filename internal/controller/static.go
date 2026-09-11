@@ -87,7 +87,14 @@ func (sa *staticAssets) serve(w http.ResponseWriter, r *http.Request, name strin
 	}
 	h := w.Header()
 	h.Set("ETag", etag)
-	h.Set("Cache-Control", staticCacheControl(name, r.URL.RawQuery))
+	cc, cdnCC := staticCachePolicy(name, r.URL.RawQuery)
+	h.Set("Cache-Control", cc)
+	// CDN-Cache-Control（RFC 9211）：单独声明"边缘"缓存策略。
+	// Cloudflare 默认按 Cache-Control 决定边缘 TTL，但一旦有人开了
+	// Cache Rule / "Cache Everything"，只有 CDN-Cache-Control 能保住
+	// "HTML 与 404 绝不进边缘缓存"这条底线（实测：源站不发 Cache-Control 时
+	// 边缘会把 404 也缓存 4 小时）。
+	h.Set("CDN-Cache-Control", cdnCC)
 	// ServeContent 负责 Content-Type（按后缀）、Range、If-None-Match → 304。
 	// modTime 传零值：嵌入资源的构建时间无意义，避免误导性的 Last-Modified。
 	http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
@@ -108,17 +115,30 @@ func (sa *staticAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sa.serve(w, r, name)
 }
 
-// staticCacheControl 按资源类型与是否带内容版本给出缓存策略。
-func staticCacheControl(name, rawQuery string) string {
+// staticCachePolicy 按资源类型与是否带内容版本给出（浏览器策略, 边缘策略）。
+//
+// 浏览器维度与边缘维度分开声明：
+//   - HTML：浏览器必须每次回源校验（no-cache + ETag → 304），边缘绝不存储；
+//   - 带 ?v= 的资源：两边都可长缓存（URL 即内容标识）；
+//   - 其他资源：边缘可留久一点（7 天，发布后仍能命中），浏览器 1 天 +
+//     stale-while-revalidate，兼顾"部署后尽快见到新文件"与"少回源"。
+func staticCachePolicy(name, rawQuery string) (browser, edge string) {
 	if strings.HasSuffix(name, ".html") || strings.HasSuffix(name, ".htm") {
-		// 面板入口：必须回源校验，保证发布后立刻生效（304 开销极小）
-		return "no-cache"
+		// 面板入口：必须回源校验，保证发布后立刻生效（304 开销极小）。
+		// 边缘 no-store：面板是登录态入口，绝不能出现"旧界面"或跨版本混用。
+		return "no-cache", "no-store"
 	}
 	if hasVersionQuery(rawQuery) {
 		// ?v=<内容版本>：URL 即内容标识，可长缓存 + immutable
-		return "public, max-age=31536000, immutable"
+		return "public, max-age=31536000, immutable", "public, max-age=31536000"
 	}
-	return "public, max-age=86400, stale-while-revalidate=86400"
+	return "public, max-age=86400, stale-while-revalidate=86400", "public, max-age=604800"
+}
+
+// staticCacheControl 兼容旧调用：仅返回浏览器维度策略。
+func staticCacheControl(name, rawQuery string) string {
+	browser, _ := staticCachePolicy(name, rawQuery)
+	return browser
 }
 
 func hasVersionQuery(rawQuery string) bool {
@@ -132,6 +152,7 @@ func hasVersionQuery(rawQuery string) bool {
 
 func noCache(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("CDN-Cache-Control", "no-store")
 }
 
 // securityHeaders 统一追加安全响应头，并对 API/WS 禁用共享缓存。
@@ -160,6 +181,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		// API 与 WebSocket 显式 no-store，并声明按 Authorization 变化。
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" {
 			h.Set("Cache-Control", "no-store")
+			h.Set("CDN-Cache-Control", "no-store")
 			h.Set("Vary", "Authorization")
 		}
 		next.ServeHTTP(w, r)
