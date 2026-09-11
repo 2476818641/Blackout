@@ -50,6 +50,67 @@ var fingerprintClient = &http.Client{
 	},
 }
 
+// 探测重试：本地资源瞬时错误（Windows 临时端口耗尽 / EADDRINUSE / 连接被
+// 强制关闭等）不代表目标的任何特征。若直接采信，探测会把目标误判为
+// "无 Server 头 / 已修补"，据此跳过本该发起的攻击；同时这类环境噪声
+// 也会让 L7 指纹测试随机失败。
+const (
+	probeAttempts   = 3
+	probeRetryDelay = 200 * time.Millisecond
+)
+
+// isTransientNetErr 判断错误是否为本地/瞬时网络故障（可重试）。
+func isTransientNetErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, k := range []string{
+		"only one usage of each socket address", // Windows 临时端口耗尽
+		"address already in use",
+		"cannot assign requested address",
+		"no buffer space available",
+		"too many open files",
+		"forcibly closed by the remote host",
+		"temporary failure",
+		"connection reset by peer",
+	} {
+		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// dialRetry 建立探测连接；本地瞬时错误重试（见 isTransientNetErr）。
+func dialRetry(network, addr string, timeout time.Duration) (net.Conn, error) {
+	var conn net.Conn
+	var err error
+	for attempt := 0; attempt < probeAttempts; attempt++ {
+		conn, err = net.DialTimeout(network, addr, timeout)
+		if err == nil || !isTransientNetErr(err) {
+			return conn, err
+		}
+		time.Sleep(probeRetryDelay)
+	}
+	return conn, err
+}
+
+// doProbe 执行探测请求；本地瞬时错误重试。
+// 调用方必须保证 req 可重复发送（Body 为 nil）。
+func doProbe(req *http.Request) (*http.Response, error) {
+	var resp *http.Response
+	var err error
+	for attempt := 0; attempt < probeAttempts; attempt++ {
+		resp, err = fingerprintClient.Do(req)
+		if err == nil || !isTransientNetErr(err) {
+			return resp, err
+		}
+		time.Sleep(probeRetryDelay)
+	}
+	return resp, err
+}
+
 // FingerprintL7Target 对目标做一次轻量探测（单个 GET，不产生持续压力）。
 //   - https:// 目标：先 ALPN 探测 h2 支持（协商到 h2 → HTTP2=true）
 //   - http:// 目标：尝试一次 h2c 前言探测（少见，失败不计）
@@ -76,8 +137,16 @@ func FingerprintL7Target(target string, timeout time.Duration) *L7Fingerprint {
 		if _, _, err := net.SplitHostPort(addr); err != nil {
 			addr = host + ":443"
 		}
-		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr,
-			&tls.Config{InsecureSkipVerify: true, NextProtos: []string{"h2", "http/1.1"}})
+		var conn *tls.Conn
+		var err error
+		for attempt := 0; attempt < probeAttempts; attempt++ {
+			conn, err = tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr,
+				&tls.Config{InsecureSkipVerify: true, NextProtos: []string{"h2", "http/1.1"}})
+			if err == nil || !isTransientNetErr(err) {
+				break
+			}
+			time.Sleep(probeRetryDelay)
+		}
 		if err == nil {
 			state := conn.ConnectionState()
 			fp.HTTP2 = state.NegotiatedProtocol == "h2"
@@ -90,13 +159,16 @@ func FingerprintL7Target(target string, timeout time.Duration) *L7Fingerprint {
 		}
 	}
 
-	// HTTP 请求探测响应头
-	req, err := http.NewRequest("GET", u.Scheme+"://"+host+"/", nil)
+	// HTTP 请求探测响应头（瞬时本地错误重试，避免误判目标特征）
+	var resp *http.Response
+	err = nil
+	var req *http.Request
+	req, err = http.NewRequest("GET", u.Scheme+"://"+host+"/", nil)
 	if err != nil {
 		return fp
 	}
 	req.Header.Set("User-Agent", "Blackout-Fingerprint/1.0")
-	resp, err := fingerprintClient.Do(req)
+	resp, err = doProbe(req)
 	if err != nil {
 		fp.Notes = append(fp.Notes, "HTTP probe failed: "+err.Error())
 	} else {
@@ -141,7 +213,7 @@ func (fp *L7Fingerprint) probeCapabilities(u *url.URL, host string, timeout time
 		req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
 		req.Header.Set("Sec-WebSocket-Version", "13")
 		req.Header.Set("User-Agent", "Blackout-Fingerprint/1.0")
-		resp, err := fingerprintClient.Do(req)
+		resp, err := doProbe(req)
 		if err != nil {
 			continue
 		}
@@ -159,7 +231,7 @@ func (fp *L7Fingerprint) probeCapabilities(u *url.URL, host string, timeout time
 	if err == nil {
 		req.Header.Set("Range", "bytes=0-1023")
 		req.Header.Set("User-Agent", "Blackout-Fingerprint/1.0")
-		resp, err := fingerprintClient.Do(req)
+		resp, err := doProbe(req)
 		if err == nil {
 			if resp.Header.Get("Accept-Ranges") == "bytes" || resp.StatusCode == 206 {
 				fp.StaticRange = true
@@ -180,7 +252,7 @@ func (fp *L7Fingerprint) probeCapabilities(u *url.URL, host string, timeout time
 			addr = addr + ":80"
 		}
 	}
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+	conn, err := dialRetry("tcp", addr, timeout)
 	if err == nil {
 		conn.SetDeadline(time.Now().Add(2 * time.Second))
 		// 不完整请求头（无结束空行）
@@ -206,7 +278,7 @@ func probeH2C(host string, timeout time.Duration) bool {
 	if _, _, err := net.SplitHostPort(addr); err != nil {
 		addr = host + ":80"
 	}
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+	conn, err := dialRetry("tcp", addr, timeout)
 	if err != nil {
 		return false
 	}

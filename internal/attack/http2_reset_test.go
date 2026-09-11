@@ -181,7 +181,6 @@ func TestHTTP2BombAttack(t *testing.T) {
 // TestHTTP2ResetAttack Rapid Reset 冒烟：本地 h2 服务器必须收到流
 // （服务器统计 HEADERS 帧到达数），攻击会话 PacketsSent > 0。
 func TestHTTP2ResetAttack(t *testing.T) {
-	var streamHits int64
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	}))
@@ -193,7 +192,7 @@ func TestHTTP2ResetAttack(t *testing.T) {
 	s := StartHTTP2ResetEx(AttackConfig{Target: srv.URL, Duration: 2, Threads: 4})
 	waitSession(t, s)
 	snap := s.Snapshot()
-	t.Logf("http2_reset: pkts=%d errs=%d (server h2 handler hits=%d)", snap.PacketsSent, snap.Errors, streamHits)
+	t.Logf("http2_reset: pkts=%d errs=%d", snap.PacketsSent, snap.Errors)
 	// 本地 httptest 对 Rapid Reset 的流可能立即报错（服务器行为各异），
 	// 但至少要有发出尝试（PacketsSent 或 Errors 之一 > 0）
 	if snap.PacketsSent == 0 && snap.Errors == 0 {

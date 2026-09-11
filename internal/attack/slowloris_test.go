@@ -50,11 +50,11 @@ func TestSlowlorisConnHold(t *testing.T) {
 		<-s.DoneChan
 
 		if atomic.LoadInt32(&held) < 8 {
-			t.Fatalf("%s: expected >=8 held connections, got %d", method, held)
+			t.Fatalf("%s: expected >=8 held connections, got %d", method, atomic.LoadInt32(&held))
 		}
 		if snap.PacketsSent == 0 {
 			t.Fatalf("%s: no packets counted", method)
 		}
-		t.Logf("%s: held_conns=%d pkts=%d bytes=%d errs=%d", method, held, snap.PacketsSent, snap.BytesSent, snap.Errors)
+		t.Logf("%s: held_conns=%d pkts=%d bytes=%d errs=%d", method, atomic.LoadInt32(&held), snap.PacketsSent, snap.BytesSent, snap.Errors)
 	}
 }

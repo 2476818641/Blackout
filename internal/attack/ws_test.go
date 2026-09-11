@@ -44,7 +44,7 @@ func TestWSFlood(t *testing.T) {
 	<-s.DoneChan
 
 	if atomic.LoadInt32(&conns) < 8 {
-		t.Fatalf("ws_flood: only %d connections established, want >=8", conns)
+		t.Fatalf("ws_flood: only %d connections established, want >=8", atomic.LoadInt32(&conns))
 	}
 	if atomic.LoadInt32(&msgs) == 0 {
 		t.Fatalf("ws_flood: no messages received by server")
@@ -52,7 +52,7 @@ func TestWSFlood(t *testing.T) {
 	if snap.PacketsSent == 0 {
 		t.Fatal("ws_flood: 0 packets counted")
 	}
-	t.Logf("ws_flood: conns=%d msgs=%d pings=%d pkts=%d errs=%d", conns, msgs, pings, snap.PacketsSent, snap.Errors)
+	t.Logf("ws_flood: conns=%d msgs=%d pings=%d pkts=%d errs=%d", atomic.LoadInt32(&conns), atomic.LoadInt32(&msgs), atomic.LoadInt32(&pings), snap.PacketsSent, snap.Errors)
 }
 
 // TestWSSlow：ws_slow 连接占坑——连接保持但服务器收不到消息
@@ -86,10 +86,10 @@ func TestWSSlow(t *testing.T) {
 	<-s.DoneChan
 
 	if atomic.LoadInt32(&conns) < 8 {
-		t.Fatalf("ws_slow: only %d connections established, want >=8", conns)
+		t.Fatalf("ws_slow: only %d connections established, want >=8", atomic.LoadInt32(&conns))
 	}
 	if atomic.LoadInt32(&msgs) != 0 {
-		t.Fatalf("ws_slow: server received %d messages, want 0 (conn hold only)", msgs)
+		t.Fatalf("ws_slow: server received %d messages, want 0 (conn hold only)", atomic.LoadInt32(&msgs))
 	}
-	t.Logf("ws_slow: conns=%d msgs=%d pkts=%d errs=%d", conns, msgs, snap.PacketsSent, snap.Errors)
+	t.Logf("ws_slow: conns=%d msgs=%d pkts=%d errs=%d", atomic.LoadInt32(&conns), atomic.LoadInt32(&msgs), snap.PacketsSent, snap.Errors)
 }

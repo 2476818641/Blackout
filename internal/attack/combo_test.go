@@ -70,7 +70,7 @@ func TestComboAttackSmoke(t *testing.T) {
 	if snap.PacketsSent < 10000 {
 		t.Fatalf("combo pkts too low: %d (udp sub-attack not contributing?)", snap.PacketsSent)
 	}
-	t.Logf("combo smoke: pkts=%d bytes=%d errs=%d http_hits=%d", snap.PacketsSent, snap.BytesSent, snap.Errors, hits)
+	t.Logf("combo smoke: pkts=%d bytes=%d errs=%d http_hits=%d", snap.PacketsSent, snap.BytesSent, snap.Errors, atomic.LoadInt32(&hits))
 }
 
 // TestComboUnknownSubMethod：未知子攻击方法被跳过，combo 仍正常完成

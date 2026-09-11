@@ -33,9 +33,9 @@ func TestHTTP2FloodRealH2Server(t *testing.T) {
 		t.Fatal("http2_flood: no requests reached the h2 server")
 	}
 	if snap.PacketsSent == 0 {
-		t.Fatalf("http2_flood: 0 packets counted (hits=%d) — response path broken", hits)
+		t.Fatalf("http2_flood: 0 packets counted (hits=%d) — response path broken", atomic.LoadInt32(&hits))
 	}
-	t.Logf("http2_flood h2: hits=%d pkts=%d errs=%d", hits, snap.PacketsSent, snap.Errors)
+	t.Logf("http2_flood h2: hits=%d pkts=%d errs=%d", atomic.LoadInt32(&hits), snap.PacketsSent, snap.Errors)
 }
 
 // TestHTTP2ResetTLS：http2_reset 对 TLS h2 服务器（真实目标形态）

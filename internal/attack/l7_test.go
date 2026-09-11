@@ -1,6 +1,7 @@
 package attack
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -25,7 +26,7 @@ func TestL7Floods(t *testing.T) {
 	waitSession(t, s1)
 	snap1 := s1.Snapshot()
 	if snap1.PacketsSent == 0 {
-		t.Fatalf("http_flood sent 0 packets (server hits=%d)", hits)
+		t.Fatalf("http_flood sent 0 packets (server hits=%d)", atomic.LoadInt64(&hits))
 	}
 	if snap1.BytesSent <= 0 {
 		t.Fatalf("http_flood BytesSent=%d, want > 0 (fixed stats)", snap1.BytesSent)
@@ -38,7 +39,7 @@ func TestL7Floods(t *testing.T) {
 	waitSession(t, s2)
 	snap2 := s2.Snapshot()
 	if snap2.PacketsSent == 0 {
-		t.Fatalf("post_flood sent 0 packets (server hits=%d)", hits)
+		t.Fatalf("post_flood sent 0 packets (server hits=%d)", atomic.LoadInt64(&hits))
 	}
 	if snap2.BytesSent < uint64(snap2.PacketsSent)*512 {
 		t.Fatalf("post_flood BytesSent=%d too small for %d pkts x 512B body", snap2.BytesSent, snap2.PacketsSent)
@@ -51,7 +52,7 @@ func TestL7Floods(t *testing.T) {
 	waitSession(t, s3)
 	snap3 := s3.Snapshot()
 	if snap3.PacketsSent == 0 {
-		t.Logf("http2_flood: 0 packets (h2c may be unsupported by httptest server; hits=%d)", hits)
+		t.Logf("http2_flood: 0 packets (h2c may be unsupported by httptest server; hits=%d)", atomic.LoadInt64(&hits))
 	} else {
 		t.Logf("http2_flood: pkts=%d bytes=%d errs=%d", snap3.PacketsSent, snap3.BytesSent, snap3.Errors)
 	}
@@ -71,6 +72,40 @@ func TestHTTPSBypassNoProxy(t *testing.T) {
 	// TLS 服务器自签证书 + InsecureSkipVerify 应成功；允许少量失败但至少要发出请求
 	if snap.PacketsSent == 0 && snap.Errors == 0 {
 		t.Fatalf("https_bypass neither sent nor errored")
+	}
+}
+
+// TestIsTransientNetErr：本地资源瞬时错误必须被识别（指纹探测据此重试），
+// 而目标真实错误（超时/拒绝/域名不存在）不得重试——否则探测会变慢且掩盖问题。
+func TestIsTransientNetErr(t *testing.T) {
+	transient := []string{
+		"dial tcp 127.0.0.1:8080: connectex: Only one usage of each socket address (protocol/network address/port) is normally permitted.",
+		"listen tcp 127.0.0.1:80: bind: address already in use",
+		"dial tcp: cannot assign requested address",
+		"write tcp: no buffer space available",
+		"accept: too many open files",
+		"read tcp: An existing connection was forcibly closed by the remote host",
+		"dial tcp: temporary failure in name resolution",
+	}
+	for _, s := range transient {
+		if !isTransientNetErr(errors.New(s)) {
+			t.Errorf("should be transient: %q", s)
+		}
+	}
+	notTransient := []string{
+		"context deadline exceeded",
+		"dial tcp 1.2.3.4:80: connect: connection refused",
+		"no such host",
+		"x509: certificate signed by unknown authority",
+		"invalid target URL",
+	}
+	for _, s := range notTransient {
+		if isTransientNetErr(errors.New(s)) {
+			t.Errorf("should NOT be transient: %q", s)
+		}
+	}
+	if isTransientNetErr(nil) {
+		t.Error("nil error must not be transient")
 	}
 }
 

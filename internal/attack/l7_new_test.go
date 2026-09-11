@@ -30,12 +30,12 @@ func TestRangeFlood(t *testing.T) {
 	<-s.DoneChan
 
 	if atomic.LoadInt32(&gotRange) == 0 {
-		t.Fatalf("range_flood: no request carried a Range header (noRange=%d)", noRange)
+		t.Fatalf("range_flood: no request carried a Range header (noRange=%d)", atomic.LoadInt32(&noRange))
 	}
 	if snap.PacketsSent == 0 {
 		t.Fatal("range_flood: 0 packets")
 	}
-	t.Logf("range_flood: range_hits=%d no_range=%d pkts=%d", gotRange, noRange, snap.PacketsSent)
+	t.Logf("range_flood: range_hits=%d no_range=%d pkts=%d", atomic.LoadInt32(&gotRange), atomic.LoadInt32(&noRange), snap.PacketsSent)
 }
 
 // TestHEADFlood：head_flood 请求方法必须是 HEAD 且无 body
@@ -59,7 +59,7 @@ func TestHEADFlood(t *testing.T) {
 	if atomic.LoadInt32(&headHits) == 0 {
 		t.Fatal("head_flood: no HEAD requests reached server")
 	}
-	t.Logf("head_flood: head_hits=%d pkts=%d", headHits, snap.PacketsSent)
+	t.Logf("head_flood: head_hits=%d pkts=%d", atomic.LoadInt32(&headHits), snap.PacketsSent)
 }
 
 // TestTLSHandshakeStorm：TLS 握手风暴对 TLS 服务器——握手完成计数

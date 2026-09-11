@@ -89,5 +89,5 @@ func TestHTTPSBypassSmoke(t *testing.T) {
 	if snap.PacketsSent == 0 {
 		t.Fatal("no packets counted")
 	}
-	t.Logf("https_bypass smoke: hits=%d pkts=%d bytes=%d", hits, snap.PacketsSent, snap.BytesSent)
+	t.Logf("https_bypass smoke: hits=%d pkts=%d bytes=%d", atomic.LoadInt32(&hits), snap.PacketsSent, snap.BytesSent)
 }
